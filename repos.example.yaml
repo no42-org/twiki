@@ -1,0 +1,20 @@
+# Copyright 2026 Ronny Trommer <ronny@no42.org>
+# SPDX-License-Identifier: MIT
+#
+# Copy to repos.yaml and edit. Unknown keys are rejected so typos fail loudly.
+
+# Start in shadow: twiki reports what it WOULD do and writes nothing.
+# Flip to "enforce" (or set TWIKI_MODE=enforce) once you trust the digests.
+mode: shadow
+
+repos:
+  # Default policy: auto-merge patch + minor when green; release when settled.
+  - repo: no42-org/example-service
+
+  # Only auto-merge patch bumps; minor bumps wait for a human.
+  - repo: no42-org/another-service
+    autoMergeMinor: false
+
+  # Never cut releases here — merge dependency PRs only.
+  - repo: no42-org/legacy-tool
+    mergeOnly: true

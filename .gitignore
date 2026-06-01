@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.log
+audit.jsonl
+.twiki-last-digest*
+
+# Secrets — never commit
+.env
+.env.*
+*.pem
+github-app-private-key*
+
+# AI tools
+_bmad-output/
+_bmad/
+openspec-output/
