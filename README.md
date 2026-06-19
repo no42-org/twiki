@@ -96,6 +96,9 @@ make run         # build and start (polls)
 TWIKI_ONCE=1 make run   # single tick (e.g. external cron)
 ```
 
+New here? The [Quick Start](docs/quickstart.md) walks through a shadow-mode run
+with copy-paste examples for **Slack**, **Discord**, and **Matrix**.
+
 ## Rollout
 
 1. Deploy in **shadow** mode (`mode: shadow`). twiki posts what it *would*
