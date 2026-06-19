@@ -30,8 +30,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: make lint
-      - run: make verify
+      - run: make verify # lint + typecheck + test
 
   image-scan:
     name: Build image & Trivy scan
@@ -70,5 +69,5 @@ jobs:
           cache: npm
       - run: npm ci
       # Report advisories; do not block merges on findings without a fix.
-      - run: npm audit --audit-level=high
+      - run: make audit
         continue-on-error: true

@@ -96,13 +96,13 @@ jobs:
 
       # ---- Build the npm tarball (includes dist/ via package "files") ----
       - run: npm ci
-      - run: make build
       - id: pack
-        name: npm pack tarball
+        name: Build and pack tarball
         run: |
           set -euo pipefail
-          npm version --no-git-tag-version --allow-same-version "${{ steps.vars.outputs.relversion }}" >/dev/null
-          tarball="$(npm pack --silent)"
+          # `make pack` builds, stamps the version, and prints the tarball name
+          # as its last stdout line.
+          tarball="$(make pack VERSION='${{ steps.vars.outputs.relversion }}' | tail -n1)"
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
           test -s "${tarball}"
 
