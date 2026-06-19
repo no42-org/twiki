@@ -7,7 +7,7 @@
 # QEMU-emulated build. Only the distroless runtime base differs per TARGETARCH.
 
 # --- build: install deps, compile TypeScript, prune to prod (pure JS) -------
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS build
+FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
