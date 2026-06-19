@@ -116,7 +116,7 @@ export class ClaudeAdvisor implements Advisor {
     });
 
     const toolUse = res.content.find((b) => b.type === "tool_use");
-    if (!toolUse || toolUse.type !== "tool_use") {
+    if (toolUse?.type !== "tool_use") {
       throw new Error("Advisor did not return a plan tool call");
     }
     // Reject and surface schema mismatches rather than acting on a bad plan.

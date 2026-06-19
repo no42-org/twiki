@@ -9,10 +9,10 @@ import { type Config, resolvePolicy } from "./config.js";
 import { applyPlan } from "./executor.js";
 import { gatherFacts } from "./facts.js";
 import type { GitHubPort } from "./github/port.js";
+import type { Notifier } from "./notify.js";
 import type { Plan } from "./plan.js";
 import { buildDigest } from "./report.js";
 import type { RepoResult, RunResult } from "./result.js";
-import type { Notifier } from "./notify.js";
 import { type RepoFacts, repoSlug } from "./types.js";
 
 // Orchestrates a single tick: gather facts → advisor plan → execute (gated) →
@@ -29,7 +29,10 @@ export interface RunDeps {
   log?: (msg: string) => void;
 }
 
-export async function runOnce(config: Config, deps: RunDeps): Promise<RunResult> {
+export async function runOnce(
+  config: Config,
+  deps: RunDeps,
+): Promise<RunResult> {
   const log = deps.log ?? (() => {});
   const good: RepoFacts[] = [];
   const errored: RepoResult[] = [];
@@ -81,7 +84,9 @@ async function safePlan(
   try {
     return await deps.advisor.plan(input);
   } catch (err) {
-    log(`advisor failed, holding all: ${err instanceof Error ? err.message : String(err)}`);
+    log(
+      `advisor failed, holding all: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return { repos: [] };
   }
 }

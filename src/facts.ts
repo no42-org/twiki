@@ -18,12 +18,13 @@ export async function gatherFacts(
   github: GitHubPort,
   repo: RepoRef,
 ): Promise<RepoFacts> {
-  const [rawPrs, mainChecks, latestTag, hasTagReleaseWorkflow] = await Promise.all([
-    github.listOpenDependabotPRs(repo),
-    github.branchChecks(repo, "main"),
-    github.latestTag(repo),
-    github.hasTagReleaseWorkflow(repo),
-  ]);
+  const [rawPrs, mainChecks, latestTag, hasTagReleaseWorkflow] =
+    await Promise.all([
+      github.listOpenDependabotPRs(repo),
+      github.branchChecks(repo, "main"),
+      github.latestTag(repo),
+      github.hasTagReleaseWorkflow(repo),
+    ]);
 
   const unreleasedDependencyCommits = await github.dependabotCommitsSince(
     repo,

@@ -20,7 +20,7 @@ export class JsonlAudit implements AuditSink {
   record(result: RunResult, at: string): void {
     const line = JSON.stringify({ at, mode: result.mode, repos: result.repos });
     try {
-      appendFileSync(this.path, line + "\n");
+      appendFileSync(this.path, `${line}\n`);
     } catch {
       // Audit is best-effort and must never break a run.
     }

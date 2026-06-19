@@ -3,16 +3,16 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { Octokit } from "@octokit/rest";
 import { createAppAuth } from "@octokit/auth-app";
+import { Octokit } from "@octokit/rest";
+import type { CheckStatus, RepoRef } from "../types.js";
+import { repoSlug } from "../types.js";
 import {
   type AppAuthConfig,
   installationOctokit,
   loadAppAuthFromEnv,
 } from "./auth.js";
 import type { GitHubPort, RawPullRequest } from "./port.js";
-import type { CheckStatus, RepoRef } from "../types.js";
-import { repoSlug } from "../types.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
 
@@ -32,7 +32,9 @@ export class OctokitGitHub implements GitHubPort {
 
   private async client(repo: RepoRef): Promise<Octokit> {
     if (!this.isAllowed(repo)) {
-      throw new Error(`Refusing to act on non-allowlisted repo ${repoSlug(repo)}`);
+      throw new Error(
+        `Refusing to act on non-allowlisted repo ${repoSlug(repo)}`,
+      );
     }
     return this.octokitFor(repo);
   }
@@ -48,7 +50,9 @@ export class OctokitGitHub implements GitHubPort {
     return data
       .filter((pr) => pr.user?.login === DEPENDABOT_LOGIN)
       .map((pr) => {
-        const labels = pr.labels.map((l) => (typeof l === "string" ? l : l.name ?? ""));
+        const labels = pr.labels.map((l) =>
+          typeof l === "string" ? l : (l.name ?? ""),
+        );
         return {
           number: pr.number,
           title: pr.title,
@@ -75,20 +79,36 @@ export class OctokitGitHub implements GitHubPort {
     return this.aggregateChecks(repo, data.commit.sha);
   }
 
-  private async aggregateChecks(repo: RepoRef, sha: string): Promise<CheckStatus> {
+  private async aggregateChecks(
+    repo: RepoRef,
+    sha: string,
+  ): Promise<CheckStatus> {
     const gh = await this.client(repo);
     const [checks, status] = await Promise.all([
-      gh.checks.listForRef({ owner: repo.owner, repo: repo.name, ref: sha, per_page: 100 }),
-      gh.repos.getCombinedStatusForRef({ owner: repo.owner, repo: repo.name, ref: sha }),
+      gh.checks.listForRef({
+        owner: repo.owner,
+        repo: repo.name,
+        ref: sha,
+        per_page: 100,
+      }),
+      gh.repos.getCombinedStatusForRef({
+        owner: repo.owner,
+        repo: repo.name,
+        ref: sha,
+      }),
     ]);
 
     const runs = checks.data.check_runs;
     const failedRun = runs.some(
       (r) =>
         r.conclusion !== null &&
-        ["failure", "timed_out", "cancelled", "action_required", "stale"].includes(
-          r.conclusion,
-        ),
+        [
+          "failure",
+          "timed_out",
+          "cancelled",
+          "action_required",
+          "stale",
+        ].includes(r.conclusion),
     );
     const pendingRun = runs.some((r) => r.status !== "completed");
     const statusState = status.data.state; // success | failure | pending
@@ -111,7 +131,10 @@ export class OctokitGitHub implements GitHubPort {
     }
   }
 
-  async dependabotCommitsSince(repo: RepoRef, tag: string | null): Promise<number> {
+  async dependabotCommitsSince(
+    repo: RepoRef,
+    tag: string | null,
+  ): Promise<number> {
     const gh = await this.client(repo);
     if (!tag) {
       const { data } = await gh.repos.listCommits({
@@ -128,7 +151,9 @@ export class OctokitGitHub implements GitHubPort {
       basehead: `${tag}...HEAD`,
     });
     return data.commits.filter(
-      (c) => c.author?.login === DEPENDABOT_LOGIN || /dependabot/i.test(c.commit.author?.name ?? ""),
+      (c) =>
+        c.author?.login === DEPENDABOT_LOGIN ||
+        /dependabot/i.test(c.commit.author?.name ?? ""),
     ).length;
   }
 
@@ -152,7 +177,8 @@ export class OctokitGitHub implements GitHubPort {
         repo: repo.name,
         path: `.github/workflows/${f.name}`,
       });
-      if (Array.isArray(data) || data.type !== "file" || !("content" in data)) continue;
+      if (Array.isArray(data) || data.type !== "file" || !("content" in data))
+        continue;
       const text = Buffer.from(data.content, "base64").toString("utf8");
       if (/on:[\s\S]*?push:[\s\S]*?tags:/.test(text)) return true;
     }
@@ -161,7 +187,10 @@ export class OctokitGitHub implements GitHubPort {
 
   async defaultBranchSha(repo: RepoRef): Promise<string> {
     const gh = await this.client(repo);
-    const { data: meta } = await gh.repos.get({ owner: repo.owner, repo: repo.name });
+    const { data: meta } = await gh.repos.get({
+      owner: repo.owner,
+      repo: repo.name,
+    });
     const { data } = await gh.repos.getBranch({
       owner: repo.owner,
       repo: repo.name,

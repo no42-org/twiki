@@ -13,7 +13,10 @@ import type { PullRequest, RepoFacts, RepoPolicy } from "./types.js";
 export type MergeBlock = "ci-not-green" | "above-minor" | null;
 
 /** Patch always; minor only when policy allows; major/indeterminate never. */
-export function withinMergePolicy(pr: PullRequest, policy: RepoPolicy): boolean {
+export function withinMergePolicy(
+  pr: PullRequest,
+  policy: RepoPolicy,
+): boolean {
   if (pr.bump.indeterminate) return false;
   switch (pr.bump.level) {
     case "patch":

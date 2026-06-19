@@ -4,8 +4,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { Octokit } from "@octokit/rest";
 import { createAppAuth } from "@octokit/auth-app";
+import { Octokit } from "@octokit/rest";
 
 // GitHub App authentication (design D7). The App mints short-lived per-install
 // tokens; merges and tags then show as `twiki[bot]`, keeping the audit trail
@@ -21,7 +21,8 @@ export function loadAppAuthFromEnv(env = process.env): AppAuthConfig {
   const keyPath = env.TWIKI_GITHUB_APP_PRIVATE_KEY_PATH;
   const keyInline = env.TWIKI_GITHUB_APP_PRIVATE_KEY;
   if (!appId) throw new Error("TWIKI_GITHUB_APP_ID is required");
-  const privateKey = keyInline ?? (keyPath ? readFileSync(keyPath, "utf8") : undefined);
+  const privateKey =
+    keyInline ?? (keyPath ? readFileSync(keyPath, "utf8") : undefined);
   if (!privateKey) {
     throw new Error(
       "Provide TWIKI_GITHUB_APP_PRIVATE_KEY or TWIKI_GITHUB_APP_PRIVATE_KEY_PATH",

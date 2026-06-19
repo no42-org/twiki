@@ -67,7 +67,9 @@ async function main(): Promise<void> {
     try {
       await runOnce(config, deps);
     } catch (err) {
-      console.error(`[twiki] run failed: ${err instanceof Error ? err.stack : err}`);
+      console.error(
+        `[twiki] run failed: ${err instanceof Error ? err.stack : err}`,
+      );
     }
   };
 

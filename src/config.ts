@@ -9,21 +9,20 @@ import { z } from "zod";
 import {
   DEFAULT_POLICY,
   type Mode,
+  parseRepoSlug,
   type RepoPolicy,
   type RepoRef,
-  parseRepoSlug,
   repoSlug,
 } from "./types.js";
 
 // Strict schemas: unknown keys are rejected so a typo in repos.yaml fails loudly
 // rather than silently disabling a policy override.
 
-const RepoEntrySchema = z
-  .strictObject({
-    repo: z.string().regex(/^[^/]+\/[^/]+$/, "must be owner/name"),
-    autoMergeMinor: z.boolean().optional(),
-    mergeOnly: z.boolean().optional(),
-  });
+const RepoEntrySchema = z.strictObject({
+  repo: z.string().regex(/^[^/]+\/[^/]+$/, "must be owner/name"),
+  autoMergeMinor: z.boolean().optional(),
+  mergeOnly: z.boolean().optional(),
+});
 
 const ConfigSchema = z.strictObject({
   mode: z.enum(["shadow", "enforce"]).default("shadow"),

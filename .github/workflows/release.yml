@@ -1,0 +1,136 @@
+# Copyright 2026 Ronny Trommer <ronny@no42.org>
+# SPDX-License-Identifier: MIT
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize per ref so the rolling edge tag/release isn't updated concurrently.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  publish:
+    name: Build, publish & sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create releases; move the rolling `edge` tag
+      packages: write # push to GHCR
+      id-token: write # cosign keyless (OIDC)
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # full history + tags for version derivation & latest guard
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # ---- Derive version, channel, image tags via the canonical semver logic
+      # (src/semver.ts planRelease, unit-tested) — design D1/D2/D3 ----
+      - id: vars
+        name: Derive version and tags
+        run: make release-plan
+
+      # ---- Build the npm tarball (includes dist/ via package "files") ----
+      - id: pack
+        name: Build and pack tarball
+        run: |
+          set -euo pipefail
+          # `make pack` builds, stamps the version, and prints the tarball name
+          # as its last stdout line.
+          tarball="$(make pack VERSION='${{ steps.vars.outputs.relversion }}' | tail -n1)"
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          test -s "${tarball}"
+
+      # ---- Build & push the multi-arch image (design D4: no QEMU compile) ----
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      # Scan the image content before publishing (report-only, same rationale as
+      # CI: distroless base CVEs aren't patchable here — see ci.yml). This makes
+      # the release self-contained rather than relying on a prior CI run.
+      - run: make image
+      - name: Trivy scan published image content (report-only)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: twiki:dev
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.vars.outputs.tags }}
+          provenance: true
+          sbom: true
+
+      # ---- Sign the pushed digest (cosign keyless / OIDC) ----
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - name: Sign image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ steps.vars.outputs.image }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # ---- Generate an SBOM for the published image ----
+      - name: Generate SBOM
+        uses: anchore/sbom-action@55dc4ee22412511ee8c3142cbea40418e6cec693 # v0.17.8
+        with:
+          image: ${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: twiki.sbom.spdx.json
+
+      # ---- Publish the GitHub Release ----
+      # Stable tag → normal Release with auto Conventional-Commits notes.
+      - name: Publish stable release
+        if: steps.vars.outputs.channel != 'edge'
+        uses: softprops/action-gh-release@01570a1f39cb168c169c802c3bceb9e93fb10974 # v2.1.0
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ steps.vars.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.vars.outputs.latest == 'true' }}
+          files: |
+            ${{ steps.pack.outputs.tarball }}
+            twiki.sbom.spdx.json
+
+      # main → single rolling `edge` pre-release: move the tag, replace assets.
+      - name: Move edge tag
+        if: steps.vars.outputs.channel == 'edge'
+        run: |
+          git tag -f edge
+          git push -f origin refs/tags/edge
+      - name: Publish edge pre-release
+        if: steps.vars.outputs.channel == 'edge'
+        uses: softprops/action-gh-release@01570a1f39cb168c169c802c3bceb9e93fb10974 # v2.1.0
+        with:
+          tag_name: edge
+          name: "Edge (main) — ${{ steps.vars.outputs.relversion }}"
+          body: "Rolling pre-release of the next version, built from `main` (`${{ steps.vars.outputs.short }}`)."
+          prerelease: true
+          make_latest: false
+          files: |
+            ${{ steps.pack.outputs.tarball }}
+            twiki.sbom.spdx.json

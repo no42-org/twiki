@@ -31,10 +31,14 @@ describe("isSettled", () => {
   });
 
   it("is not settled when main is red", () => {
-    expect(isSettled(makeFacts({ mainChecks: "red" }), DEFAULT_POLICY)).toBe(false);
+    expect(isSettled(makeFacts({ mainChecks: "red" }), DEFAULT_POLICY)).toBe(
+      false,
+    );
   });
 
   it("is not settled with no unreleased dependency changes", () => {
-    expect(isSettled(makeFacts({ unreleasedDependencyCommits: 0 }), DEFAULT_POLICY)).toBe(false);
+    expect(
+      isSettled(makeFacts({ unreleasedDependencyCommits: 0 }), DEFAULT_POLICY),
+    ).toBe(false);
   });
 });

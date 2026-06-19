@@ -74,8 +74,104 @@ export function nextPatchTag(latestTag: string | null): string {
   const hasV = /^v/i.test(latestTag.trim());
   const parsed = parseVersion(latestTag);
   if (!parsed) {
-    throw new Error(`Cannot compute next patch from unparseable tag: "${latestTag}"`);
+    throw new Error(
+      `Cannot compute next patch from unparseable tag: "${latestTag}"`,
+    );
   }
   const next = `${parsed.major}.${parsed.minor}.${parsed.patch + 1}`;
   return hasV ? `v${next}` : next;
+}
+
+const STRICT_SEMVER_TAG = /^v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
+function stripV(tag: string): string {
+  return tag.trim().replace(/^v/i, "");
+}
+
+/** Compare two versions by major.minor.patch (prerelease/build ignored). */
+function compareCore(a: string, b: string): number {
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
+  if (!pa || !pb) return 0;
+  return pa.major - pb.major || pa.minor - pb.minor || pa.patch - pb.patch;
+}
+
+/** True if the version carries a prerelease segment (e.g. `-rc.1`, `-dev.5`). */
+export function isPrerelease(version: string): boolean {
+  const core = stripV(version).split("+", 1)[0] ?? "";
+  return core.includes("-");
+}
+
+/** The highest non-prerelease tag from a list, or null if there is none. */
+export function highestStableTag(tags: string[]): string | null {
+  const stable = tags.filter((t) => parseVersion(t) && !isPrerelease(t));
+  if (stable.length === 0) return null;
+  return stable.reduce((hi, t) => (compareCore(t, hi) > 0 ? t : hi));
+}
+
+export interface ReleasePlan {
+  channel: "stable" | "prerelease" | "edge";
+  prerelease: boolean;
+  /** Full version for the release title (edge includes `+build` metadata). */
+  version: string;
+  /** Docker tag suffixes; the caller prefixes the image name. */
+  tagSuffixes: string[];
+}
+
+/**
+ * Decide what a push publishes: a stable tag, a prerelease tag, or the rolling
+ * `edge` prerelease from `main` (the next patch, `-dev.<n>`). Pure — git/env
+ * I/O lives in the caller. Throws on an off-convention tag.
+ */
+export function planRelease(input: {
+  refType: "tag" | "branch";
+  refName: string;
+  tags: string[];
+  commitsSinceHighest: number;
+  shortSha: string;
+}): ReleasePlan {
+  const { refType, refName, tags, commitsSinceHighest, shortSha } = input;
+
+  if (refType === "tag") {
+    if (!STRICT_SEMVER_TAG.test(refName.trim())) {
+      throw new Error(
+        `Release tag "${refName}" must be vX.Y.Z or vX.Y.Z-prerelease`,
+      );
+    }
+    const ver = stripV(refName);
+    if (isPrerelease(ver)) {
+      return {
+        channel: "prerelease",
+        prerelease: true,
+        version: ver,
+        tagSuffixes: [ver],
+      };
+    }
+    const p = parseVersion(ver);
+    if (!p) throw new Error(`Unparseable release tag "${refName}"`);
+    const suffixes = [ver, `${p.major}.${p.minor}`, `${p.major}`];
+    // `:latest` only when this is the highest stable version (>= every other),
+    // so a backport never moves it backward.
+    const highest = highestStableTag(tags);
+    if (highest === null || compareCore(ver, highest) >= 0) {
+      suffixes.push("latest");
+    }
+    return {
+      channel: "stable",
+      prerelease: false,
+      version: ver,
+      tagSuffixes: suffixes,
+    };
+  }
+
+  // main → next-patch `-dev` prerelease of the next version (design D2).
+  const highest = highestStableTag(tags);
+  const base = stripV(nextPatchTag(highest));
+  const imageVersion = `${base}-dev.${commitsSinceHighest}`;
+  return {
+    channel: "edge",
+    prerelease: true,
+    version: `${imageVersion}+${shortSha}`,
+    tagSuffixes: ["main", `sha-${shortSha}`, imageVersion],
+  };
 }
