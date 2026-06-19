@@ -74,7 +74,9 @@ export function nextPatchTag(latestTag: string | null): string {
   const hasV = /^v/i.test(latestTag.trim());
   const parsed = parseVersion(latestTag);
   if (!parsed) {
-    throw new Error(`Cannot compute next patch from unparseable tag: "${latestTag}"`);
+    throw new Error(
+      `Cannot compute next patch from unparseable tag: "${latestTag}"`,
+    );
   }
   const next = `${parsed.major}.${parsed.minor}.${parsed.patch + 1}`;
   return hasV ? `v${next}` : next;

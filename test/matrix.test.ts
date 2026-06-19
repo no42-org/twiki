@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { MatrixNotifier } from "../src/notify.js";
 
 describe("MatrixNotifier", () => {
@@ -85,7 +85,10 @@ describe("MatrixNotifier", () => {
   it("throws on a non-success homeserver response", async () => {
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async () =>
-      new Response(null, { status: 403, statusText: "Forbidden" })) as typeof fetch;
+      new Response(null, {
+        status: 403,
+        statusText: "Forbidden",
+      })) as typeof fetch;
     try {
       const notify = new MatrixNotifier(
         "https://matrix.example.org",
@@ -93,7 +96,9 @@ describe("MatrixNotifier", () => {
         "!abc:example.org",
         ".twiki-matrix-test-digest2",
       );
-      await expect(notify.send("nope")).rejects.toThrow(/Matrix delivery failed: 403/);
+      await expect(notify.send("nope")).rejects.toThrow(
+        /Matrix delivery failed: 403/,
+      );
     } finally {
       globalThis.fetch = origFetch;
       const fs = await import("node:fs");

@@ -43,8 +43,7 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
     lines.push("  🔴 *main is RED* — releases blocked until fixed");
   }
 
-  const by = (s: PrOutcome["status"]) =>
-    repo.prs.filter((p) => p.status === s);
+  const by = (s: PrOutcome["status"]) => repo.prs.filter((p) => p.status === s);
 
   for (const pr of by(shadow ? "would-merge" : "merged")) {
     const verb = shadow ? "would merge" : "merged";

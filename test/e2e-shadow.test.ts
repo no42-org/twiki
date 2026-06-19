@@ -4,10 +4,10 @@
  */
 
 import { expect, it } from "vitest";
-import { buildConfig } from "../src/config.js";
 import { NullAudit } from "../src/audit.js";
-import { runOnce } from "../src/run.js";
+import { buildConfig } from "../src/config.js";
 import type { RawPullRequest } from "../src/github/port.js";
+import { runOnce } from "../src/run.js";
 import {
   CapturingNotifier,
   FakeGitHub,
@@ -77,7 +77,9 @@ it("shadow run reports would-do actions and writes nothing", async () => {
   expect(github.tagged).toEqual([]);
 
   // alpha would merge #1; beta would release the next patch.
-  expect(res.repos.find((r) => r.repo === A)?.prs[0]?.status).toBe("would-merge");
+  expect(res.repos.find((r) => r.repo === A)?.prs[0]?.status).toBe(
+    "would-merge",
+  );
   expect(res.repos.find((r) => r.repo === B)?.release).toMatchObject({
     status: "would-release",
     version: "v0.4.8",

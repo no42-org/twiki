@@ -12,9 +12,12 @@ const minorOff = { autoMergeMinor: false, mergeOnly: false };
 
 describe("withinMergePolicy", () => {
   it("allows patch always", () => {
-    expect(withinMergePolicy(makePr({ bump: makeBump({ level: "patch" }) }), DEFAULT_POLICY)).toBe(
-      true,
-    );
+    expect(
+      withinMergePolicy(
+        makePr({ bump: makeBump({ level: "patch" }) }),
+        DEFAULT_POLICY,
+      ),
+    ).toBe(true);
   });
   it("allows minor only when enabled", () => {
     const pr = makePr({ bump: makeBump({ level: "minor" }) });
@@ -22,11 +25,17 @@ describe("withinMergePolicy", () => {
     expect(withinMergePolicy(pr, minorOff)).toBe(false);
   });
   it("never allows major or indeterminate", () => {
-    expect(withinMergePolicy(makePr({ bump: makeBump({ level: "major" }) }), DEFAULT_POLICY)).toBe(
-      false,
-    );
     expect(
-      withinMergePolicy(makePr({ bump: makeBump({ level: "patch", indeterminate: true }) }), DEFAULT_POLICY),
+      withinMergePolicy(
+        makePr({ bump: makeBump({ level: "major" }) }),
+        DEFAULT_POLICY,
+      ),
+    ).toBe(false);
+    expect(
+      withinMergePolicy(
+        makePr({ bump: makeBump({ level: "patch", indeterminate: true }) }),
+        DEFAULT_POLICY,
+      ),
     ).toBe(false);
   });
 });
@@ -37,8 +46,12 @@ describe("mergeBlock", () => {
     expect(canMerge(makePr(), DEFAULT_POLICY)).toBe(true);
   });
   it("blocks when CI is not green", () => {
-    expect(mergeBlock(makePr({ checks: "red" }), DEFAULT_POLICY)).toBe("ci-not-green");
-    expect(mergeBlock(makePr({ checks: "pending" }), DEFAULT_POLICY)).toBe("ci-not-green");
+    expect(mergeBlock(makePr({ checks: "red" }), DEFAULT_POLICY)).toBe(
+      "ci-not-green",
+    );
+    expect(mergeBlock(makePr({ checks: "pending" }), DEFAULT_POLICY)).toBe(
+      "ci-not-green",
+    );
   });
   it("blocks a green major", () => {
     const pr = makePr({ bump: makeBump({ level: "major" }) });

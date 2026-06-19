@@ -5,8 +5,8 @@
 
 import type { Advisor, AdvisorRepoInput } from "../src/advisor.js";
 import type { GitHubPort, RawPullRequest } from "../src/github/port.js";
-import type { Plan } from "../src/plan.js";
 import type { Notifier } from "../src/notify.js";
+import type { Plan } from "../src/plan.js";
 import {
   type Bump,
   type CheckStatus,
@@ -51,7 +51,9 @@ export function makeFacts(partial: Partial<RepoFacts> = {}): RepoFacts {
 
 /** Advisor stub: returns a fixed plan, or one derived from the input. */
 export class StubAdvisor implements Advisor {
-  constructor(private readonly impl: Plan | ((i: AdvisorRepoInput[]) => Plan)) {}
+  constructor(
+    private readonly impl: Plan | ((i: AdvisorRepoInput[]) => Plan),
+  ) {}
   async plan(input: AdvisorRepoInput[]): Promise<Plan> {
     return typeof this.impl === "function" ? this.impl(input) : this.impl;
   }

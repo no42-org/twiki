@@ -135,7 +135,10 @@ async function evaluateRelease(
   enforce: boolean,
 ): Promise<ReleaseOutcome> {
   if (!isSettled(facts, policy)) {
-    return { status: "waiting", detail: settledBlockers(facts, policy).join("; ") };
+    return {
+      status: "waiting",
+      detail: settledBlockers(facts, policy).join("; "),
+    };
   }
 
   // Settled — but these repo-level conditions still block an actual release and
@@ -160,7 +163,11 @@ async function evaluateRelease(
     await github.pushTag(facts.repo, version, sha);
     return { status: "released", version, detail: "patch release tagged" };
   }
-  return { status: "would-release", version, detail: "would tag patch release" };
+  return {
+    status: "would-release",
+    version,
+    detail: "would tag patch release",
+  };
 }
 
 function settledBlockers(facts: RepoFacts, policy: RepoPolicy): string[] {

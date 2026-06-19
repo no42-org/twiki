@@ -72,7 +72,9 @@ export class WebhookNotifier extends DedupingNotifier {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      throw new Error(`Webhook delivery failed: ${res.status} ${res.statusText}`);
+      throw new Error(
+        `Webhook delivery failed: ${res.status} ${res.statusText}`,
+      );
     }
   }
 }
