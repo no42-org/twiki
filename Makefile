@@ -1,7 +1,7 @@
 # Copyright 2026 Ronny Trommer <ronny@no42.org>
 # SPDX-License-Identifier: MIT
 
-.PHONY: install build typecheck lint test verify audit pack image run dev clean
+.PHONY: install build typecheck lint test verify audit pack release-plan image run dev clean
 
 # Local image coordinates (CI multi-arch publish is driven by the release
 # workflow's buildx action; this single-arch build is for local use + CI scan).
@@ -36,6 +36,11 @@ audit:
 pack: build
 	@[ -z "$(VERSION)" ] || npm version --no-git-tag-version --allow-same-version "$(VERSION)" >/dev/null
 	@npm pack --silent
+
+# Compute the release version + image tags from git/env via the canonical
+# semver logic; writes GitHub Actions step outputs (used by the release job).
+release-plan:
+	npx tsx scripts/release-plan.ts
 
 # Build a loadable single-arch image (used locally and by the CI scan job).
 image:

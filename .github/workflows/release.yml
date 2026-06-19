@@ -36,72 +36,15 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - run: npm ci
 
-      # ---- Derive version, channel, image tags (design D1/D2/D3) ----
+      # ---- Derive version, channel, image tags via the canonical semver logic
+      # (src/semver.ts planRelease, unit-tested) — design D1/D2/D3 ----
       - id: vars
         name: Derive version and tags
-        run: |
-          set -euo pipefail
-          image="$(echo "${REGISTRY}/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
-          short="$(git rev-parse --short HEAD)"
-          # Highest non-prerelease tag, or empty on first-ever release.
-          highest="$(git tag --list 'v*' --sort=-v:refname | grep -vE '\-' | head -n1 || true)"
-          tags=()
-
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            ver="${GITHUB_REF_NAME#v}"
-            # Fail fast on off-convention tags so we never publish mislabelled
-            # images (e.g. `v2.3` -> bogus `:2.3 :2 :2`).
-            if ! printf '%s' "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-              echo "::error::Release tag '${GITHUB_REF_NAME}' must be vX.Y.Z or vX.Y.Z-prerelease"
-              exit 1
-            fi
-            if printf '%s' "$ver" | grep -q '-'; then
-              channel="prerelease"; prerelease=true; latest=false
-              tags+=("${image}:${ver}")
-            else
-              channel="stable"; prerelease=false
-              mi="${ver%.*}"; ma="${mi%.*}"
-              tags+=("${image}:${ver}" "${image}:${mi}" "${image}:${ma}")
-              # :latest only when this tag is the highest non-prerelease version.
-              if [ "v${ver}" = "${highest}" ]; then
-                latest=true; tags+=("${image}:latest")
-              else
-                latest=false
-              fi
-            fi
-            relversion="${ver}"
-          else
-            # main → next-patch pre-release of the next version (design D2).
-            base="${highest:-v0.0.0}"; base="${base#v}"
-            ma="${base%%.*}"; rest="${base#*.}"; mi="${rest%%.*}"; pa="${rest#*.}"
-            if [ -n "${highest}" ]; then
-              n="$(git rev-list "${highest}..HEAD" --count)"
-            else
-              n="$(git rev-list HEAD --count)"
-            fi
-            imgver="${ma}.${mi}.$((pa + 1))-dev.${n}"        # docker-tag safe
-            relversion="${imgver}+${short}"                   # full semver (build meta)
-            channel="edge"; prerelease=true; latest=false
-            tags+=("${image}:main" "${image}:sha-${short}" "${image}:${imgver}")
-          fi
-
-          {
-            echo "image=${image}"
-            echo "channel=${channel}"
-            echo "prerelease=${prerelease}"
-            echo "latest=${latest}"
-            echo "relversion=${relversion}"
-            echo "short=${short}"
-            echo "tags<<__EOF__"
-            printf '%s\n' "${tags[@]}"
-            echo "__EOF__"
-          } >> "$GITHUB_OUTPUT"
-          echo "Resolved channel=${channel} version=${relversion} latest=${latest}"
-          printf 'tags:\n%s\n' "${tags[@]}"
+        run: make release-plan
 
       # ---- Build the npm tarball (includes dist/ via package "files") ----
-      - run: npm ci
       - id: pack
         name: Build and pack tarball
         run: |
