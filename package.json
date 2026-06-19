@@ -4,7 +4,7 @@
   "description": "Autonomous Dependabot/Security PR manager: merges green PRs within policy, batch-cuts patch releases, reports to chat. Safe by construction.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "bin": {
     "twiki": "dist/index.js"
@@ -34,7 +34,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
-    "@types/node": "^25.9.1",
+    "@types/node": "^24.13.2",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
