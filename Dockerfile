@@ -7,7 +7,7 @@
 # QEMU-emulated build. Only the distroless runtime base differs per TARGETARCH.
 
 # --- build: install deps, compile TypeScript, prune to prod (pure JS) -------
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS build
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -21,10 +21,11 @@ RUN npm run build && npm prune --omit=dev
 # --- runtime: distroless, non-root, no shell/package manager ----------------
 # Pinned by digest (the manifest-list digest, so multi-arch still resolves) for
 # a reproducible, reviewable supply chain; Dependabot (docker, daily) bumps it.
-# NOTE: distroless has no package manager, so base OS CVEs (currently fixable
-# openssl/libssl3 advisories) are only resolved by an upstream rebuild — the
-# Dependabot digest bump is how we pick that up; the CI Trivy scan surfaces it.
-FROM gcr.io/distroless/nodejs20-debian12:nonroot@sha256:2cd820156cf039c8b54ae2d2a97e424b6729070714de8707a6b79f20d56f6a9a AS runtime
+# NOTE: distroless has no package manager, so base OS CVEs (e.g. openssl) are
+# only resolved by an upstream rebuild — the Dependabot digest bump is how we
+# pick that up; the CI Trivy scan surfaces it. nodejs24 is the newest distroless
+# Node line, so the build base and @types/node are aligned to Node 24.
+FROM gcr.io/distroless/nodejs24-debian12:nonroot@sha256:14d42e2511532589a7c7e01a753667a74fcc96266e137e8125006b87b0c32d0a AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules

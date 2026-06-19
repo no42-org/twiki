@@ -17,6 +17,10 @@ updates:
       production-minor-patch:
         dependency-type: production
         update-types: ["minor", "patch"]
+    ignore:
+      # @types/node tracks the Node 24 runtime; a major is a deliberate upgrade.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -32,3 +36,8 @@ updates:
     directory: "/"
     schedule:
       interval: daily
+    ignore:
+      # The runtime is distroless nodejs24 (its newest Node line), so keep the
+      # build base on Node 24 too. A major is a deliberate upgrade, not automatic.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
