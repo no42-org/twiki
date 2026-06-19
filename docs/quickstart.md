@@ -44,7 +44,10 @@ TWIKI_GITHUB_APP_PRIVATE_KEY_PATH=/secrets/twiki.pem
 ANTHROPIC_API_KEY=sk-ant-...
 TWIKI_CONFIG=/config/repos.yaml
 TWIKI_MODE=shadow
-TWIKI_AUDIT_PATH=/tmp/twiki-audit.jsonl   # writable by the non-root container user
+# Audit log path — must be writable by the non-root container user (uid 65532).
+# Keep this comment on its own line: `docker --env-file` does NOT strip inline
+# comments, so `VAR=value  # note` would make the note part of the value.
+TWIKI_AUDIT_PATH=/tmp/twiki-audit.jsonl
 ```
 
 We run the published image **`ghcr.io/no42-org/twiki:latest`**, mounting the
@@ -105,6 +108,7 @@ twiki posts via the Client-Server API, so it needs a homeserver URL, an
 
    ```sh
    curl -XPOST 'https://matrix.example.org/_matrix/client/v3/login' \
+     -H 'Content-Type: application/json' \
      -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"twiki"},"password":"••••"}'
    # -> { "access_token": "syt_...", ... }
    ```
@@ -133,8 +137,10 @@ docker run --rm \
 - The single-tick run above should **post a digest** to your channel and exit.
 - It's **shadow mode**, so nothing was merged or released — the digest is
   labelled as what twiki *would* do.
-- Re-running immediately may post nothing: identical digests are de-duplicated
-  run-over-run.
+- Re-running this `docker run --rm` example posts again each time — the
+  identical-digest de-dup is kept in a file inside the container, so it only
+  persists within the long-running poller (section 5), not across throwaway
+  `--rm` ticks.
 
 ## 5. Go live
 
@@ -143,7 +149,9 @@ docker run --rm \
 2. Flip to enforcing — either `mode: enforce` in `repos.yaml` or
    `TWIKI_MODE=enforce`. Rollback is instant: switch back to `shadow`.
 3. Deploy as a long-running poller (drop `TWIKI_ONCE`; it polls hourly, tune
-   with `TWIKI_POLL_MINUTES`). Example `compose.yml` for the Slack target:
+   with `TWIKI_POLL_MINUTES`). Add your chosen chat-target variable (e.g.
+   `TWIKI_SLACK_WEBHOOK_URL=...`) to `.env` so `env_file` passes it to the
+   container, then:
 
    ```yaml
    # compose.yml
@@ -151,10 +159,9 @@ docker run --rm \
      twiki:
        image: ghcr.io/no42-org/twiki:latest
        restart: unless-stopped
-       env_file: .env
+       env_file: .env # includes the chat-target webhook/token from step 3a/b/c
        environment:
-         TWIKI_MODE: enforce
-         TWIKI_SLACK_WEBHOOK_URL: ${TWIKI_SLACK_WEBHOOK_URL}
+         TWIKI_MODE: enforce # override the shadow default for the live deploy
        volumes:
          - ./repos.yaml:/config/repos.yaml:ro
          - ./twiki.pem:/secrets/twiki.pem:ro
