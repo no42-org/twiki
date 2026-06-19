@@ -114,6 +114,19 @@ jobs:
 
       # ---- Build & push the multi-arch image (design D4: no QEMU compile) ----
       - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      # Scan the image content before publishing (report-only, same rationale as
+      # CI: distroless base CVEs aren't patchable here — see ci.yml). This makes
+      # the release self-contained rather than relying on a prior CI run.
+      - run: make image
+      - name: Trivy scan published image content (report-only)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: twiki:dev
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
       - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           registry: ${{ env.REGISTRY }}
