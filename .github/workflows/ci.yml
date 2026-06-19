@@ -50,9 +50,15 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
-          exit-code: "0" # report, don't block on unfixable base-image CVEs
+          # Report-only by design: the runtime is distroless (no package
+          # manager), so base-image OS CVEs (e.g. openssl) can't be patched
+          # here — only by a newer upstream base. Findings surface in the
+          # Security tab via the SARIF upload below; blocking would leave CI
+          # red on upstream issues we cannot fix on demand.
+          exit-code: "0"
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        if: always() # upload even if a future scan is made blocking
+        uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         with:
           sarif_file: trivy-results.sarif
 
