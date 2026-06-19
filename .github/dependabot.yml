@@ -26,7 +26,9 @@ updates:
       github-actions:
         patterns: ["*"]
 
+  # Daily so a patched distroless base digest is proposed promptly (base OS
+  # CVEs can only be fixed by an upstream rebuild we pull in via the digest).
   - package-ecosystem: docker
     directory: "/"
     schedule:
-      interval: weekly
+      interval: daily

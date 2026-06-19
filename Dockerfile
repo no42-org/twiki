@@ -19,7 +19,12 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 # --- runtime: distroless, non-root, no shell/package manager ----------------
-FROM gcr.io/distroless/nodejs20-debian12:nonroot AS runtime
+# Pinned by digest (the manifest-list digest, so multi-arch still resolves) for
+# a reproducible, reviewable supply chain; Dependabot (docker, daily) bumps it.
+# NOTE: distroless has no package manager, so base OS CVEs (currently fixable
+# openssl/libssl3 advisories) are only resolved by an upstream rebuild — the
+# Dependabot digest bump is how we pick that up; the CI Trivy scan surfaces it.
+FROM gcr.io/distroless/nodejs20-debian12:nonroot@sha256:2cd820156cf039c8b54ae2d2a97e424b6729070714de8707a6b79f20d56f6a9a AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
