@@ -54,7 +54,7 @@
 
 ## 9. Verification
 
-- [ ] 9.1 Open a test PR — confirm lint/verify/CodeQL/scan run and block on failure, and no image is pushed
+- [x] 9.1 Open a test PR — confirm lint/verify/CodeQL/scan run and block on failure, and no image is pushed (PR #1, all checks green)
 - [ ] 9.2 Push to a fork/test `main` — confirm `:main`, `:sha-…`, `:X.Y.Z-dev.n` images, signature, SBOM, and the rolling `edge` pre-release
 - [ ] 9.3 Push a `v*` tag — confirm `:X.Y.Z :X.Y :X (+:latest)` images and a stable Release with changelog + tarball
 - [ ] 9.4 Push a lower backport tag against a higher existing tag — confirm `:latest` does NOT move
