@@ -5,32 +5,62 @@ nothing) and posting its per-run digest to **Slack**, **Discord**, or
 **Matrix** in a few minutes. Once you trust the digests, flip to `enforce`.
 
 > twiki authenticates as a GitHub App and uses an Anthropic model as a
-> *read-only advisor*. See the [README](../README.md) for the safety model and
-> the full GitHub App setup; this guide assumes you have the App created.
+> *read-only advisor*. See the [README](../README.md) for the safety model; this
+> guide walks through obtaining every credential below.
 
 ---
 
 ## 1. Prerequisites
 
-- **A GitHub App** installed on the repos you want managed, with an **App ID**
-  and a **private key** (`*.pem`). See *GitHub App setup* in the README.
-- **An Anthropic API key** (`ANTHROPIC_API_KEY`).
-- **A repo allowlist** — copy the example and edit:
+You need three credentials: a **GitHub App** (App ID + private key), an
+**Anthropic API key**, and **one chat target** (Slack, Discord, or Matrix).
 
-  ```sh
-  cp repos.example.yaml repos.yaml
-  ```
+### 1a. Create the GitHub App and get its App ID + private key
 
-  ```yaml
-  # repos.yaml
-  mode: shadow            # report-only until you trust it
-  repos:
-    - repo: your-org/service-a
-    - repo: your-org/service-b
-      autoMergeMinor: false   # patch only; minor waits for a human
-    - repo: your-org/legacy
-      mergeOnly: true         # never cut releases here
-  ```
+twiki authenticates as a GitHub App so merges/tags show as `twiki[bot]`, tokens
+are short-lived, and the blast radius is scoped per install.
+
+1. Go to **org → Settings → Developer settings → GitHub Apps → New GitHub App**
+   (a personal App under your user settings works too for testing).
+2. Name it (e.g. `twiki`), set any homepage URL, and **uncheck *Active*** under
+   *Webhook* — twiki polls, so no webhook is needed.
+3. Grant these **repository permissions**:
+   - **Contents:** Read & write (push tags, read workflow files, compare commits)
+   - **Pull requests:** Read & write (merge)
+   - **Checks:** Read-only
+   - **Commit statuses:** Read-only
+   - **Metadata:** Read-only (mandatory)
+4. Create the App. On its settings page, note the **App ID** (a number near the
+   top) — this is `TWIKI_GITHUB_APP_ID`.
+5. Scroll to **Private keys → Generate a private key**. A `*.pem` downloads;
+   save it as `twiki.pem`. Its path is `TWIKI_GITHUB_APP_PRIVATE_KEY_PATH`
+   (or paste the PEM inline into `TWIKI_GITHUB_APP_PRIVATE_KEY`).
+6. **Install App** (left sidebar) → install onto exactly the repos in your
+   allowlist below.
+
+### 1b. Get an Anthropic API key
+
+Create a key at <https://console.anthropic.com/> → *API Keys*. This is
+`ANTHROPIC_API_KEY` (read directly by the SDK).
+
+### 1c. Define the repo allowlist
+
+Copy the example and edit:
+
+```sh
+cp repos.example.yaml repos.yaml
+```
+
+```yaml
+# repos.yaml
+mode: shadow            # report-only until you trust it
+repos:
+  - repo: your-org/service-a
+  - repo: your-org/service-b
+    autoMergeMinor: false   # patch only; minor waits for a human
+  - repo: your-org/legacy
+    mergeOnly: true         # never cut releases here
+```
 
 ## 2. Shared setup
 
