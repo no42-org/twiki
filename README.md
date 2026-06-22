@@ -54,6 +54,8 @@ per-repo `autoMergeMinor` / `mergeOnly` overrides).
 | `TWIKI_MODE` | `shadow` or `enforce` (overrides config) | from config |
 | `TWIKI_ONCE` | Run a single tick and exit (for external cron) | unset (polls) |
 | `TWIKI_POLL_MINUTES` | Poll interval when not `ONCE` | `60` |
+| `TWIKI_CI_REMEDIATION` | CI remediation (`on`/`off`); `off` keeps diagnostics, no writes | `on` |
+| `TWIKI_MAX_CI_ATTEMPTS` | Max workflow attempts before twiki stops re-running (1-based; `2` = one re-run) | `2` |
 | `TWIKI_GITHUB_APP_ID` | GitHub App ID | — (required) |
 | `TWIKI_GITHUB_APP_PRIVATE_KEY` | App private key (PEM, inline) | — |
 | `TWIKI_GITHUB_APP_PRIVATE_KEY_PATH` | App private key file path | — |
@@ -78,7 +80,8 @@ tokens are short-lived, and the blast radius is scoped per install.
 1. Create a GitHub App (org → Settings → Developer settings → GitHub Apps).
 2. Grant these **repository permissions**:
    - **Contents:** Read & write (push tags, read workflow files, compare commits)
-   - **Pull requests:** Read & write (merge)
+   - **Pull requests:** Read & write (merge, post `@dependabot rebase`)
+   - **Actions:** Read & write (re-run failed CI jobs — CI remediation)
    - **Checks:** Read-only
    - **Commit statuses:** Read-only
    - **Metadata:** Read-only

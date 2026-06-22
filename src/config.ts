@@ -31,21 +31,44 @@ const ConfigSchema = z.strictObject({
 
 export type RawConfig = z.infer<typeof ConfigSchema>;
 
+/** CI-remediation settings (sourced from env, not the repos.yaml file). */
+export interface RemediationConfig {
+  /** Whether re-run / rebase writes are performed (diagnostics run regardless). */
+  enabled: boolean;
+  /** Attempt ceiling for re-runs; compared against GitHub's 1-based run_attempt. */
+  maxAttempts: number;
+}
+
+export const DEFAULT_REMEDIATION: RemediationConfig = {
+  enabled: true,
+  maxAttempts: 2,
+};
+
 export interface Config {
   mode: Mode;
   /** Allowlist of repos, in declaration order. */
   repos: RepoRef[];
   /** Resolved per-repo policy, keyed by "owner/name". */
   policies: Map<string, RepoPolicy>;
+  /** CI-remediation settings. */
+  remediation: RemediationConfig;
 }
 
-export function loadConfig(path: string, modeOverride?: Mode): Config {
+export function loadConfig(
+  path: string,
+  modeOverride?: Mode,
+  remediation?: RemediationConfig,
+): Config {
   const raw = readFileSync(path, "utf8");
   const parsed = ConfigSchema.parse(parseYaml(raw));
-  return buildConfig(parsed, modeOverride);
+  return buildConfig(parsed, modeOverride, remediation);
 }
 
-export function buildConfig(raw: RawConfig, modeOverride?: Mode): Config {
+export function buildConfig(
+  raw: RawConfig,
+  modeOverride?: Mode,
+  remediation: RemediationConfig = DEFAULT_REMEDIATION,
+): Config {
   const repos: RepoRef[] = [];
   const policies = new Map<string, RepoPolicy>();
   for (const entry of raw.repos) {
@@ -60,7 +83,20 @@ export function buildConfig(raw: RawConfig, modeOverride?: Mode): Config {
       mergeOnly: entry.mergeOnly ?? DEFAULT_POLICY.mergeOnly,
     });
   }
-  return { mode: modeOverride ?? raw.mode, repos, policies };
+  return { mode: modeOverride ?? raw.mode, repos, policies, remediation };
+}
+
+/** Parse the remediation settings from environment variables. */
+export function remediationFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): RemediationConfig {
+  const parsed = Number(env.TWIKI_MAX_CI_ATTEMPTS ?? "");
+  const maxAttempts =
+    Number.isInteger(parsed) && parsed > 0
+      ? parsed
+      : DEFAULT_REMEDIATION.maxAttempts;
+  const enabled = (env.TWIKI_CI_REMEDIATION ?? "on").toLowerCase() !== "off";
+  return { enabled, maxAttempts };
 }
 
 export function resolvePolicy(config: Config, repo: RepoRef): RepoPolicy {

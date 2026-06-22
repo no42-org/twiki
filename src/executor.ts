@@ -5,12 +5,13 @@
 
 import type { Config } from "./config.js";
 import { resolvePolicy } from "./config.js";
-import { isSettled, mergeBlock } from "./gates.js";
+import { canRebase, canRerunCi, isSettled, mergeBlock } from "./gates.js";
 import type { GitHubPort } from "./github/port.js";
 import type { Plan, RepoPlan } from "./plan.js";
 import type {
   PrOutcome,
   ReleaseOutcome,
+  RemediationOutcome,
   RepoResult,
   RunResult,
 } from "./result.js";
@@ -20,6 +21,7 @@ import {
   type RepoFacts,
   type RepoPolicy,
   repoSlug,
+  type WorkflowRunRef,
 } from "./types.js";
 
 // The executor: the ONLY component that mutates GitHub. It re-validates every
@@ -54,11 +56,20 @@ async function applyRepo(
   try {
     const prs = await evaluatePrs(facts, policy, repoPlan, github, enforce);
     const release = await evaluateRelease(facts, policy, github, enforce);
+    const remediations = await remediate(
+      facts,
+      policy,
+      config,
+      github,
+      enforce,
+    );
     return {
       repo: slug,
       mainRed: facts.mainChecks === "red",
       prs,
       release,
+      mainFailingChecks: facts.mainFailingChecks,
+      remediations,
     };
   } catch (err) {
     return {
@@ -68,6 +79,84 @@ async function applyRepo(
       release: { status: "waiting", detail: "repo errored" },
       error: err instanceof Error ? err.message : String(err),
     };
+  }
+}
+
+/**
+ * CI remediation (spec: ci-remediation). Re-validates the pure eligibility
+ * predicates against fresh facts, then — in enforce mode only — re-runs failed
+ * jobs and requests Dependabot rebases. Disabled entirely when
+ * `config.remediation.enabled` is false (diagnostics are still gathered/reported).
+ * The advisor is never consulted here.
+ */
+async function remediate(
+  facts: RepoFacts,
+  policy: RepoPolicy,
+  config: Config,
+  github: GitHubPort,
+  enforce: boolean,
+): Promise<RemediationOutcome[]> {
+  if (!config.remediation.enabled) return [];
+  const { maxAttempts } = config.remediation;
+  const out: RemediationOutcome[] = [];
+
+  // Re-run: gather eligible runs from PR heads and main, deduped by run id.
+  const eligibleRuns = new Map<number, WorkflowRunRef>();
+  const allRuns: WorkflowRunRef[] = [
+    ...facts.prs.flatMap((pr) => pr.workflowRuns ?? []),
+    ...(facts.mainWorkflowRuns ?? []),
+  ];
+  for (const run of allRuns) {
+    if (canRerunCi(run, maxAttempts)) eligibleRuns.set(run.runId, run);
+  }
+  // Each write is best-effort: a remediation failure (e.g. a 403 before the
+  // Actions:write grant is approved, or a transient API error) must NOT discard
+  // the merge/release outcomes already computed for this repo, nor abort the
+  // remaining remediations. The action is simply retried on the next tick.
+  for (const run of eligibleRuns.values()) {
+    if (
+      enforce &&
+      !(await tryWrite(() => github.rerunFailedJobs(facts.repo, run.runId)))
+    ) {
+      continue;
+    }
+    out.push({
+      kind: "rerun",
+      status: enforce ? "reran" : "would-rerun",
+      ref: `run ${run.runId}`,
+      detail: `attempt ${run.runAttempt}/${maxAttempts}`,
+    });
+  }
+
+  // Rebase: per eligible Dependabot PR.
+  for (const pr of facts.prs) {
+    if (!canRebase(pr, policy)) continue;
+    if (
+      enforce &&
+      !(await tryWrite(() =>
+        github.requestDependabotRebase(facts.repo, pr.number),
+      ))
+    ) {
+      continue;
+    }
+    out.push({
+      kind: "rebase",
+      status: enforce ? "rebased" : "would-rebase",
+      ref: `#${pr.number}`,
+      detail: `behind by ${pr.behindBy}`,
+    });
+  }
+
+  return out;
+}
+
+/** Run a remediation write; return false (and swallow) if it fails. */
+async function tryWrite(fn: () => Promise<void>): Promise<boolean> {
+  try {
+    await fn();
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -118,7 +207,14 @@ async function evaluatePr(
   // Advisor said merge — re-validate the gate independently before acting.
   const block = mergeBlock(pr, policy);
   if (block !== null) {
-    return { ...base, status: "blocked", detail: `gate: ${block}` };
+    return {
+      ...base,
+      status: "blocked",
+      detail: `gate: ${block}`,
+      ...(block === "ci-not-green" && pr.failingChecks?.length
+        ? { failingChecks: pr.failingChecks }
+        : {}),
+    };
   }
 
   if (enforce) {

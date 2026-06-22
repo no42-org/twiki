@@ -4,6 +4,21 @@
  */
 
 import type { PrOutcome, RepoResult, RunResult } from "./result.js";
+import type { FailingCheck } from "./types.js";
+
+const REMEDIATION_VERB = {
+  reran: "re-ran CI",
+  "would-rerun": "would re-run CI",
+  rebased: "rebased",
+  "would-rebase": "would rebase",
+} as const;
+
+/** Failing check names plus a link to the first one with a URL. */
+function summarizeFailing(checks: FailingCheck[]): string {
+  const names = checks.map((c) => c.name).join(", ");
+  const url = checks.find((c) => c.detailsUrl)?.detailsUrl;
+  return url ? `${names} — ${url}` : names;
+}
 
 // Builds the per-run chat digest. Shadow-mode actions are clearly marked as
 // would-do; broken main and flagged majors are surfaced as distinct, prominent
@@ -41,6 +56,9 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
   }
   if (repo.mainRed) {
     lines.push("  🔴 *main is RED* — releases blocked until fixed");
+    for (const c of repo.mainFailingChecks ?? []) {
+      lines.push(`     ↳ ${c.name}${c.detailsUrl ? ` (${c.detailsUrl})` : ""}`);
+    }
   }
 
   const by = (s: PrOutcome["status"]) => repo.prs.filter((p) => p.status === s);
@@ -58,10 +76,22 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
     lines.push(`  ${mark} flagged #${pr.number} — ${pr.title} (${pr.detail})`);
   }
   for (const pr of by("blocked")) {
-    lines.push(`  ⛔ blocked #${pr.number} — ${pr.title} (${pr.detail})`);
+    const extra = pr.failingChecks?.length
+      ? ` — failing: ${summarizeFailing(pr.failingChecks)}`
+      : "";
+    lines.push(
+      `  ⛔ blocked #${pr.number} — ${pr.title} (${pr.detail})${extra}`,
+    );
   }
   for (const pr of by("held")) {
     lines.push(`  ✋ held #${pr.number} — ${pr.title} (${pr.detail})`);
+  }
+
+  for (const rem of repo.remediations ?? []) {
+    const icon = rem.kind === "rerun" ? "🔁" : "🔄";
+    lines.push(
+      `  ${icon} ${REMEDIATION_VERB[rem.status]} ${rem.ref} — ${rem.detail}`,
+    );
   }
 
   const rel = repo.release;

@@ -3,7 +3,11 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { Advisor, AdvisorRepoInput } from "./advisor.js";
+import {
+  type Advisor,
+  type AdvisorRepoInput,
+  toAdvisorFacts,
+} from "./advisor.js";
 import type { AuditSink } from "./audit.js";
 import { type Config, resolvePolicy } from "./config.js";
 import { applyPlan } from "./executor.js";
@@ -78,7 +82,7 @@ async function safePlan(
 ): Promise<Plan> {
   if (good.length === 0) return { repos: [] };
   const input: AdvisorRepoInput[] = good.map((facts) => ({
-    facts,
+    facts: toAdvisorFacts(facts),
     policy: resolvePolicy(config, facts.repo),
   }));
   try {

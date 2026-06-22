@@ -26,10 +26,16 @@ are short-lived, and the blast radius is scoped per install.
    *Webhook* — twiki polls, so no webhook is needed.
 3. Grant these **repository permissions**:
    - **Contents:** Read & write (push tags, read workflow files, compare commits)
-   - **Pull requests:** Read & write (merge)
+   - **Pull requests:** Read & write (merge, post `@dependabot rebase`)
+   - **Actions:** Read & write (re-run failed CI jobs — CI remediation)
    - **Checks:** Read-only
    - **Commit statuses:** Read-only
    - **Metadata:** Read-only (mandatory)
+
+   > Adding **Actions** to an App that is already installed requires you to
+   > **review and approve** the new permission on each installation before it
+   > takes effect. twiki runs fine without it — set `TWIKI_CI_REMEDIATION=off`
+   > to keep diagnostics only and skip the re-run writes.
 4. Create the App. On its settings page, note the **App ID** (a number near the
    top) — this is `TWIKI_GITHUB_APP_ID`.
 5. Scroll to **Private keys → Generate a private key**. A `*.pem` downloads;
