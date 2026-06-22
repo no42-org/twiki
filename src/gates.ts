@@ -3,7 +3,12 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { PullRequest, RepoFacts, RepoPolicy } from "./types.js";
+import type {
+  PullRequest,
+  RepoFacts,
+  RepoPolicy,
+  WorkflowRunRef,
+} from "./types.js";
 
 // The deterministic safety gates. These are pure functions with no I/O and no
 // dependency on the LLM. The executor re-validates them immediately before any
@@ -53,4 +58,48 @@ export function isSettled(facts: RepoFacts, policy: RepoPolicy): boolean {
   const mainGreen = facts.mainChecks === "green";
   const hasUnreleased = facts.unreleasedDependencyCommits > 0;
   return noMergeablePrOpen && mainGreen && hasUnreleased;
+}
+
+// --- CI remediation gates (spec: ci-remediation). Pure, no I/O. The advisor is
+// never consulted; the executor evaluates these against fresh per-tick facts,
+// which IS the at-execution re-validation. ---
+
+/** Conclusions that mean a run finished red and is worth re-running. */
+export function isFailing(conclusion: string | null): boolean {
+  return (
+    conclusion === "failure" ||
+    conclusion === "timed_out" ||
+    conclusion === "cancelled"
+  );
+}
+
+/**
+ * A failed workflow run may be re-run only while it is completed-failing and
+ * below the attempt ceiling. `runAttempt` is GitHub's 1-based counter, so the
+ * bound is stateless: re-runs cannot accumulate past `maxAttempts` across ticks,
+ * and an in-progress run (status !== "completed") is never re-triggered.
+ */
+export function canRerunCi(run: WorkflowRunRef, maxAttempts: number): boolean {
+  return (
+    run.status === "completed" &&
+    isFailing(run.conclusion) &&
+    run.runAttempt < maxAttempts
+  );
+}
+
+/**
+ * A Dependabot PR is rebase-eligible only when it is within merge policy, known
+ * to be behind base (`behindBy > 0`), and NOT red on its own merits. The not-red
+ * + within-policy guard makes the action self-terminating (a refreshed PR merges
+ * out; a red-on-its-merits PR is never looped), and an unknown `behindBy`
+ * (null/undefined) is fail-closed.
+ */
+export function canRebase(pr: PullRequest, policy: RepoPolicy): boolean {
+  return (
+    pr.isDependabot &&
+    withinMergePolicy(pr, policy) &&
+    pr.behindBy != null &&
+    pr.behindBy > 0 &&
+    pr.checks !== "red"
+  );
 }

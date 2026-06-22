@@ -5,15 +5,58 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { type Plan, PlanSchema, planJsonSchema } from "./plan.js";
-import { type RepoFacts, type RepoPolicy, repoSlug } from "./types.js";
+import {
+  type PullRequest,
+  type RepoFacts,
+  type RepoPolicy,
+  repoSlug,
+} from "./types.js";
 
 // The advisor is the judgment layer. It is given NO write tools — only a single
 // output tool that returns the typed plan. Its plan is advisory; the executor
 // re-validates every gate. A hijacked advisor can therefore only be MORE
 // conservative (hold a good PR), never more permissive.
 
+// The advisor sees a *projection* of the facts, not the full RepoFacts. The
+// remediation fields (failing-check text, workflow-run/attempt data, behindBy)
+// are deliberately excluded: these are allowlist types, so renderFacts cannot
+// even reference a remediation field — adding one to the prompt would be a
+// compile error, not a silent leak of untrusted CI text into the LLM context.
+export type AdvisorPullRequest = Pick<
+  PullRequest,
+  "number" | "title" | "isSecurity" | "bump" | "checks" | "body"
+>;
+
+export type AdvisorFacts = Pick<
+  RepoFacts,
+  | "repo"
+  | "mainChecks"
+  | "latestTag"
+  | "unreleasedDependencyCommits"
+  | "hasTagReleaseWorkflow"
+> & { prs: AdvisorPullRequest[] };
+
+/** Strip the remediation fields, leaving only what the advisor is allowed to see. */
+export function toAdvisorFacts(facts: RepoFacts): AdvisorFacts {
+  return {
+    repo: facts.repo,
+    mainChecks: facts.mainChecks,
+    latestTag: facts.latestTag,
+    unreleasedDependencyCommits: facts.unreleasedDependencyCommits,
+    hasTagReleaseWorkflow: facts.hasTagReleaseWorkflow,
+    prs: facts.prs.map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      isSecurity: pr.isSecurity,
+      bump: pr.bump,
+      checks: pr.checks,
+      body: pr.body,
+    })),
+  };
+}
+
 export interface AdvisorRepoInput {
-  facts: RepoFacts;
+  facts: AdvisorFacts;
   policy: RepoPolicy;
 }
 

@@ -5,7 +5,12 @@
 
 import { ClaudeAdvisor } from "./advisor.js";
 import { JsonlAudit } from "./audit.js";
-import { type Config, isAllowlisted, loadConfig } from "./config.js";
+import {
+  type Config,
+  isAllowlisted,
+  loadConfig,
+  remediationFromEnv,
+} from "./config.js";
 import { createGitHubFromEnv } from "./github/octokit-adapter.js";
 import {
   ConsoleNotifier,
@@ -55,7 +60,7 @@ async function main(): Promise<void> {
   const env = process.env;
   const configPath = env.TWIKI_CONFIG ?? "repos.yaml";
   const modeOverride = env.TWIKI_MODE as Mode | undefined;
-  const config = loadConfig(configPath, modeOverride);
+  const config = loadConfig(configPath, modeOverride, remediationFromEnv(env));
   const deps = buildDeps(config, env);
 
   console.error(

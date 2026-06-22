@@ -27,6 +27,25 @@ export function parseRepoSlug(slug: string): RepoRef {
 /** Aggregate CI status for a ref or PR. */
 export type CheckStatus = "green" | "red" | "pending";
 
+/** A single failing check run, surfaced for diagnostics (read-only). */
+export interface FailingCheck {
+  name: string;
+  conclusion: string | null;
+  detailsUrl: string;
+}
+
+/**
+ * A workflow run backing a check set, carrying the fields the re-run predicate
+ * needs. `runAttempt` is GitHub's 1-based attempt counter (the bound that keeps
+ * re-runs stateless); a run is only re-runnable once `status === "completed"`.
+ */
+export interface WorkflowRunRef {
+  runId: number;
+  runAttempt: number;
+  status: string;
+  conclusion: string | null;
+}
+
 export type BumpLevel = "patch" | "minor" | "major";
 
 export interface Bump {
@@ -46,10 +65,20 @@ export interface PullRequest {
   headSha: string;
   /** Whether GitHub flagged this as a security update. */
   isSecurity: boolean;
+  /** Whether this PR is authored by Dependabot (rebase only applies to these). */
+  isDependabot: boolean;
   bump: Bump;
   checks: CheckStatus;
   /** Untrusted: contains third-party changelog text. Treated as data only. */
   body: string;
+  // --- Remediation facts (read-only; never feed mergeBlock/isSettled, and are
+  // stripped from the advisor's input by toAdvisorFacts). ---
+  /** Commits the head is behind its base; `null`/absent = unknown (fail-closed). */
+  behindBy?: number | null;
+  /** Failing check runs on the head, gathered only when checks are not green. */
+  failingChecks?: FailingCheck[];
+  /** Workflow runs backing the head's checks (for the re-run predicate). */
+  workflowRuns?: WorkflowRunRef[];
 }
 
 export interface RepoFacts {
@@ -61,6 +90,11 @@ export interface RepoFacts {
   /** Count of Dependabot-attributable commits since the latest tag. */
   unreleasedDependencyCommits: number;
   prs: PullRequest[];
+  // --- Remediation facts for `main` (read-only; advisor never sees these). ---
+  /** Failing check runs on `main`, gathered only when main is not green. */
+  mainFailingChecks?: FailingCheck[];
+  /** Workflow runs backing `main`'s checks (for the re-run predicate). */
+  mainWorkflowRuns?: WorkflowRunRef[];
 }
 
 export interface RepoPolicy {

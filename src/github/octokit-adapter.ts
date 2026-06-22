@@ -5,7 +5,12 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
-import type { CheckStatus, RepoRef } from "../types.js";
+import type {
+  CheckStatus,
+  FailingCheck,
+  RepoRef,
+  WorkflowRunRef,
+} from "../types.js";
 import { repoSlug } from "../types.js";
 import {
   type AppAuthConfig,
@@ -15,6 +20,15 @@ import {
 import type { GitHubPort, RawPullRequest } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
+
+/** Check-run conclusions that count as a red/failing result. */
+const FAILED_CONCLUSIONS = [
+  "failure",
+  "timed_out",
+  "cancelled",
+  "action_required",
+  "stale",
+];
 
 /** Resolves an installation-scoped Octokit for a given repo. */
 export type OctokitResolver = (repo: RepoRef) => Promise<Octokit>;
@@ -100,15 +114,7 @@ export class OctokitGitHub implements GitHubPort {
 
     const runs = checks.data.check_runs;
     const failedRun = runs.some(
-      (r) =>
-        r.conclusion !== null &&
-        [
-          "failure",
-          "timed_out",
-          "cancelled",
-          "action_required",
-          "stale",
-        ].includes(r.conclusion),
+      (r) => r.conclusion !== null && FAILED_CONCLUSIONS.includes(r.conclusion),
     );
     const pendingRun = runs.some((r) => r.status !== "completed");
     const statusState = status.data.state; // success | failure | pending
@@ -199,6 +205,66 @@ export class OctokitGitHub implements GitHubPort {
     return data.commit.sha;
   }
 
+  async failingChecks(repo: RepoRef, ref: string): Promise<FailingCheck[]> {
+    const gh = await this.client(repo);
+    const { data } = await gh.checks.listForRef({
+      owner: repo.owner,
+      repo: repo.name,
+      ref,
+      per_page: 100,
+    });
+    return data.check_runs
+      .filter(
+        (r) =>
+          r.conclusion !== null && FAILED_CONCLUSIONS.includes(r.conclusion),
+      )
+      .map((r) => ({
+        name: r.name,
+        conclusion: r.conclusion,
+        detailsUrl: r.details_url ?? r.html_url ?? "",
+      }));
+  }
+
+  async workflowRunsForSha(
+    repo: RepoRef,
+    sha: string,
+  ): Promise<WorkflowRunRef[]> {
+    const gh = await this.client(repo);
+    const { data } = await gh.actions.listWorkflowRunsForRepo({
+      owner: repo.owner,
+      repo: repo.name,
+      head_sha: sha,
+      per_page: 100,
+    });
+    return data.workflow_runs.map((r) => ({
+      runId: r.id,
+      runAttempt: r.run_attempt ?? 1,
+      status: r.status ?? "completed",
+      conclusion: r.conclusion ?? null,
+    }));
+  }
+
+  async behindBy(repo: RepoRef, headSha: string): Promise<number | null> {
+    const gh = await this.client(repo);
+    try {
+      // Compare against the repo's actual default branch, not a hardcoded
+      // "main" — otherwise repos on master/develop would always compare-404
+      // and silently never rebase.
+      const { data: meta } = await gh.repos.get({
+        owner: repo.owner,
+        repo: repo.name,
+      });
+      const { data } = await gh.repos.compareCommitsWithBasehead({
+        owner: repo.owner,
+        repo: repo.name,
+        basehead: `${meta.default_branch}...${headSha}`,
+      });
+      return data.behind_by;
+    } catch {
+      return null; // fail-closed: never rebase on an undeterminable comparison
+    }
+  }
+
   async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
     const gh = await this.client(repo);
     await gh.pulls.merge({
@@ -216,6 +282,28 @@ export class OctokitGitHub implements GitHubPort {
       repo: repo.name,
       ref: `refs/tags/${tag}`,
       sha,
+    });
+  }
+
+  async rerunFailedJobs(repo: RepoRef, runId: number): Promise<void> {
+    const gh = await this.client(repo);
+    await gh.actions.reRunWorkflowFailedJobs({
+      owner: repo.owner,
+      repo: repo.name,
+      run_id: runId,
+    });
+  }
+
+  async requestDependabotRebase(
+    repo: RepoRef,
+    prNumber: number,
+  ): Promise<void> {
+    const gh = await this.client(repo);
+    await gh.issues.createComment({
+      owner: repo.owner,
+      repo: repo.name,
+      issue_number: prNumber,
+      body: "@dependabot rebase",
     });
   }
 }
