@@ -233,7 +233,7 @@ async function evaluateRelease(
   if (!isSettled(facts, policy)) {
     return {
       status: "waiting",
-      detail: settledBlockers(facts, policy).join("; "),
+      detail: settledBlockers(facts, policy).join(" "),
     };
   }
 
@@ -269,11 +269,17 @@ async function evaluateRelease(
 function settledBlockers(facts: RepoFacts, policy: RepoPolicy): string[] {
   const reasons: string[] = [];
   if (facts.prs.some((pr) => mergeBlock(pr, policy) === null)) {
-    reasons.push("mergeable Dependabot PRs still open");
+    reasons.push("mergeable Dependabot PRs still open.");
   }
-  if (facts.mainChecks !== "green") reasons.push(`main is ${facts.mainChecks}`);
   if (facts.unreleasedDependencyCommits <= 0) {
-    reasons.push("no unreleased dependency changes");
+    reasons.push("🎉 Dependencies up to date.");
   }
-  return reasons.length > 0 ? reasons : ["not settled"];
+  if (facts.mainChecks !== "green") {
+    reasons.push(
+      facts.mainChecks === "pending"
+        ? "⚙️ CI/CD is running."
+        : `main is ${facts.mainChecks}.`,
+    );
+  }
+  return reasons.length > 0 ? reasons : ["not settled."];
 }

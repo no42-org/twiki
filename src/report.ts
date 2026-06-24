@@ -111,7 +111,7 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
     case "waiting":
       // Routine; omit unless nothing else happened for this repo.
       if (lines.length === 0) {
-        lines.push(`  ⏳ waiting to release — ${rel.detail}`);
+        lines.push(`  🌈 Nothing to release. ${rel.detail}`);
       }
       break;
   }
