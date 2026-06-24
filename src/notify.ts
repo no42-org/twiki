@@ -79,11 +79,44 @@ export class WebhookNotifier extends DedupingNotifier {
   }
 }
 
+// Bare http(s) URL, terminating at whitespace, a closing paren, or an HTML
+// entity boundary. By the time this runs every `&` has been escaped to `&amp;`,
+// so query-string separators are matched explicitly (the `&amp;` alternative)
+// to keep them inside the link, while a stray `&` still stops the match. The
+// digest prints details links bare, e.g. `(https://…/runs/123)`, so the
+// trailing `)` must stay outside the link.
+const URL_RE = /https?:\/\/(?:&amp;|[^\s<)&])+/g;
+
 /**
- * Posts a plain-text message to a Matrix room via the Client-Server API:
+ * Converts the digest's Slack-style mrkdwn (`*bold*`, `_italic_`, bare URLs,
+ * line breaks) to the HTML subset Matrix accepts in a `formatted_body`. Source
+ * text is HTML-escaped first so that `<`, `>` and `&` in repo/PR titles survive
+ * literally. Without this the raw `*`/`_` markers and plain URLs show up
+ * verbatim in Matrix clients, since `m.text` carries no formatting.
+ */
+function mrkdwnToHtml(text: string): string {
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  // Emphasis markers must be flanked by whitespace or a string edge (matching
+  // Slack's mrkdwn rules). This keeps `*`/`_` inside a URL — e.g. an `…/_foo_/…`
+  // path, already wrapped in an <a> by the pass above — from being mistaken for
+  // emphasis and having tags injected into the href.
+  return escaped
+    .replace(URL_RE, (url) => `<a href="${url}">${url}</a>`)
+    .replace(/(^|\s)\*([^*\n]+)\*(?=\s|$)/g, "$1<strong>$2</strong>")
+    .replace(/(^|\s)_([^_\n]+)_(?=\s|$)/g, "$1<em>$2</em>")
+    .replace(/\n/g, "<br />\n");
+}
+
+/**
+ * Posts a message to a Matrix room via the Client-Server API:
  * PUT /_matrix/client/v3/rooms/{roomId}/send/m.room.message/{txnId}, authed
- * with a Bearer access token. A fresh transaction ID is used per send;
- * de-duplication of identical digests is the base class's job.
+ * with a Bearer access token. Sends `org.matrix.custom.html` so the digest's
+ * mrkdwn renders as formatting, with the plain text kept in `body` as the
+ * fallback. A fresh transaction ID is used per send; de-duplication of
+ * identical digests is the base class's job.
  */
 export class MatrixNotifier extends DedupingNotifier {
   constructor(
@@ -107,7 +140,12 @@ export class MatrixNotifier extends DedupingNotifier {
         "content-type": "application/json",
         authorization: `Bearer ${this.accessToken}`,
       },
-      body: JSON.stringify({ msgtype: "m.text", body: text }),
+      body: JSON.stringify({
+        msgtype: "m.text",
+        body: text,
+        format: "org.matrix.custom.html",
+        formatted_body: mrkdwnToHtml(text),
+      }),
     });
     if (!res.ok) {
       // The CS API returns a diagnostic {errcode, error} body — surface it so
