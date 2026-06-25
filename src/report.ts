@@ -20,6 +20,26 @@ function summarizeFailing(checks: FailingCheck[]): string {
   return url ? `${names} — ${url}` : names;
 }
 
+// A repo contributes "actionable" news when something happened or needs
+// attention: an error, red main, any PR outcome, a CI-remediation, or an actual
+// release move. The routine `waiting`/`skipped-merge-only` states (nothing to
+// release, deps up to date, CI still running) are not actionable — reporting
+// them every tick just spams the channel.
+function repoHasActivity(repo: RepoResult): boolean {
+  if (repo.error || repo.mainRed) return true;
+  if (repo.prs.length > 0) return true;
+  if ((repo.remediations ?? []).length > 0) return true;
+  const s = repo.release.status;
+  return (
+    s === "released" || s === "would-release" || s === "no-release-workflow"
+  );
+}
+
+/** True when at least one repo has actionable news worth posting this tick. */
+export function hasActionableActivity(result: RunResult): boolean {
+  return result.repos.some(repoHasActivity);
+}
+
 // Builds the per-run chat digest. Shadow-mode actions are clearly marked as
 // would-do; broken main and flagged majors are surfaced as distinct, prominent
 // items rather than buried among routine holds.

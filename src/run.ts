@@ -15,7 +15,7 @@ import { gatherFacts } from "./facts.js";
 import type { GitHubPort } from "./github/port.js";
 import type { Notifier } from "./notify.js";
 import type { Plan } from "./plan.js";
-import { buildDigest } from "./report.js";
+import { buildDigest, hasActionableActivity } from "./report.js";
 import type { RepoResult, RunResult } from "./result.js";
 import { type RepoFacts, repoSlug } from "./types.js";
 
@@ -59,11 +59,17 @@ export async function runOnce(
   const result = await applyPlan(good, plan, config, deps.github);
   result.repos.push(...errored);
 
-  const digest = buildDigest(result);
-  try {
-    await deps.notifier.send(digest);
-  } catch (err) {
-    log(`notify failed: ${err instanceof Error ? err.message : String(err)}`);
+  // Skip purely-routine ticks (nothing to release, deps up to date) so the
+  // channel isn't spammed every poll; the audit log still records every tick.
+  if (hasActionableActivity(result)) {
+    const digest = buildDigest(result);
+    try {
+      await deps.notifier.send(digest);
+    } catch (err) {
+      log(`notify failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else {
+    log("no actionable activity this tick — digest suppressed");
   }
   deps.audit.record(result, deps.now());
   return result;

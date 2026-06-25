@@ -90,3 +90,33 @@ it("shadow run reports would-do actions and writes nothing", async () => {
   expect(digest).toContain("would merge #1");
   expect(digest).toContain("would release v0.4.8");
 });
+
+it("suppresses the digest on a purely routine tick", async () => {
+  // No PRs, green main, nothing unreleased → every repo is in the routine
+  // `waiting` state with no actionable news, so no message should be sent.
+  const quiet: FakeRepoData = {
+    rawPrs: [],
+    prChecks: {},
+    mainChecks: "green",
+    latestTag: "v1.0.0",
+    unreleased: 0,
+    hasWorkflow: true,
+    defaultSha: "quiet-sha",
+  };
+  const github = new FakeGitHub(new Map([[A, quiet]]));
+  const notifier = new CapturingNotifier();
+
+  const res = await runOnce(
+    buildConfig({ mode: "shadow", repos: [{ repo: A }] }),
+    {
+      github,
+      advisor: mergeEverythingAdvisor,
+      notifier,
+      audit: new NullAudit(),
+      now: () => "2026-05-31T00:00:00Z",
+    },
+  );
+
+  expect(res.repos[0]?.release.status).toBe("waiting");
+  expect(notifier.messages).toEqual([]);
+});
