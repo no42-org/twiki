@@ -14,3 +14,10 @@ github-app-private-key*
 _bmad-output/
 _bmad/
 openspec-output/
+
+# Local config (see repos.example.yaml)
+repos.yaml
+
+# IDE
+.idea/
+.vscode/
