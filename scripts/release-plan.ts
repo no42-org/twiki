@@ -5,11 +5,11 @@
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { highestStableTag, planRelease } from "../src/semver.js";
+import { highestStableTag, planRelease } from "../src/core/semver.js";
 
 // CI glue for the release workflow: gather git/env facts, defer the version and
 // tag decisions to the canonical (tested) planRelease(), and emit the result as
-// GitHub Actions step outputs. Keeping the rules in src/semver.ts means the
+// GitHub Actions step outputs. Keeping the rules in src/core/semver.ts means the
 // workflow and the app reason about versions the same way.
 
 function git(args: string[]): string {

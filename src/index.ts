@@ -10,7 +10,7 @@ import {
   isAllowlisted,
   loadConfig,
   remediationFromEnv,
-} from "./config.js";
+} from "./core/config.js";
 import { createGitHubFromEnv } from "./github/octokit-adapter.js";
 import {
   ConsoleNotifier,

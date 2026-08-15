@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { Bump, BumpLevel } from "./types.js";
+import type { Bump, BumpLevel } from "../types.js";
 
 interface Parsed {
   major: number;

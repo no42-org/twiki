@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { classifyBump } from "./core/semver.js";
 import type { GitHubPort } from "./github/port.js";
-import { classifyBump } from "./semver.js";
 import type {
   FailingCheck,
   PullRequest,

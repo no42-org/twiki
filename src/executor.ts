@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { Config } from "./config.js";
-import { resolvePolicy } from "./config.js";
+import type { Config } from "./core/config.js";
+import { resolvePolicy } from "./core/config.js";
+import { nextPatchTag } from "./core/semver.js";
 import { canRebase, canRerunCi, isSettled, mergeBlock } from "./gates.js";
 import type { GitHubPort } from "./github/port.js";
 import type { Plan, RepoPlan } from "./plan.js";
@@ -15,7 +16,6 @@ import type {
   RepoResult,
   RunResult,
 } from "./result.js";
-import { nextPatchTag } from "./semver.js";
 import {
   type PullRequest,
   type RepoFacts,

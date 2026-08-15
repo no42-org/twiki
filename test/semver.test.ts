@@ -10,7 +10,7 @@ import {
   isPrerelease,
   nextPatchTag,
   planRelease,
-} from "../src/semver.js";
+} from "../src/core/semver.js";
 
 describe("classifyBump", () => {
   it("classifies a patch bump", () => {
