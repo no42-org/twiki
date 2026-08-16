@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { Bump, BumpLevel } from "./types.js";
+import type { Bump, BumpLevel } from "../types.js";
 
 interface Parsed {
   major: number;
@@ -164,7 +164,7 @@ export function planRelease(input: {
     };
   }
 
-  // main → next-patch `-dev` prerelease of the next version (design D2).
+  // main → next-patch `-dev` prerelease of the next version (design release-D2, docs/design/ci-release-pipeline.md).
   const highest = highestStableTag(tags);
   const base = stripV(nextPatchTag(highest));
   const imageVersion = `${base}-dev.${commitsSinceHighest}`;

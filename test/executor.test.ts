@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { buildConfig, type Config } from "../src/config.js";
+import { buildConfig, type Config } from "../src/core/config.js";
 import { applyPlan } from "../src/executor.js";
 import type { Plan } from "../src/plan.js";
 import type { Mode } from "../src/types.js";

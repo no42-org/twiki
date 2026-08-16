@@ -9,7 +9,7 @@ import {
   buildConfig,
   type Config,
   type RemediationConfig,
-} from "../src/config.js";
+} from "../src/core/config.js";
 import { applyPlan } from "../src/executor.js";
 import type { Plan } from "../src/plan.js";
 import type { Mode } from "../src/types.js";

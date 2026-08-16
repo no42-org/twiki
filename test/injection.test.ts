@@ -5,7 +5,7 @@
 
 import { expect, it } from "vitest";
 import { NullAudit } from "../src/audit.js";
-import { buildConfig } from "../src/config.js";
+import { buildConfig } from "../src/core/config.js";
 import type { RawPullRequest } from "../src/github/port.js";
 import { runOnce } from "../src/run.js";
 import {
