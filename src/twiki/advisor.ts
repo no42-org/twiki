@@ -9,7 +9,7 @@ import {
   type RepoFacts,
   type RepoPolicy,
   repoSlug,
-} from "./core/types.js";
+} from "../core/types.js";
 import { type Plan, PlanSchema, planJsonSchema } from "./plan.js";
 
 // The advisor is the judgment layer. It is given NO write tools — only a single

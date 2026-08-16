@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY } from "../src/core/types.js";
-import { isSettled } from "../src/gates.js";
+import { isSettled } from "../src/twiki/gates.js";
 import { makeBump, makeFacts, makePr } from "./fakes.js";
 
 describe("isSettled", () => {

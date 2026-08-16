@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { Advisor, AdvisorRepoInput } from "../src/advisor.js";
 import {
   type Bump,
   type CheckStatus,
@@ -15,8 +14,9 @@ import {
   type WorkflowRunRef,
 } from "../src/core/types.js";
 import type { GitHubPort, RawPullRequest } from "../src/github/port.js";
-import type { Notifier } from "../src/notify.js";
-import type { Plan } from "../src/plan.js";
+import type { Advisor, AdvisorRepoInput } from "../src/twiki/advisor.js";
+import type { Notifier } from "../src/twiki/notify.js";
+import type { Plan } from "../src/twiki/plan.js";
 
 const REPO: RepoRef = { owner: "no42-org", name: "demo" };
 

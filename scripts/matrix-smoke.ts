@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { MatrixNotifier } from "../src/notify.js";
+import { MatrixNotifier } from "../src/twiki/notify.js";
 
 // Manual smoke test for the real Matrix delivery path against a live homeserver.
 // Reads credentials from the environment so they never appear on the command

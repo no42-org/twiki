@@ -8,7 +8,7 @@ import type {
   RepoFacts,
   RepoPolicy,
   WorkflowRunRef,
-} from "./core/types.js";
+} from "../core/types.js";
 
 // The deterministic safety gates. These are pure functions with no I/O and no
 // dependency on the LLM. The executor re-validates them immediately before any

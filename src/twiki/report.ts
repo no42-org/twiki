@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { FailingCheck } from "./core/types.js";
+import type { FailingCheck } from "../core/types.js";
 import type { PrOutcome, RepoResult, RunResult } from "./result.js";
 
 const REMEDIATION_VERB = {

@@ -3,8 +3,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { ClaudeAdvisor } from "./advisor.js";
-import { JsonlAudit } from "./audit.js";
 import {
   type Config,
   isAllowlisted,
@@ -13,16 +11,21 @@ import {
 } from "./core/config.js";
 import type { Mode } from "./core/types.js";
 import { createGitHubFromEnv } from "./github/octokit-adapter.js";
+import { ClaudeAdvisor } from "./twiki/advisor.js";
+import { JsonlAudit } from "./twiki/audit.js";
 import {
   ConsoleNotifier,
   MatrixNotifier,
   type Notifier,
   WebhookNotifier,
-} from "./notify.js";
-import { type RunDeps, runOnce } from "./run.js";
+} from "./twiki/notify.js";
+import type { RunDeps } from "./twiki/run.js";
+import { schedule } from "./twiki/scheduler.js";
 
-// Entrypoint and scheduler. By default polls on an interval (~hourly); set
-// TWIKI_ONCE=1 to run a single tick (e.g. driven by an external cron).
+// Entrypoint. Reads the environment, loads config and constructs dependencies,
+// then hands off to the scheduler in src/twiki/. Everything below the handoff
+// is write-side behaviour; everything above it is wiring a second entrypoint
+// could reuse.
 
 function buildNotifier(env = process.env): Notifier {
   if (env.TWIKI_SLACK_WEBHOOK_URL) {
@@ -68,21 +71,11 @@ async function main(): Promise<void> {
       `(${env.TWIKI_ONCE ? "single run" : "polling"})`,
   );
 
-  const tick = async () => {
-    try {
-      await runOnce(config, deps);
-    } catch (err) {
-      console.error(
-        `[twiki] run failed: ${err instanceof Error ? err.stack : err}`,
-      );
-    }
-  };
-
-  await tick();
-  if (env.TWIKI_ONCE) return;
-
-  const minutes = Number(env.TWIKI_POLL_MINUTES ?? "60");
-  setInterval(tick, minutes * 60_000);
+  await schedule(config, deps, {
+    once: Boolean(env.TWIKI_ONCE),
+    pollMinutes: Number(env.TWIKI_POLL_MINUTES ?? "60"),
+    log: (msg) => console.error(`[twiki] ${msg}`),
+  });
 }
 
 main().catch((err) => {

@@ -6,8 +6,8 @@
 import { describe, expect, it } from "vitest";
 import { buildConfig, type Config } from "../src/core/config.js";
 import type { Mode } from "../src/core/types.js";
-import { applyPlan } from "../src/executor.js";
-import type { Plan } from "../src/plan.js";
+import { applyPlan } from "../src/twiki/executor.js";
+import type { Plan } from "../src/twiki/plan.js";
 import {
   FakeGitHub,
   type FakeRepoData,

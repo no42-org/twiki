@@ -12,7 +12,7 @@ import {
   isFailing,
   mergeBlock,
   withinMergePolicy,
-} from "../src/gates.js";
+} from "../src/twiki/gates.js";
 import { makeBump, makePr, makeRun } from "./fakes.js";
 
 const minorOff = { autoMergeMinor: false, mergeOnly: false };
