@@ -16,6 +16,7 @@ import {
 import type {
   GitHubPort,
   GitHubReadPort,
+  OrgAlertPage,
   RawDependabotAlert,
   RawPullRequest,
 } from "../src/github/port.js";
@@ -67,7 +68,7 @@ export function makeFacts(partial: Partial<RepoFacts> = {}): RepoFacts {
   };
 }
 
-/** Advisor stub: returns a fixed plan, or one derived from the input. */
+/** A Dependabot alert fixture with sensible defaults. */
 export function makeAlert(
   partial: Partial<RawDependabotAlert> = {},
 ): RawDependabotAlert {
@@ -90,6 +91,7 @@ export function makeAlert(
   };
 }
 
+/** Advisor stub: returns a fixed plan, or one derived from the input. */
 export class StubAdvisor implements Advisor {
   constructor(
     private readonly impl: Plan | ((i: AdvisorRepoInput[]) => Plan),
@@ -145,11 +147,17 @@ export class FakeGitHubReadPort implements GitHubReadPort {
 
   constructor(protected readonly data: Map<string, FakeRepoData>) {}
 
-  async listOrgDependabotAlerts(org: string): Promise<RawDependabotAlert[]> {
+  /** Payloads the mapper would have dropped, per org. */
+  unreadableByOrg = new Map<string, number>();
+
+  async listOrgDependabotAlerts(org: string): Promise<OrgAlertPage> {
     if (this.failingOrgs.has(org)) {
       throw new Error(`fake: ${org} is unreachable`);
     }
-    return this.orgAlerts.get(org) ?? [];
+    return {
+      alerts: this.orgAlerts.get(org) ?? [],
+      unreadable: this.unreadableByOrg.get(org) ?? 0,
+    };
   }
 
   protected get(repo: RepoRef): FakeRepoData {

@@ -40,9 +40,9 @@ export interface RawDependabotAlert {
   number: number;
   repo: RepoRef;
   state: "open" | "fixed" | "dismissed" | "auto_dismissed";
-  /** GitHub's four-level rating: low, medium, high, critical. */
+  /** low, medium, high or critical; `unknown` when GitHub omitted it. */
   severity: string;
-  ghsaId: string;
+  ghsaId: string | null;
   cveId: string | null;
   packageName: string | null;
   ecosystem: string | null;
@@ -53,8 +53,15 @@ export interface RawDependabotAlert {
   relationship: string | null;
   /** runtime or development, when GitHub reports it. */
   scope: string | null;
-  htmlUrl: string;
-  createdAt: string;
+  htmlUrl: string | null;
+  /** Null when GitHub did not supply one; never an empty string. */
+  createdAt: string | null;
+}
+
+export interface OrgAlertPage {
+  alerts: RawDependabotAlert[];
+  /** Payloads the mapper could not read. Never silently discarded. */
+  unreadable: number;
 }
 
 /**
@@ -84,8 +91,15 @@ export interface GitHubReadPort {
   // cycle while a personal account, having no org-level endpoint, does not
   // collapse at all (AD-15).
 
-  /** Open Dependabot alerts across every repository in the org. */
-  listOrgDependabotAlerts(org: string): Promise<RawDependabotAlert[]>;
+  /**
+   * Open Dependabot alerts across every repository in the org, unfiltered.
+   *
+   * `unreadable` counts payloads that could not be mapped. A caller must not
+   * treat an empty result as authoritative without checking it: silently
+   * dropping every alert and reporting zero is the confident-zero failure this
+   * design exists to avoid.
+   */
+  listOrgDependabotAlerts(org: string): Promise<OrgAlertPage>;
 }
 
 /** Mutating — executor only, enforce mode only. */

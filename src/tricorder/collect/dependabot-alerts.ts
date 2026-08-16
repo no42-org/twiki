@@ -4,15 +4,16 @@
  */
 
 import { alertSubject } from "../../core/subject.js";
+import type { RepoRef } from "../../core/types.js";
 import type { GitHubReadPort, RawDependabotAlert } from "../../github/port.js";
 import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
 
 // The REST org-level lane, for Dependabot alerts.
 //
 // REST rather than GraphQL, because EPSS ships on this payload and GraphQL's
-// vulnerabilityAlerts does not carry it (AD-15). One call per organisation
-// covers every repository in it, which is what makes twelve installations cost
-// about 36 calls a cycle rather than one per repository.
+// vulnerabilityAlerts does not carry it (AD-15). One call covers every
+// repository in the organisation, which is what makes twelve installations
+// cost about 36 calls a cycle rather than one per repository.
 //
 // The pipeline is fetch, normalise, load. Ranking is a later story; this lane
 // captures EPSS at ingest so the ranking has something honest to read (AD-18).
@@ -21,8 +22,14 @@ import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
 export interface AlertObservation {
   number: number;
   repo: string;
+  /**
+   * open, fixed, dismissed or auto_dismissed. Carried through so a reader can
+   * tell a live alert from one that is merely still in the projection: this
+   * lane does not yet reconcile disappearance into tombstones.
+   */
+  state: string;
   severity: string;
-  ghsaId: string;
+  ghsaId: string | null;
   cveId: string | null;
   packageName: string | null;
   ecosystem: string | null;
@@ -31,14 +38,15 @@ export interface AlertObservation {
   epssPercentile: number | null;
   relationship: string | null;
   scope: string | null;
-  htmlUrl: string;
-  createdAt: string;
+  htmlUrl: string | null;
+  createdAt: string | null;
 }
 
 export function normalise(alert: RawDependabotAlert): ObservationInput {
   const payload: AlertObservation = {
     number: alert.number,
     repo: `${alert.repo.owner}/${alert.repo.name}`,
+    state: alert.state,
     severity: alert.severity,
     ghsaId: alert.ghsaId,
     cveId: alert.cveId,
@@ -57,17 +65,31 @@ export function normalise(alert: RawDependabotAlert): ObservationInput {
   };
 }
 
+/** Case-folded slug, matching how subject keys are derived (AD-22). */
+export function watchKey(repo: RepoRef): string {
+  return `${repo.owner}/${repo.name}`.toLowerCase();
+}
+
 export interface LaneDeps {
   github: GitHubReadPort;
   store: StorePort;
+  /**
+   * The watched set, as case-folded `owner/name`. This is AD-10's rule and it
+   * lives here rather than in the adapter: twiki's allowlist guard is
+   * deliberately case-sensitive, and GitHub supplies the casing on this read,
+   * so reusing it would drop alerts and report a confident zero.
+   */
+  isWatched: (repo: RepoRef) => boolean;
   now: () => string;
   log: (msg: string) => void;
 }
 
 export interface LaneResult {
   installation: string;
-  outcome: "ok" | "failed";
+  outcome: "ok" | "partial" | "failed";
   alerts: number;
+  /** Payloads the adapter could not read. Non-zero forces a partial run. */
+  unreadable: number;
 }
 
 export const LANE = "rest-org-dependabot";
@@ -75,38 +97,66 @@ export const LANE = "rest-org-dependabot";
 /**
  * Collect one organisation's open Dependabot alerts.
  *
- * A failure here is recorded and returned, never thrown past this boundary: one
- * unreachable organisation must not abort the cycle for the other twelve
- * (AD-16). The run is opened before the fetch, so a crash mid-flight still
- * leaves a run row that reads `partial` rather than nothing at all.
+ * Nothing throws past this boundary, including a store failure: one
+ * unreachable organisation, or one busy database, must not abort the cycle for
+ * the other twelve (AD-16).
  */
 export async function collectOrgAlerts(
   deps: LaneDeps,
   installation: string,
   scope: RunScope,
 ): Promise<LaneResult> {
-  const startedAt = deps.now();
-  const run = deps.store.beginRun({
-    lane: LANE,
-    installation,
-    scope,
-    startedAt,
-  });
+  let run: ReturnType<StorePort["beginRun"]> | null = null;
 
   try {
-    const alerts = await deps.github.listOrgDependabotAlerts(installation);
-    const observations = alerts.map(normalise);
+    // Inside the try: beginRun touches the database, and a busy store here
+    // would otherwise escape and abort the whole sweep.
+    run = deps.store.beginRun({
+      lane: LANE,
+      installation,
+      scope,
+      startedAt: deps.now(),
+    });
+
+    const page = await deps.github.listOrgDependabotAlerts(installation);
+    const watched = page.alerts.filter((a) => deps.isWatched(a.repo));
+    const observations = watched.map(normalise);
+
     // One transaction: every observation and its projection advance land
     // together, or none do (AD-3).
     deps.store.recordObservations(run, deps.now(), observations);
-    deps.store.finishRun(run, "ok", deps.now());
-    deps.log(`${LANE} ${installation}: ${observations.length} open alerts`);
-    return { installation, outcome: "ok", alerts: observations.length };
+
+    // Unreadable payloads mean the result is incomplete. Finishing `ok` here
+    // would report a confident zero if the endpoint's shape ever shifts.
+    const outcome = page.unreadable > 0 ? "partial" : "ok";
+    const detail =
+      page.unreadable > 0
+        ? `${page.unreadable} alert payloads could not be read`
+        : undefined;
+    deps.store.finishRun(run, outcome, deps.now(), detail);
+
+    deps.log(
+      `${LANE} ${installation}: ${observations.length} watched alerts` +
+        `, ${page.alerts.length - watched.length} outside the allowlist` +
+        (page.unreadable > 0 ? `, ${page.unreadable} unreadable` : ""),
+    );
+    return {
+      installation,
+      outcome,
+      alerts: observations.length,
+      unreadable: page.unreadable,
+    };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    deps.store.finishRun(run, "failed", deps.now(), detail);
+    if (run) {
+      try {
+        deps.store.finishRun(run, "failed", deps.now(), detail);
+      } catch {
+        // The store is the thing that failed. Nothing further to record.
+      }
+    }
     deps.log(`${LANE} ${installation}: failed, ${detail}`);
-    return { installation, outcome: "failed", alerts: 0 };
+    return { installation, outcome: "failed", alerts: 0, unreadable: 0 };
   }
 }
 

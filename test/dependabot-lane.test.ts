@@ -14,6 +14,7 @@ import {
   collectOrgAlerts,
   LANE,
   normalise,
+  watchKey,
 } from "../src/tricorder/collect/dependabot-alerts.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { FakeGitHubReadPort, makeAlert } from "./fakes.js";
@@ -27,9 +28,14 @@ describe("Dependabot alerts lane", () => {
   let logs: string[];
   let clock: number;
 
+  /** Watched set, case-folded, standing in for repos.yaml (AD-10). */
+  let watched: Set<string>;
+
   const deps = () => ({
     github,
     store,
+    isWatched: (repo: { owner: string; name: string }) =>
+      watched.has(watchKey(repo)),
     now: () => new Date(Date.UTC(2026, 7, 16, 10, clock++)).toISOString(),
     log: (m: string) => logs.push(m),
   });
@@ -40,6 +46,7 @@ describe("Dependabot alerts lane", () => {
     github = new FakeGitHubReadPort(new Map());
     logs = [];
     clock = 0;
+    watched = new Set(["no42-org/twiki", "good-org/x", "other-org/x"]);
   });
 
   afterEach(() => {
@@ -87,6 +94,7 @@ describe("Dependabot alerts lane", () => {
         installation: "no42-org",
         outcome: "ok",
         alerts: 2,
+        unreadable: 0,
       });
       expect(store.currentByType("dependabot_alert")).toHaveLength(2);
       expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
@@ -156,7 +164,9 @@ describe("Dependabot alerts lane", () => {
     });
 
     it("one broken organisation does not stop the others", async () => {
-      github.orgAlerts.set("good-org", [makeAlert({ number: 1 })]);
+      github.orgAlerts.set("good-org", [
+        makeAlert({ number: 1, repo: { owner: "good-org", name: "x" } }),
+      ]);
       github.failingOrgs.add("broken-org");
       github.orgAlerts.set("other-org", [
         makeAlert({ number: 2, repo: { owner: "other-org", name: "x" } }),
@@ -184,6 +194,77 @@ describe("Dependabot alerts lane", () => {
       // is what makes it render stale rather than as a confident zero.
       const alerts = store.currentByType("dependabot_alert");
       expect(alerts).toHaveLength(1);
+    });
+  });
+
+  describe("issues found in review", () => {
+    it("matches the watched set case-insensitively", async () => {
+      // repos.yaml said No42-Org; GitHub returns its own canonical casing.
+      watched = new Set(["no42-org/twiki"]);
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1, repo: { owner: "No42-Org", name: "TWiki" } }),
+      ]);
+
+      const result = await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(result.alerts).toBe(1);
+    });
+
+    it("drops alerts outside the watched set without failing", async () => {
+      watched = new Set(["no42-org/twiki"]);
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1 }),
+        makeAlert({ number: 2, repo: { owner: "no42-org", name: "other" } }),
+      ]);
+
+      const result = await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(result.alerts).toBe(1);
+      expect(result.outcome).toBe("ok");
+    });
+
+    it("reports partial when payloads could not be read", async () => {
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.unreadableByOrg.set("no42-org", 3);
+
+      const result = await collectOrgAlerts(deps(), "no42-org", "full");
+
+      // A confident zero is the failure this avoids: if the endpoint's shape
+      // shifts, the run must not read as a clean empty result.
+      expect(result.outcome).toBe("partial");
+      expect(result.unreadable).toBe(3);
+      expect(store.latestRuns(1)[0]?.detail).toMatch(/could not be read/);
+    });
+
+    it("stores the alert state so a live alert is distinguishable", async () => {
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      const [alert] = store.currentByType("dependabot_alert");
+      expect((alert?.payload as AlertObservation | undefined)?.state).toBe(
+        "open",
+      );
+    });
+
+    it("does not abort the sweep when the store itself fails", async () => {
+      github.orgAlerts.set("good-org", [
+        makeAlert({ number: 1, repo: { owner: "good-org", name: "x" } }),
+      ]);
+      const brokenStore = {
+        ...store,
+        beginRun: () => {
+          throw new Error("database is locked");
+        },
+      } as unknown as typeof store;
+
+      const results = await collectAllOrgs(
+        { ...deps(), store: brokenStore },
+        ["good-org", "other-org"],
+        "full",
+      );
+
+      expect(results).toHaveLength(2);
+      expect(results.every((r) => r.outcome === "failed")).toBe(true);
     });
   });
 

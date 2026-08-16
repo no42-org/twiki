@@ -17,7 +17,12 @@ import {
   installationOctokit,
   loadAppAuthFromEnv,
 } from "./auth.js";
-import type { GitHubPort, RawDependabotAlert, RawPullRequest } from "./port.js";
+import type {
+  GitHubPort,
+  OrgAlertPage,
+  RawDependabotAlert,
+  RawPullRequest,
+} from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
 
@@ -272,28 +277,32 @@ export class OctokitGitHub implements GitHubPort {
     }
   }
 
-  async listOrgDependabotAlerts(org: string): Promise<RawDependabotAlert[]> {
+  async listOrgDependabotAlerts(org: string): Promise<OrgAlertPage> {
     if (!this.orgOctokitFor) {
       throw new Error(
         "listOrgDependabotAlerts needs an org resolver; this client was built without one",
       );
     }
     const gh = await this.orgOctokitFor(org);
-    const alerts = await gh.paginate(gh.dependabot.listAlertsForOrg, {
+    const raw = await gh.paginate(gh.dependabot.listAlertsForOrg, {
       org,
       state: "open",
       per_page: 100,
     });
 
-    return (
-      alerts
-        .map((a) => toDependabotAlert(a))
-        .filter((a): a is RawDependabotAlert => a !== null)
-        // The org endpoint returns every repository the installation can see.
-        // repos.yaml is the collector's entire universe (AD-10), so anything
-        // outside the allowlist is dropped here rather than stored and hidden.
-        .filter((a) => this.isAllowed(a.repo))
-    );
+    // Deliberately unfiltered. Which repositories are watched is AD-10's rule
+    // and belongs to the lane. This adapter's allowlist guard exists to stop
+    // twiki ACTING on a repository, and its case-sensitivity is load-bearing
+    // there; applying it to a read whose casing GitHub supplies would silently
+    // drop alerts and report a confident zero.
+    const alerts: RawDependabotAlert[] = [];
+    let unreadable = 0;
+    for (const item of raw) {
+      const alert = toDependabotAlert(item);
+      if (alert === null) unreadable++;
+      else alerts.push(alert);
+    }
+    return { alerts, unreadable };
   }
 
   async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
@@ -373,7 +382,17 @@ export function createGitHubFromEnv(
     return client;
   };
 
-  return new OctokitGitHub(resolver, isAllowed);
+  const orgCache = new Map<string, Octokit>();
+  const orgResolver: OrgOctokitResolver = async (org) => {
+    const cached = orgCache.get(org);
+    if (cached) return cached;
+    const { data } = await appClient.apps.getOrgInstallation({ org });
+    const client = installationOctokit(auth, data.id);
+    orgCache.set(org, client);
+    return client;
+  };
+
+  return new OctokitGitHub(resolver, isAllowed, orgResolver);
 }
 
 /**
@@ -409,7 +428,7 @@ function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
     repo: { owner, name },
     state: (a.state ?? "open") as RawDependabotAlert["state"],
     severity: a.security_advisory?.severity ?? "unknown",
-    ghsaId: a.security_advisory?.ghsa_id ?? "",
+    ghsaId: a.security_advisory?.ghsa_id ?? null,
     cveId: a.security_advisory?.cve_id ?? null,
     packageName: a.dependency?.package?.name ?? null,
     ecosystem: a.dependency?.package?.ecosystem ?? null,
@@ -417,7 +436,9 @@ function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
     epssPercentile: a.security_advisory?.epss?.percentile ?? null,
     relationship: a.dependency?.relationship ?? null,
     scope: a.dependency?.scope ?? null,
-    htmlUrl: a.html_url ?? "",
-    createdAt: a.created_at ?? "",
+    htmlUrl: a.html_url ?? null,
+    // Null, not "": an empty string reaches core/stamp.ts and throws there
+    // instead of being visibly absent here.
+    createdAt: a.created_at ?? null,
   };
 }
