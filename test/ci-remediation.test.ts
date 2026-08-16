@@ -10,9 +10,9 @@ import {
   type Config,
   type RemediationConfig,
 } from "../src/core/config.js";
+import type { Mode } from "../src/core/types.js";
 import { applyPlan } from "../src/executor.js";
 import type { Plan } from "../src/plan.js";
-import type { Mode } from "../src/types.js";
 import {
   FakeGitHub,
   type FakeRepoData,

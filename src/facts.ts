@@ -4,14 +4,14 @@
  */
 
 import { classifyBump } from "./core/semver.js";
-import type { GitHubPort } from "./github/port.js";
 import type {
   FailingCheck,
   PullRequest,
   RepoFacts,
   RepoRef,
   WorkflowRunRef,
-} from "./types.js";
+} from "./core/types.js";
+import type { GitHubPort } from "./github/port.js";
 
 /**
  * Gather all decision-relevant facts for one repo, freshly from GitHub.

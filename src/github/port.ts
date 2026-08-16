@@ -8,7 +8,7 @@ import type {
   FailingCheck,
   RepoRef,
   WorkflowRunRef,
-} from "../types.js";
+} from "../core/types.js";
 
 // The GitHub port: the single seam between decision logic and the GitHub API.
 // Decision logic depends only on this interface, so tests can substitute a

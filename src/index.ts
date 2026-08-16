@@ -11,6 +11,7 @@ import {
   loadConfig,
   remediationFromEnv,
 } from "./core/config.js";
+import type { Mode } from "./core/types.js";
 import { createGitHubFromEnv } from "./github/octokit-adapter.js";
 import {
   ConsoleNotifier,
@@ -19,7 +20,6 @@ import {
   WebhookNotifier,
 } from "./notify.js";
 import { type RunDeps, runOnce } from "./run.js";
-import type { Mode } from "./types.js";
 
 // Entrypoint and scheduler. By default polls on an interval (~hourly); set
 // TWIKI_ONCE=1 to run a single tick (e.g. driven by an external cron).

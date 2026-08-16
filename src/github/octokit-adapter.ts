@@ -10,8 +10,8 @@ import type {
   FailingCheck,
   RepoRef,
   WorkflowRunRef,
-} from "../types.js";
-import { repoSlug } from "../types.js";
+} from "../core/types.js";
+import { repoSlug } from "../core/types.js";
 import {
   type AppAuthConfig,
   installationOctokit,

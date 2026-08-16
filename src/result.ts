@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { FailingCheck, Mode } from "./types.js";
+import type { FailingCheck, Mode } from "./core/types.js";
 
 // The outcome of a single tick: what happened (or would happen, in shadow mode)
 // per repo. Produced by the executor, rendered by the report, persisted by the

@@ -4,9 +4,6 @@
  */
 
 import type { Advisor, AdvisorRepoInput } from "../src/advisor.js";
-import type { GitHubPort, RawPullRequest } from "../src/github/port.js";
-import type { Notifier } from "../src/notify.js";
-import type { Plan } from "../src/plan.js";
 import {
   type Bump,
   type CheckStatus,
@@ -16,7 +13,10 @@ import {
   type RepoRef,
   repoSlug,
   type WorkflowRunRef,
-} from "../src/types.js";
+} from "../src/core/types.js";
+import type { GitHubPort, RawPullRequest } from "../src/github/port.js";
+import type { Notifier } from "../src/notify.js";
+import type { Plan } from "../src/plan.js";
 
 const REPO: RepoRef = { owner: "no42-org", name: "demo" };
 

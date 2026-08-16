@@ -119,7 +119,7 @@ src/
                  outside itself (see "Module boundaries" below)
     config.ts    allowlist + per-repo policy (strict YAML schema)
     semver.ts    bump classification + next-patch tag (pure)
-  types.ts       domain types
+    types.ts     domain types
   gates.ts       deterministic safety gates + "settled" predicate (pure)
   plan.ts        the advisor's typed output contract (zod + JSON schema)
   advisor.ts     LLM advisor — one output tool, no write tools
@@ -138,17 +138,12 @@ scripts/         release-plan (CI release glue), matrix-smoke
 
 ### Module boundaries
 
-`src/core/` holds domain logic that more than one entrypoint may need: pure
-functions and the config schema. Nothing in `src/core/` may import from a
-feature directory. It may import `node:` builtins, third-party packages, other
-files inside `src/core/`, and for now `src/types.ts`.
+`src/core/` holds domain logic that more than one entrypoint may need: domain
+types, pure functions and the config schema. It is a closed leaf: files in
+`src/core/` may import `node:` builtins, third-party packages, and other files
+inside `src/core/`. Nothing else.
 
 The rule exists because a second read-only entrypoint is being added alongside
 the write path. Anything both sides need moves down into `core/`; neither side
 imports the other. If you are unsure where a new module belongs, ask whether
 both entrypoints would need it. If only one would, it does not go in `core/`.
-
-The relocation is not finished. `src/types.ts` is still outside `core/`, which
-is why the rule carries an exception for it, and the write side is still loose
-at `src/` root. Both move in the next change, after which the exception goes
-away and `core/` becomes a closed leaf.

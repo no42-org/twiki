@@ -4,8 +4,8 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { DEFAULT_POLICY } from "../src/core/types.js";
 import { isSettled } from "../src/gates.js";
-import { DEFAULT_POLICY } from "../src/types.js";
 import { makeBump, makeFacts, makePr } from "./fakes.js";
 
 describe("isSettled", () => {

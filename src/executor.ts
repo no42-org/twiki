@@ -6,6 +6,13 @@
 import type { Config } from "./core/config.js";
 import { resolvePolicy } from "./core/config.js";
 import { nextPatchTag } from "./core/semver.js";
+import {
+  type PullRequest,
+  type RepoFacts,
+  type RepoPolicy,
+  repoSlug,
+  type WorkflowRunRef,
+} from "./core/types.js";
 import { canRebase, canRerunCi, isSettled, mergeBlock } from "./gates.js";
 import type { GitHubPort } from "./github/port.js";
 import type { Plan, RepoPlan } from "./plan.js";
@@ -16,13 +23,6 @@ import type {
   RepoResult,
   RunResult,
 } from "./result.js";
-import {
-  type PullRequest,
-  type RepoFacts,
-  type RepoPolicy,
-  repoSlug,
-  type WorkflowRunRef,
-} from "./types.js";
 
 // The executor: the ONLY component that mutates GitHub. It re-validates every
 // gate against current facts before acting, independent of the advisor plan, so
