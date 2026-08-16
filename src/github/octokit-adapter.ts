@@ -17,7 +17,7 @@ import {
   installationOctokit,
   loadAppAuthFromEnv,
 } from "./auth.js";
-import type { GitHubPort, RawPullRequest } from "./port.js";
+import type { GitHubPort, RawDependabotAlert, RawPullRequest } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
 
@@ -32,6 +32,12 @@ const FAILED_CONCLUSIONS = [
 
 /** Resolves an installation-scoped Octokit for a given repo. */
 export type OctokitResolver = (repo: RepoRef) => Promise<Octokit>;
+/**
+ * Resolves the installation client for a whole organisation, for the org-level
+ * reads that collapse N repositories into one call. Optional: twiki never makes
+ * one, so its wiring does not need to supply this.
+ */
+export type OrgOctokitResolver = (org: string) => Promise<Octokit>;
 
 /**
  * GitHubPort backed by Octokit. Scoped to the allowlist: every call asserts the
@@ -42,6 +48,7 @@ export class OctokitGitHub implements GitHubPort {
   constructor(
     private readonly octokitFor: OctokitResolver,
     private readonly isAllowed: (repo: RepoRef) => boolean,
+    private readonly orgOctokitFor?: OrgOctokitResolver,
   ) {}
 
   private async client(repo: RepoRef): Promise<Octokit> {
@@ -265,6 +272,30 @@ export class OctokitGitHub implements GitHubPort {
     }
   }
 
+  async listOrgDependabotAlerts(org: string): Promise<RawDependabotAlert[]> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listOrgDependabotAlerts needs an org resolver; this client was built without one",
+      );
+    }
+    const gh = await this.orgOctokitFor(org);
+    const alerts = await gh.paginate(gh.dependabot.listAlertsForOrg, {
+      org,
+      state: "open",
+      per_page: 100,
+    });
+
+    return (
+      alerts
+        .map((a) => toDependabotAlert(a))
+        .filter((a): a is RawDependabotAlert => a !== null)
+        // The org endpoint returns every repository the installation can see.
+        // repos.yaml is the collector's entire universe (AD-10), so anything
+        // outside the allowlist is dropped here rather than stored and hidden.
+        .filter((a) => this.isAllowed(a.repo))
+    );
+  }
+
   async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
     const gh = await this.client(repo);
     await gh.pulls.merge({
@@ -343,4 +374,50 @@ export function createGitHubFromEnv(
   };
 
   return new OctokitGitHub(resolver, isAllowed);
+}
+
+/**
+ * Maps one org-level alert payload. Defensive by design: the endpoint's shape
+ * has grown over time (EPSS is a recent addition) and a field the installed
+ * Octokit types do not know about would otherwise be dropped silently.
+ */
+function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
+  const a = raw as {
+    number?: number;
+    state?: string;
+    html_url?: string;
+    created_at?: string;
+    repository?: { name?: string; owner?: { login?: string } };
+    dependency?: {
+      package?: { name?: string; ecosystem?: string };
+      relationship?: string;
+      scope?: string;
+    };
+    security_advisory?: {
+      ghsa_id?: string;
+      cve_id?: string | null;
+      severity?: string;
+      epss?: { percentage?: number; percentile?: number } | null;
+    };
+  };
+  const owner = a.repository?.owner?.login;
+  const name = a.repository?.name;
+  if (typeof a.number !== "number" || !owner || !name) return null;
+
+  return {
+    number: a.number,
+    repo: { owner, name },
+    state: (a.state ?? "open") as RawDependabotAlert["state"],
+    severity: a.security_advisory?.severity ?? "unknown",
+    ghsaId: a.security_advisory?.ghsa_id ?? "",
+    cveId: a.security_advisory?.cve_id ?? null,
+    packageName: a.dependency?.package?.name ?? null,
+    ecosystem: a.dependency?.package?.ecosystem ?? null,
+    epssPercentage: a.security_advisory?.epss?.percentage ?? null,
+    epssPercentile: a.security_advisory?.epss?.percentile ?? null,
+    relationship: a.dependency?.relationship ?? null,
+    scope: a.dependency?.scope ?? null,
+    htmlUrl: a.html_url ?? "",
+    createdAt: a.created_at ?? "",
+  };
 }
