@@ -400,6 +400,29 @@ export class SqliteStore implements StorePort {
     }));
   }
 
+  currentByTypeForOwner(type: SubjectType, owner: string): CurrentValue[] {
+    const rows = this.db
+      .prepare(
+        `SELECT subject_key, payload, state, observed_at, verified_at
+         FROM current_state
+         WHERE subject_type = ? AND subject_key LIKE ? ORDER BY subject_key`,
+      )
+      .all(type, `${owner.toLowerCase()}/%`) as {
+      subject_key: string;
+      payload: string;
+      state: SubjectState;
+      observed_at: string;
+      verified_at: string;
+    }[];
+    return rows.map((r) => ({
+      subject: { type, key: r.subject_key },
+      payload: JSON.parse(r.payload),
+      state: r.state,
+      observedAt: r.observed_at,
+      verifiedAt: r.verified_at,
+    }));
+  }
+
   latestRuns(limit: number): RunRecord[] {
     const rows = this.db
       .prepare(

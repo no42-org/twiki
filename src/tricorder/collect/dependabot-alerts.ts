@@ -23,9 +23,9 @@ export interface AlertObservation {
   number: number;
   repo: string;
   /**
-   * open, fixed, dismissed or auto_dismissed. Carried through so a reader can
-   * tell a live alert from one that is merely still in the projection: this
-   * lane does not yet reconcile disappearance into tombstones.
+   * open, fixed, dismissed or auto_dismissed, as GitHub reported it. The
+   * projection's own `state` column carries the tombstone; this is what the
+   * API said, kept so the two can be compared.
    */
   state: string;
   severity: string;
@@ -63,6 +63,13 @@ export function normalise(alert: RawDependabotAlert): ObservationInput {
     subject: alertSubject("dependabot_alert", alert.repo, alert.number),
     payload,
   };
+}
+
+/** The repository a subject key belongs to. Keys are `owner/name#number`. */
+function repoOfKey(key: string): RepoRef {
+  const slug = key.split("#")[0] ?? "";
+  const [owner = "", name = ""] = slug.split("/");
+  return { owner, name };
 }
 
 /** Case-folded slug, matching how subject keys are derived (AD-22). */
@@ -133,6 +140,31 @@ export async function collectOrgAlerts(
       page.unreadable > 0
         ? `${page.unreadable} alert payloads could not be read`
         : undefined;
+    // Reconcile disappearance into explicit tombstones (AD-23), under three
+    // guards, because a wrong tombstone silently wipes real state:
+    //
+    //   scope must be full        a hot run queried a subset, so absence from
+    //                             it means nothing
+    //   outcome must be ok        a partial run had unreadable payloads, so
+    //                             absence might be a mapping failure
+    //   repo must still be watched  a repository dropped from repos.yaml is
+    //                             out of scope, not fixed, and tombstoning it
+    //                             would assert something untrue
+    if (scope === "full" && outcome === "ok") {
+      const seen = new Set(observations.map((o) => o.subject.key));
+      const gone = deps.store
+        .currentByTypeForOwner("dependabot_alert", installation)
+        .filter((c) => c.state === "present")
+        .filter((c) => !seen.has(c.subject.key))
+        .filter((c) => deps.isWatched(repoOfKey(c.subject.key)))
+        .map((c) => c.subject);
+
+      if (gone.length > 0) {
+        deps.store.recordTombstones(run, deps.now(), gone);
+        deps.log(`${LANE} ${installation}: ${gone.length} alerts resolved`);
+      }
+    }
+
     deps.store.finishRun(run, outcome, deps.now(), detail);
 
     deps.log(

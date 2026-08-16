@@ -268,6 +268,97 @@ describe("Dependabot alerts lane", () => {
     });
   });
 
+  describe("reconciliation (AD-23)", () => {
+    const seed = async () => {
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1 }),
+        makeAlert({ number: 2 }),
+      ]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+    };
+
+    it("tombstones an alert that a clean full sweep no longer sees", async () => {
+      await seed();
+      // Alert 2 was fixed: the open-only endpoint stops returning it.
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      const two = store.current(alertSubject("dependabot_alert", REPO, 2));
+      expect(two?.state).toBe("resolved");
+      const one = store.current(alertSubject("dependabot_alert", REPO, 1));
+      expect(one?.state).toBe("present");
+    });
+
+    it("does NOT tombstone on a hot sweep, which queried a subset", async () => {
+      await seed();
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+
+      await collectOrgAlerts(deps(), "no42-org", "hot");
+
+      expect(
+        store.current(alertSubject("dependabot_alert", REPO, 2))?.state,
+      ).toBe("present");
+    });
+
+    it("does NOT tombstone when payloads were unreadable", async () => {
+      await seed();
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.unreadableByOrg.set("no42-org", 1);
+
+      const result = await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(result.outcome).toBe("partial");
+      // Absence might have been a mapping failure, not a fix.
+      expect(
+        store.current(alertSubject("dependabot_alert", REPO, 2))?.state,
+      ).toBe("present");
+    });
+
+    it("does NOT tombstone when the run failed", async () => {
+      await seed();
+      github.failingOrgs.add("no42-org");
+
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(
+        store.current(alertSubject("dependabot_alert", REPO, 2))?.state,
+      ).toBe("present");
+    });
+
+    it("does NOT tombstone a repository dropped from the watch list", async () => {
+      await seed();
+      // The repository leaves repos.yaml. Its alerts vanish from the watched
+      // set, but they are out of scope, not fixed.
+      watched = new Set(["other-org/x"]);
+      github.orgAlerts.set("no42-org", []);
+
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(
+        store.current(alertSubject("dependabot_alert", REPO, 2))?.state,
+      ).toBe("present");
+    });
+
+    it("never reaches into another organisation's subjects", async () => {
+      await seed();
+      const otherRepo = { owner: "other-org", name: "x" };
+      github.orgAlerts.set("other-org", [
+        makeAlert({ number: 9, repo: otherRepo }),
+      ]);
+      await collectOrgAlerts(deps(), "other-org", "full");
+
+      // A clean full sweep of no42-org that sees nothing must not touch
+      // other-org's alert.
+      github.orgAlerts.set("no42-org", []);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(
+        store.current(alertSubject("dependabot_alert", otherRepo, 9))?.state,
+      ).toBe("present");
+    });
+  });
+
   describe("scope (AD-16)", () => {
     it("records the scope it ran at", async () => {
       await collectOrgAlerts(deps(), "no42-org", "hot");
