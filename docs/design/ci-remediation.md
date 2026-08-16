@@ -1,6 +1,6 @@
 ## Context
 
-twiki re-derives all state from GitHub each tick and decides per-PR/per-repo actions through a strict pipeline: facts → LLM advisor (no write tools) → typed plan → deterministic executor that re-validates pure gates and acts only in `enforce` mode. CI status is currently coarse: `branchChecks` and `prChecks` collapse everything to `CheckStatus = "green" | "red" | "pending"` (`src/types.ts`, `src/facts.ts`). The `mergeBlock` gate emits `ci-not-green` whenever `pr.checks !== "green"` (`src/gates.ts`), and the digest prints that string verbatim (`src/report.ts`).
+twiki re-derives all state from GitHub each tick and decides per-PR/per-repo actions through a strict pipeline: facts → LLM advisor (no write tools) → typed plan → deterministic executor that re-validates pure gates and acts only in `enforce` mode. CI status is currently coarse: `branchChecks` and `prChecks` collapse everything to `CheckStatus = "green" | "red" | "pending"` (`src/core/types.ts`, `src/twiki/facts.ts`). The `mergeBlock` gate emits `ci-not-green` whenever `pr.checks !== "green"` (`src/twiki/gates.ts`), and the digest prints that string verbatim (`src/twiki/report.ts`).
 
 This change adds a *deterministic remediation layer* for the recoverable subset of red CI — flaky jobs and stale Dependabot branches — plus the diagnostics needed to make the rest legible. It deliberately stays inside the existing safety envelope: the LLM is not consulted for any of it.
 

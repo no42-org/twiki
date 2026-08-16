@@ -11,9 +11,9 @@ import type {
 } from "../core/types.js";
 
 // The GitHub port: the single seam between decision logic and the GitHub API.
-// Decision logic depends only on this interface, so tests can substitute a
-// fake. The only mutating methods are mergePR and pushTag — and only the
-// executor ever calls them.
+// Decision logic depends only on these interfaces, so tests can substitute a
+// fake. Every mutating method lives on GitHubWritePort, and only the executor
+// ever calls one; a consumer typed to GitHubReadPort has none to call.
 
 export interface RawPullRequest {
   number: number;
