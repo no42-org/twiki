@@ -47,10 +47,11 @@
                     "group": [
                       "**/twiki/**",
                       "**/tricorder/**",
+                      "**/tricorder.ts",
                       "**/github/**",
                       "**/enrich/**"
                     ],
-                    "message": "AD-5: leaf directory. It may import node: builtins, packages and its own files. Move shared code down, never import a feature directory."
+                    "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
                   }
                 ]
               }
@@ -69,8 +70,13 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/twiki/**", "**/tricorder/**"],
-                    "message": "AD-5: leaf directory. It may import node: builtins, packages and its own files. Move shared code down, never import a feature directory."
+                    "group": [
+                      "**/twiki/**",
+                      "**/tricorder/**",
+                      "**/tricorder.ts",
+                      "**/enrich/**"
+                    ],
+                    "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
                   }
                 ]
               }
@@ -89,8 +95,13 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/twiki/**", "**/tricorder/**"],
-                    "message": "AD-5: leaf directory. It may import node: builtins, packages and its own files. Move shared code down, never import a feature directory."
+                    "group": [
+                      "**/twiki/**",
+                      "**/tricorder/**",
+                      "**/tricorder.ts",
+                      "**/github/**"
+                    ],
+                    "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
                   }
                 ]
               }
@@ -109,8 +120,8 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/tricorder/**"],
-                    "message": "AD-5: src/twiki and src/tricorder are siblings and neither may import the other. Move shared code down into a leaf."
+                    "group": ["**/tricorder/**", "**/tricorder.ts"],
+                    "message": "AD-5: this directory may not import a feature directory. Move shared code down into a leaf."
                   }
                 ]
               }
@@ -130,7 +141,47 @@
                 "patterns": [
                   {
                     "group": ["**/twiki/**"],
-                    "message": "AD-5: src/twiki and src/tricorder are siblings and neither may import the other. Move shared code down into a leaf."
+                    "message": "AD-5: this directory may not import a feature directory. Move shared code down into a leaf."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/index.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/tricorder/**", "**/tricorder.ts"],
+                    "message": "AD-5: an entrypoint wires exactly one side. src/index.ts is twiki's, src/tricorder.ts is gitricorder's."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/tricorder.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/twiki/**"],
+                    "message": "AD-5: an entrypoint wires exactly one side. src/index.ts is twiki's, src/tricorder.ts is gitricorder's."
                   }
                 ]
               }
