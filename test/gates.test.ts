@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { DEFAULT_POLICY } from "../src/core/types.js";
 import {
   canMerge,
   canRebase,
@@ -11,8 +12,7 @@ import {
   isFailing,
   mergeBlock,
   withinMergePolicy,
-} from "../src/gates.js";
-import { DEFAULT_POLICY } from "../src/types.js";
+} from "../src/twiki/gates.js";
 import { makeBump, makePr, makeRun } from "./fakes.js";
 
 const minorOff = { autoMergeMinor: false, mergeOnly: false };

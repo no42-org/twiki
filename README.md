@@ -115,40 +115,47 @@ with copy-paste examples for **Slack**, **Discord**, and **Matrix**.
 
 ```
 src/
-  core/          shared domain both entrypoints may depend on; imports nothing
-                 outside itself (see "Module boundaries" below)
-    config.ts    allowlist + per-repo policy (strict YAML schema)
-    semver.ts    bump classification + next-patch tag (pure)
-  types.ts       domain types
-  gates.ts       deterministic safety gates + "settled" predicate (pure)
-  plan.ts        the advisor's typed output contract (zod + JSON schema)
-  advisor.ts     LLM advisor — one output tool, no write tools
-  facts.ts       stateless per-tick fact gathering
-  executor.ts    the ONLY component that mutates GitHub; re-validates gates
-  report.ts      per-run chat digest
-  notify.ts      Slack/Discord webhook delivery + de-dup
-  audit.ts       append-only JSONL audit log
-  run.ts         orchestrate one tick
-  index.ts       entrypoint + scheduler
-  result.ts      per-run result types
-  github/        port interface, App auth, Octokit adapter
-test/            pure-logic suites + injection + shadow e2e (fakes, no network)
-scripts/         release-plan (CI release glue), matrix-smoke
+  index.ts         entrypoint: env, config load, dependency wiring
+  core/            shared domain, a closed leaf (see "Module boundaries" below)
+    config.ts      allowlist + per-repo policy (strict YAML schema)
+    semver.ts      bump classification + next-patch tag (pure)
+    types.ts       domain types
+  github/          read/write ports, App auth, Octokit adapter
+    port.ts        GitHubReadPort, GitHubWritePort, GitHubPort
+    auth.ts        GitHub App auth + installation token cache
+    octokit-adapter.ts   the one adapter, implements both halves
+  twiki/           the write side: everything that decides or mutates
+    gates.ts       deterministic safety gates + "settled" predicate (pure)
+    plan.ts        the advisor's typed output contract (zod + JSON schema)
+    advisor.ts     LLM advisor, one output tool, no write tools
+    facts.ts       stateless per-tick fact gathering
+    executor.ts    the ONLY component that mutates GitHub; re-validates gates
+    report.ts      per-run chat digest
+    notify.ts      Slack/Discord/Matrix delivery + de-dup
+    audit.ts       append-only JSONL audit log
+    result.ts      per-run result types
+    run.ts         orchestrate one tick
+    scheduler.ts   single tick, or a tick every interval
+test/              pure-logic suites + ports + injection + shadow e2e (fakes, no network)
+scripts/           release-plan (CI release glue), matrix-smoke
 ```
 
 ### Module boundaries
 
-`src/core/` holds domain logic that more than one entrypoint may need: pure
-functions and the config schema. Nothing in `src/core/` may import from a
-feature directory. It may import `node:` builtins, third-party packages, other
-files inside `src/core/`, and for now `src/types.ts`.
+`src/core/` holds domain logic that more than one entrypoint may need: domain
+types, pure functions and the config schema. It is a closed leaf: files in
+`src/core/` may import `node:` builtins, third-party packages, and other files
+inside `src/core/`. Nothing else.
 
 The rule exists because a second read-only entrypoint is being added alongside
 the write path. Anything both sides need moves down into `core/`; neither side
 imports the other. If you are unsure where a new module belongs, ask whether
 both entrypoints would need it. If only one would, it does not go in `core/`.
 
-The relocation is not finished. `src/types.ts` is still outside `core/`, which
-is why the rule carries an exception for it, and the write side is still loose
-at `src/` root. Both move in the next change, after which the exception goes
-away and `core/` becomes a closed leaf.
+`src/twiki/` is the write side. `src/github/` splits its port in two:
+`GitHubReadPort` has no mutating method, `GitHubWritePort` has only mutating
+methods, and `GitHubPort` extends both for the one adapter that implements
+them. A consumer given only the read port cannot merge, tag or re-run
+anything, because the type has no such member. `test/ports.test.ts` pins that
+with `@ts-expect-error`, so a write method leaking onto the read port fails
+typecheck rather than review.

@@ -3,10 +3,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { Advisor, AdvisorRepoInput } from "../src/advisor.js";
-import type { GitHubPort, RawPullRequest } from "../src/github/port.js";
-import type { Notifier } from "../src/notify.js";
-import type { Plan } from "../src/plan.js";
 import {
   type Bump,
   type CheckStatus,
@@ -16,7 +12,15 @@ import {
   type RepoRef,
   repoSlug,
   type WorkflowRunRef,
-} from "../src/types.js";
+} from "../src/core/types.js";
+import type {
+  GitHubPort,
+  GitHubReadPort,
+  RawPullRequest,
+} from "../src/github/port.js";
+import type { Advisor, AdvisorRepoInput } from "../src/twiki/advisor.js";
+import type { Notifier } from "../src/twiki/notify.js";
+import type { Plan } from "../src/twiki/plan.js";
 
 const REPO: RepoRef = { owner: "no42-org", name: "demo" };
 
@@ -109,15 +113,11 @@ export interface FakeRepoData {
   behindByMap?: Record<string, number | null>;
 }
 
-export class FakeGitHub implements GitHubPort {
-  merged: { repo: string; number: number }[] = [];
-  tagged: { repo: string; tag: string; sha: string }[] = [];
-  reran: { repo: string; runId: number }[] = [];
-  rebased: { repo: string; number: number }[] = [];
+/** Read half, usable on its own by a consumer that holds only GitHubReadPort. */
+export class FakeGitHubReadPort implements GitHubReadPort {
+  constructor(protected readonly data: Map<string, FakeRepoData>) {}
 
-  constructor(private readonly data: Map<string, FakeRepoData>) {}
-
-  private get(repo: RepoRef): FakeRepoData {
+  protected get(repo: RepoRef): FakeRepoData {
     const d = this.data.get(repoSlug(repo));
     if (!d) throw new Error(`no fake data for ${repoSlug(repo)}`);
     return d;
@@ -157,6 +157,15 @@ export class FakeGitHub implements GitHubPort {
     // Default null (unknown/fail-closed), matching the real adapter on error.
     return this.get(repo).behindByMap?.[headSha] ?? null;
   }
+}
+
+/** Read half plus the write half, recording every mutation for assertions. */
+export class FakeGitHub extends FakeGitHubReadPort implements GitHubPort {
+  merged: { repo: string; number: number }[] = [];
+  tagged: { repo: string; tag: string; sha: string }[] = [];
+  reran: { repo: string; runId: number }[] = [];
+  rebased: { repo: string; number: number }[] = [];
+
   async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
     this.merged.push({ repo: repoSlug(repo), number: prNumber });
   }

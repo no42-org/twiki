@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { MatrixNotifier } from "../src/notify.js";
+import { MatrixNotifier } from "../src/twiki/notify.js";
 
 describe("MatrixNotifier", () => {
   it("PUTs an m.text message to the room with a Bearer token", async () => {

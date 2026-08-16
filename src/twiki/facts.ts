@@ -3,15 +3,15 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { classifyBump } from "./core/semver.js";
-import type { GitHubPort } from "./github/port.js";
+import { classifyBump } from "../core/semver.js";
 import type {
   FailingCheck,
   PullRequest,
   RepoFacts,
   RepoRef,
   WorkflowRunRef,
-} from "./types.js";
+} from "../core/types.js";
+import type { GitHubReadPort } from "../github/port.js";
 
 /**
  * Gather all decision-relevant facts for one repo, freshly from GitHub.
@@ -21,7 +21,7 @@ import type {
  * untrusted data for the advisor to read; it never influences the gates.
  */
 export async function gatherFacts(
-  github: GitHubPort,
+  github: GitHubReadPort,
   repo: RepoRef,
 ): Promise<RepoFacts> {
   const [rawPrs, mainChecks, latestTag, hasTagReleaseWorkflow] =

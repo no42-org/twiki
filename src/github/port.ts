@@ -8,12 +8,12 @@ import type {
   FailingCheck,
   RepoRef,
   WorkflowRunRef,
-} from "../types.js";
+} from "../core/types.js";
 
 // The GitHub port: the single seam between decision logic and the GitHub API.
-// Decision logic depends only on this interface, so tests can substitute a
-// fake. The only mutating methods are mergePR and pushTag — and only the
-// executor ever calls them.
+// Decision logic depends only on these interfaces, so tests can substitute a
+// fake. Every mutating method lives on GitHubWritePort, and only the executor
+// ever calls one; a consumer typed to GitHubReadPort has none to call.
 
 export interface RawPullRequest {
   number: number;
@@ -26,7 +26,13 @@ export interface RawPullRequest {
   dependency?: { name?: string; from?: string; to?: string };
 }
 
-export interface GitHubPort {
+/**
+ * Reads only. A consumer that holds just this cannot mutate GitHub, and the
+ * compiler enforces that: there is no write method on the type to call. A
+ * read-only App installation enforces the same thing at runtime, and the two
+ * fail independently.
+ */
+export interface GitHubReadPort {
   listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]>;
   prChecks(repo: RepoRef, headSha: string): Promise<CheckStatus>;
   branchChecks(repo: RepoRef, branch: string): Promise<CheckStatus>;
@@ -41,8 +47,10 @@ export interface GitHubPort {
   workflowRunsForSha(repo: RepoRef, sha: string): Promise<WorkflowRunRef[]>;
   /** Commits `headSha` is behind `main`; `null` when GitHub can't tell (fail-closed). */
   behindBy(repo: RepoRef, headSha: string): Promise<number | null>;
+}
 
-  // Mutating — executor only, enforce mode only.
+/** Mutating — executor only, enforce mode only. */
+export interface GitHubWritePort {
   mergePR(repo: RepoRef, prNumber: number): Promise<void>;
   pushTag(repo: RepoRef, tag: string, sha: string): Promise<void>;
   /** Re-run only the failed jobs of a workflow run (bounded by run_attempt). */
@@ -50,3 +58,6 @@ export interface GitHubPort {
   /** Ask Dependabot to rebase a PR by posting `@dependabot rebase`. */
   requestDependabotRebase(repo: RepoRef, prNumber: number): Promise<void>;
 }
+
+/** What the write side needs: both halves. The adapter implements this. */
+export interface GitHubPort extends GitHubReadPort, GitHubWritePort {}

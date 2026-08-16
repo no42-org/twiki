@@ -3,21 +3,21 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { type Config, resolvePolicy } from "../core/config.js";
+import { type RepoFacts, repoSlug } from "../core/types.js";
+import type { GitHubPort } from "../github/port.js";
 import {
   type Advisor,
   type AdvisorRepoInput,
   toAdvisorFacts,
 } from "./advisor.js";
 import type { AuditSink } from "./audit.js";
-import { type Config, resolvePolicy } from "./core/config.js";
 import { applyPlan } from "./executor.js";
 import { gatherFacts } from "./facts.js";
-import type { GitHubPort } from "./github/port.js";
 import type { Notifier } from "./notify.js";
 import type { Plan } from "./plan.js";
 import { buildDigest, hasActionableActivity } from "./report.js";
 import type { RepoResult, RunResult } from "./result.js";
-import { type RepoFacts, repoSlug } from "./types.js";
 
 // Orchestrates a single tick: gather facts → advisor plan → execute (gated) →
 // report → audit. Resilient at every step — a single repo (or the advisor)

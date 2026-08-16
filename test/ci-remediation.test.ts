@@ -4,15 +4,15 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { toAdvisorFacts } from "../src/advisor.js";
 import {
   buildConfig,
   type Config,
   type RemediationConfig,
 } from "../src/core/config.js";
-import { applyPlan } from "../src/executor.js";
-import type { Plan } from "../src/plan.js";
-import type { Mode } from "../src/types.js";
+import type { Mode } from "../src/core/types.js";
+import { toAdvisorFacts } from "../src/twiki/advisor.js";
+import { applyPlan } from "../src/twiki/executor.js";
+import type { Plan } from "../src/twiki/plan.js";
 import {
   FakeGitHub,
   type FakeRepoData,

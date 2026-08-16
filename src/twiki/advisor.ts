@@ -4,13 +4,13 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { type Plan, PlanSchema, planJsonSchema } from "./plan.js";
 import {
   type PullRequest,
   type RepoFacts,
   type RepoPolicy,
   repoSlug,
-} from "./types.js";
+} from "../core/types.js";
+import { type Plan, PlanSchema, planJsonSchema } from "./plan.js";
 
 // The advisor is the judgment layer. It is given NO write tools — only a single
 // output tool that returns the typed plan. Its plan is advisory; the executor
