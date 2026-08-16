@@ -3,6 +3,9 @@
 #
 # Pure relocations and formatting-only commits belong here. Never a commit that
 # changes behaviour.
-
-# refactor(core): move semver and config into src/core
-aab8eec
+#
+# This repository squash-merges, so a branch commit SHA does not survive the
+# merge. Add the SHA that lands on main, after it lands. An SHA that does not
+# resolve makes `git blame` fail for everyone who enables this file.
+#
+# Pending: the squashed commit for "move semver and config into src/core".
