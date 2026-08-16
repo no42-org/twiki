@@ -1,0 +1,8 @@
+# Revisions to skip in `git blame`. Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Pure relocations and formatting-only commits belong here. Never a commit that
+# changes behaviour.
+
+# refactor(core): move semver and config into src/core
+aab8eec

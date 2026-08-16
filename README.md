@@ -115,9 +115,11 @@ with copy-paste examples for **Slack**, **Discord**, and **Matrix**.
 
 ```
 src/
-  config.ts      allowlist + per-repo policy (strict YAML schema)
+  core/          shared domain both entrypoints may depend on; imports nothing
+                 outside itself (see "Module boundaries" below)
+    config.ts    allowlist + per-repo policy (strict YAML schema)
+    semver.ts    bump classification + next-patch tag (pure)
   types.ts       domain types
-  semver.ts      bump classification + next-patch tag (pure)
   gates.ts       deterministic safety gates + "settled" predicate (pure)
   plan.ts        the advisor's typed output contract (zod + JSON schema)
   advisor.ts     LLM advisor — one output tool, no write tools
@@ -128,6 +130,20 @@ src/
   audit.ts       append-only JSONL audit log
   run.ts         orchestrate one tick
   index.ts       entrypoint + scheduler
+  result.ts      per-run result types
   github/        port interface, App auth, Octokit adapter
 test/            pure-logic suites + injection + shadow e2e (fakes, no network)
+scripts/         release-plan (CI release glue), matrix-smoke
 ```
+
+### Module boundaries
+
+`src/core/` holds domain logic that more than one entrypoint may need: pure
+functions, domain types, and the config schema. It is a leaf. Nothing in
+`src/core/` may import from a sibling feature directory, only from `node:`
+builtins, third-party packages, and other files inside `src/core/`.
+
+The rule exists because a second read-only entrypoint is being added alongside
+the write path. Anything both sides need moves down into `core/`; neither side
+imports the other. If you are unsure where a new module belongs, ask whether
+both entrypoints would need it. If only one would, it does not go in `core/`.

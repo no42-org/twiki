@@ -39,7 +39,7 @@ jobs:
       - run: npm ci
 
       # ---- Derive version, channel, image tags via the canonical semver logic
-      # (src/semver.ts planRelease, unit-tested) — design D1/D2/D3 ----
+      # (src/core/semver.ts planRelease, unit-tested) — design D1/D2/D3 ----
       - id: vars
         name: Derive version and tags
         run: make release-plan

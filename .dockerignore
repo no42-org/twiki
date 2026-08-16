@@ -19,3 +19,5 @@ github-app-private-key*
 audit.jsonl
 .twiki-last-digest*
 repos.yaml
+.vscode
+.claude
