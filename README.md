@@ -139,11 +139,16 @@ scripts/         release-plan (CI release glue), matrix-smoke
 ### Module boundaries
 
 `src/core/` holds domain logic that more than one entrypoint may need: pure
-functions, domain types, and the config schema. It is a leaf. Nothing in
-`src/core/` may import from a sibling feature directory, only from `node:`
-builtins, third-party packages, and other files inside `src/core/`.
+functions and the config schema. Nothing in `src/core/` may import from a
+feature directory. It may import `node:` builtins, third-party packages, other
+files inside `src/core/`, and for now `src/types.ts`.
 
 The rule exists because a second read-only entrypoint is being added alongside
 the write path. Anything both sides need moves down into `core/`; neither side
 imports the other. If you are unsure where a new module belongs, ask whether
 both entrypoints would need it. If only one would, it does not go in `core/`.
+
+The relocation is not finished. `src/types.ts` is still outside `core/`, which
+is why the rule carries an exception for it, and the write side is still loose
+at `src/` root. Both move in the next change, after which the exception goes
+away and `core/` becomes a closed leaf.

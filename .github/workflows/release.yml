@@ -39,7 +39,7 @@ jobs:
       - run: npm ci
 
       # ---- Derive version, channel, image tags via the canonical semver logic
-      # (src/core/semver.ts planRelease, unit-tested) — design D1/D2/D3 ----
+      # (src/core/semver.ts planRelease, unit-tested) — design release-D1/D2/D3, docs/design/ci-release-pipeline.md ----
       - id: vars
         name: Derive version and tags
         run: make release-plan
@@ -55,7 +55,7 @@ jobs:
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
           test -s "${tarball}"
 
-      # ---- Build & push the multi-arch image (design D4: no QEMU compile) ----
+      # ---- Build & push the multi-arch image (design release-D4: no QEMU compile) ----
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       # Scan the image content before publishing (report-only, same rationale as
