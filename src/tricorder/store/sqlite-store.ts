@@ -4,6 +4,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
+import { stamp } from "../../core/stamp.js";
 import type { Subject, SubjectType } from "../../core/subject.js";
 import type {
   CurrentValue,
@@ -24,6 +25,9 @@ import { MIGRATIONS, SCHEMA_VERSION } from "./schema.js";
 //
 // Run both processes with --disable-warning=ExperimentalWarning, never
 // --no-warnings: the targeted flag still lets a genuine warning through.
+
+/** Wait this long for a competing writer before giving up (AD-13). */
+const BUSY_TIMEOUT_MS = 5_000;
 
 export interface OpenOptions {
   /** Read-only handles cannot write or run DDL; SQLite enforces it. */
@@ -47,6 +51,9 @@ export class SqliteStore implements StorePort {
     const db = new DatabaseSync(path);
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
+    // Two containers share this file (AD-13). Wait rather than failing the
+    // whole run on a moment's contention.
+    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     const store = new SqliteStore(db, true);
     store.migrate();
     return store;
@@ -57,7 +64,21 @@ export class SqliteStore implements StorePort {
    * against rather than serving misread rows (AD-26).
    */
   static openForRead(path: string): SqliteStore {
-    const db = new DatabaseSync(path, { readOnly: true });
+    let db: DatabaseSync;
+    try {
+      db = new DatabaseSync(path, { readOnly: true });
+    } catch (err) {
+      // A raw SQLITE_CANTOPEN here almost always means the collector has not
+      // created the database yet. Note a read-only WAL connection still needs
+      // write access to the DIRECTORY for the -shm file, so mounting the
+      // volume :ro fails at open.
+      throw new Error(
+        `cannot open the store at ${path} for reading: ${err instanceof Error ? err.message : err}. ` +
+          "Start the collector to create and migrate it. Note the volume must not be mounted read-only: " +
+          "a read-only WAL connection still needs write access to the directory.",
+      );
+    }
+    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     const store = new SqliteStore(db, false);
     const found = store.schemaVersion();
     if (found !== SCHEMA_VERSION) {
@@ -72,6 +93,16 @@ export class SqliteStore implements StorePort {
 
   private migrate(): void {
     const from = this.schemaVersion();
+    // Symmetric with openForRead. Rolling the collector back after a newer
+    // migration has landed would otherwise write old-shaped rows into a newer
+    // schema, silently, instead of refusing to start.
+    if (from > MIGRATIONS.length) {
+      this.db.close();
+      throw new Error(
+        `store schema is version ${from}, this build only knows ${MIGRATIONS.length}. ` +
+          "Refusing to write to a database created by a newer build.",
+      );
+    }
     for (let v = from; v < MIGRATIONS.length; v++) {
       this.db.exec("BEGIN");
       try {
@@ -79,9 +110,22 @@ export class SqliteStore implements StorePort {
         this.db.exec(`PRAGMA user_version = ${v + 1}`);
         this.db.exec("COMMIT");
       } catch (err) {
-        this.db.exec("ROLLBACK");
+        this.rollbackQuietly();
         throw err;
       }
+    }
+  }
+
+  /**
+   * A throw from COMMIT itself leaves no active transaction, so ROLLBACK would
+   * throw "cannot rollback - no transaction is active" and replace the real
+   * failure in the stack.
+   */
+  private rollbackQuietly(): void {
+    try {
+      this.db.exec("ROLLBACK");
+    } catch {
+      // no transaction to roll back
     }
   }
 
@@ -105,25 +149,20 @@ export class SqliteStore implements StorePort {
       this.db.exec("COMMIT");
       return out;
     } catch (err) {
-      this.db.exec("ROLLBACK");
+      this.rollbackQuietly();
       throw err;
     }
   }
 
   beginRun(start: RunStart): RunRef {
     this.assertWritable("beginRun");
+    const at = stamp(start.startedAt);
     this.db
       .prepare(
         `INSERT INTO collection_run (lane, installation, scope, outcome, started_at, verified_at)
          VALUES (?, ?, ?, 'partial', ?, ?)`,
       )
-      .run(
-        start.lane,
-        start.installation,
-        start.scope,
-        start.startedAt,
-        start.startedAt,
-      );
+      .run(start.lane, start.installation, start.scope, at, at);
     const row = this.db.prepare("SELECT last_insert_rowid() AS id").get() as {
       id: number;
     };
@@ -146,7 +185,7 @@ export class SqliteStore implements StorePort {
       .prepare(
         "UPDATE collection_run SET outcome = ?, detail = ?, verified_at = ? WHERE id = ?",
       )
-      .run(outcome, detail ?? null, verifiedAt, run.id);
+      .run(outcome, detail ?? null, stamp(verifiedAt), run.id);
   }
 
   recordObservations(
@@ -156,8 +195,9 @@ export class SqliteStore implements StorePort {
   ): void {
     this.assertWritable("recordObservations");
     if (observations.length === 0) return;
+    const at = stamp(verifiedAt);
     this.tx(() => {
-      for (const o of observations) this.writeOne(run, verifiedAt, o);
+      for (const o of observations) this.writeOne(run, at, o);
     });
   }
 
@@ -168,15 +208,23 @@ export class SqliteStore implements StorePort {
   ): void {
     this.assertWritable("recordTombstones");
     if (subjects.length === 0) return;
+    const at = stamp(verifiedAt);
     this.tx(() => {
       for (const subject of subjects) {
         const prior = this.readCurrent(subject);
-        if (!prior || prior.state === "resolved") continue;
-        this.writeOne(run, verifiedAt, {
+        if (!prior) continue;
+        if (prior.state === "resolved") {
+          // Already gone. Do not write a second tombstone, but do confirm it:
+          // otherwise a correctly-resolved subject's freshness freezes at the
+          // tombstone and every staleness view reports it as rotting.
+          this.touchOne(subject, at);
+          continue;
+        }
+        this.writeOne(run, at, {
           subject,
           payload: prior.payload,
           state: "resolved",
-          observedAt: verifiedAt,
+          observedAt: at,
         });
       }
     });
@@ -187,9 +235,21 @@ export class SqliteStore implements StorePort {
     const state: SubjectState = o.state ?? "present";
     const payload = JSON.stringify(o.payload);
     const prior = this.readCurrent(o.subject);
-    // Unchanged values carry the previous observed_at forward, so freshness
-    // and last-change stay distinct (AD-11).
-    const observedAt = o.observedAt ?? prior?.observedAt ?? verifiedAt;
+
+    // Detect change here rather than trusting the caller to diff. An explicit
+    // observedAt still wins, but the default is derived: if the payload or the
+    // state differs from what the projection holds, the value CHANGED now.
+    // Carrying the prior stamp forward unconditionally would report a changed
+    // value as unchanged, which defeats the point of the split (AD-11).
+    const changed =
+      prior === null ||
+      JSON.stringify(prior.payload) !== payload ||
+      prior.state !== state;
+    const observedAt = o.observedAt
+      ? stamp(o.observedAt)
+      : changed
+        ? verifiedAt
+        : (prior?.observedAt ?? verifiedAt);
 
     this.db
       .prepare(
@@ -207,6 +267,11 @@ export class SqliteStore implements StorePort {
         verifiedAt,
       );
 
+    // The projection is monotonic in verified_at. Lanes and scopes overlap, so
+    // a slow full run can land after a fast hot run that already wrote a newer
+    // value; without this guard it would clobber the fresher payload and move
+    // freshness backwards. The observation row above is still appended, so
+    // nothing observed is lost.
     this.db
       .prepare(
         `INSERT INTO current_state
@@ -216,7 +281,8 @@ export class SqliteStore implements StorePort {
            payload = excluded.payload,
            state = excluded.state,
            observed_at = excluded.observed_at,
-           verified_at = excluded.verified_at`,
+           verified_at = excluded.verified_at
+         WHERE excluded.verified_at >= current_state.verified_at`,
       )
       .run(
         o.subject.type,
@@ -228,14 +294,22 @@ export class SqliteStore implements StorePort {
       );
   }
 
+  /** Advance freshness for one subject, never backwards. */
+  private touchOne(subject: Subject, verifiedAt: string): void {
+    this.db
+      .prepare(
+        `UPDATE current_state SET verified_at = ?
+         WHERE subject_type = ? AND subject_key = ? AND verified_at <= ?`,
+      )
+      .run(verifiedAt, subject.type, subject.key, verifiedAt);
+  }
+
   touchVerified(subjects: readonly Subject[], verifiedAt: string): void {
     this.assertWritable("touchVerified");
     if (subjects.length === 0) return;
-    const stmt = this.db.prepare(
-      "UPDATE current_state SET verified_at = ? WHERE subject_type = ? AND subject_key = ?",
-    );
+    const at = stamp(verifiedAt);
     this.tx(() => {
-      for (const s of subjects) stmt.run(verifiedAt, s.type, s.key);
+      for (const s of subjects) this.touchOne(s, at);
     });
   }
 
@@ -262,22 +336,18 @@ export class SqliteStore implements StorePort {
         validator.etag,
         validator.lastModified,
         validator.tokenGen,
-        verifiedAt,
+        stamp(verifiedAt),
       );
   }
 
   trimObservations(olderThan: string): number {
     this.assertWritable("trimObservations");
-    const before = this.db
-      .prepare("SELECT count(*) AS c FROM observation")
-      .get() as { c: number };
-    this.db
+    // DELETE reports its own row count; two COUNT(*) scans of the one table
+    // expected to grow would be the expensive way to learn the same number.
+    const result = this.db
       .prepare("DELETE FROM observation WHERE verified_at < ?")
-      .run(olderThan);
-    const after = this.db
-      .prepare("SELECT count(*) AS c FROM observation")
-      .get() as { c: number };
-    return before.c - after.c;
+      .run(stamp(olderThan));
+    return Number(result.changes);
   }
 
   private readCurrent(subject: Subject): CurrentValue | null {

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { RepoRef } from "./types.js";
+import { type RepoRef, repoSlug } from "./types.js";
 
 // A subject is the thing an observation is about. Identity is (type, key), and
 // every key is produced by the one function for its type, never composed at a
@@ -27,12 +27,22 @@ export interface Subject {
   key: string;
 }
 
-export function repoSlug(repo: RepoRef): string {
-  return `${repo.owner}/${repo.name}`;
+/**
+ * GitHub owner and repository names are case-insensitive, and RepoRef values
+ * come from user-authored repos.yaml. Without folding case here, `No42-Org/x`
+ * from config and `no42-org/x` from an API path become two subjects for one
+ * repository: the silent projection fork this file exists to prevent.
+ *
+ * Only the subject KEY is folded. core/types.ts's repoSlug is left alone
+ * because twiki matches its allowlist with it, and changing that would change
+ * write-path behaviour.
+ */
+function subjectSlug(repo: RepoRef): string {
+  return repoSlug(repo).toLowerCase();
 }
 
 export function repositorySubject(repo: RepoRef): Subject {
-  return { type: "repository", key: repoSlug(repo) };
+  return { type: "repository", key: subjectSlug(repo) };
 }
 
 /**
@@ -46,7 +56,7 @@ export function alertSubject(
   repo: RepoRef,
   alertNumber: number,
 ): Subject {
-  return { type, key: `${repoSlug(repo)}#${alertNumber}` };
+  return { type, key: `${subjectSlug(repo)}#${alertNumber}` };
 }
 
 /** Issues, pull requests and workflow runs all have a GitHub node id. */

@@ -13,9 +13,9 @@ import { SCHEMA_VERSION } from "../src/tricorder/store/schema.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 
 const REPO = { owner: "no42-org", name: "twiki" };
-const T1 = "2026-08-16T10:00:00Z";
-const T2 = "2026-08-16T10:15:00Z";
-const T3 = "2026-08-16T10:30:00Z";
+const T1 = "2026-08-16T10:00:00.000Z";
+const T2 = "2026-08-16T10:15:00.000Z";
+const T3 = "2026-08-16T10:30:00.000Z";
 
 describe("SqliteStore", () => {
   let dir: string;
@@ -135,6 +135,98 @@ describe("SqliteStore", () => {
     });
   });
 
+  describe("regressions found in review", () => {
+    it("advances observed_at when the payload actually changes", () => {
+      const subject = repositorySubject(REPO);
+      store.recordObservations(run, T1, [{ subject, payload: { alerts: 1 } }]);
+      // No explicit observedAt: the store must notice the value differs.
+      store.recordObservations(run, T2, [{ subject, payload: { alerts: 9 } }]);
+
+      const current = store.current(subject);
+      expect(current?.payload).toEqual({ alerts: 9 });
+      expect(current?.observedAt).toBe(T2);
+      expect(current?.verifiedAt).toBe(T2);
+    });
+
+    it("treats a state change as a change too", () => {
+      const subject = alertSubject("dependabot_alert", REPO, 1);
+      store.recordObservations(run, T1, [{ subject, payload: { s: "high" } }]);
+      store.recordObservations(run, T2, [
+        { subject, payload: { s: "high" }, state: "resolved" },
+      ]);
+
+      expect(store.current(subject)?.observedAt).toBe(T2);
+    });
+
+    it("keeps the projection monotonic when a slow run lands late", () => {
+      const subject = repositorySubject(REPO);
+      // A hot run writes the fresher value first.
+      store.recordObservations(run, T3, [{ subject, payload: { alerts: 9 } }]);
+      // A full run that started earlier lands afterwards with older data.
+      store.recordObservations(run, T2, [{ subject, payload: { alerts: 1 } }]);
+
+      const current = store.current(subject);
+      expect(current?.payload).toEqual({ alerts: 9 });
+      expect(current?.verifiedAt).toBe(T3);
+    });
+
+    it("never moves freshness backwards via touchVerified", () => {
+      const subject = repositorySubject(REPO);
+      store.recordObservations(run, T3, [{ subject, payload: { alerts: 1 } }]);
+      store.touchVerified([subject], T1);
+
+      expect(store.current(subject)?.verifiedAt).toBe(T3);
+    });
+
+    it("normalises timestamps so TEXT comparison matches chronology", () => {
+      const subject = repositorySubject(REPO);
+      // Same instant, three shapes a real lane could produce.
+      store.recordObservations(run, "2026-08-16T10:00:00Z", [
+        { subject, payload: { alerts: 1 } },
+      ]);
+      expect(store.current(subject)?.verifiedAt).toBe(
+        "2026-08-16T10:00:00.000Z",
+      );
+
+      store.touchVerified([subject], "2026-08-16T11:00:00+00:00");
+      expect(store.current(subject)?.verifiedAt).toBe(
+        "2026-08-16T11:00:00.000Z",
+      );
+    });
+
+    it("normalises run timestamps too, not just observations", () => {
+      store.finishRun(run, "ok", "2026-08-16T12:00:00Z");
+      const r = store.latestRuns(1)[0];
+      expect(r?.startedAt).toBe("2026-08-16T10:00:00.000Z");
+      expect(r?.verifiedAt).toBe("2026-08-16T12:00:00.000Z");
+    });
+
+    it("rejects a timestamp it cannot order", () => {
+      const subject = repositorySubject(REPO);
+      expect(() =>
+        store.recordObservations(run, "last tuesday", [
+          { subject, payload: {} },
+        ]),
+      ).toThrow(/not a usable timestamp/);
+    });
+
+    it("refuses to write to a database created by a newer build", () => {
+      store.close();
+      const raw = SqliteStore.openForWrite(path);
+      // biome-ignore lint/suspicious/noExplicitAny: reaching past the port on purpose
+      (raw as any).db.exec("PRAGMA user_version = 99");
+      raw.close();
+
+      expect(() => SqliteStore.openForWrite(path)).toThrow(/only knows/);
+    });
+
+    it("explains itself when the database does not exist yet", () => {
+      expect(() => SqliteStore.openForRead(join(dir, "absent.db"))).toThrow(
+        /Start the collector/,
+      );
+    });
+  });
+
   describe("tombstones (AD-23)", () => {
     it("marks a subject resolved rather than deleting it", () => {
       const subject = alertSubject("dependabot_alert", REPO, 1);
@@ -155,7 +247,7 @@ describe("SqliteStore", () => {
       expect(store.current(unseen)).toBeNull();
     });
 
-    it("does not re-tombstone an already resolved subject", () => {
+    it("re-confirms an already resolved subject without a second tombstone", () => {
       const subject = alertSubject("dependabot_alert", REPO, 1);
       store.recordObservations(run, T1, [
         { subject, payload: { severity: "high" } },
@@ -163,7 +255,13 @@ describe("SqliteStore", () => {
       store.recordTombstones(run, T2, [subject]);
       store.recordTombstones(run, T3, [subject]);
 
-      expect(store.current(subject)?.verifiedAt).toBe(T2);
+      const current = store.current(subject);
+      expect(current?.state).toBe("resolved");
+      // Freshness still advances. Freezing it at the tombstone would make a
+      // correctly-resolved alert read as increasingly stale data.
+      expect(current?.verifiedAt).toBe(T3);
+      // The change itself happened once, at T2.
+      expect(current?.observedAt).toBe(T2);
     });
   });
 
