@@ -8,3 +8,6 @@
 
 # refactor(core): move semver and config into src/core (#23)
 00f3d13b9ed7aa694e4f6f07c2fe6dea14b40c4b
+
+# refactor: close the module layout and split the GitHub port (#25)
+29e2c1bcd9bfe2cbdc1ba71a9021d935324e5f36
