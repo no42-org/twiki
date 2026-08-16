@@ -13,7 +13,7 @@ import {
   type RepoPolicy,
   type RepoRef,
   repoSlug,
-} from "./types.js";
+} from "../types.js";
 
 // Strict schemas: unknown keys are rejected so a typo in repos.yaml fails loudly
 // rather than silently disabling a policy override.

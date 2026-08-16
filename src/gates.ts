@@ -45,7 +45,7 @@ export function canMerge(pr: PullRequest, policy: RepoPolicy): boolean {
 }
 
 /**
- * The "settled" predicate (design D5). Release iff: no open Dependabot PR
+ * The "settled" predicate (design agent-D5, docs/design/dependabot-release-agent.md). Release iff: no open Dependabot PR
  * remains that policy would merge, AND main is green, AND there are
  * merged-but-unreleased dependency commits.
  *

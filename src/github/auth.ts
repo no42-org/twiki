@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 
-// GitHub App authentication (design D7). The App mints short-lived per-install
+// GitHub App authentication (design agent-D7, docs/design/dependabot-release-agent.md). The App mints short-lived per-install
 // tokens; merges and tags then show as `twiki[bot]`, keeping the audit trail
 // honest and the blast radius scoped per installation.
 

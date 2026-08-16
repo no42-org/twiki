@@ -1,0 +1,10 @@
+# Revisions to skip in `git blame`. Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Pure relocations and formatting-only commits belong here. Never a commit that
+# changes behaviour. This repository squash-merges, so record the SHA that
+# lands on main, not a branch SHA. An SHA that does not resolve makes
+# `git blame` fail for everyone who enables this file.
+
+# refactor(core): move semver and config into src/core (#23)
+00f3d13b9ed7aa694e4f6f07c2fe6dea14b40c4b

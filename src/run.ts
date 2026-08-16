@@ -9,7 +9,7 @@ import {
   toAdvisorFacts,
 } from "./advisor.js";
 import type { AuditSink } from "./audit.js";
-import { type Config, resolvePolicy } from "./config.js";
+import { type Config, resolvePolicy } from "./core/config.js";
 import { applyPlan } from "./executor.js";
 import { gatherFacts } from "./facts.js";
 import type { GitHubPort } from "./github/port.js";
