@@ -16,6 +16,8 @@ import {
 import type {
   GitHubPort,
   GitHubReadPort,
+  OrgAlertPage,
+  RawDependabotAlert,
   RawPullRequest,
 } from "../src/github/port.js";
 import type { Advisor, AdvisorRepoInput } from "../src/twiki/advisor.js";
@@ -62,6 +64,29 @@ export function makeFacts(partial: Partial<RepoFacts> = {}): RepoFacts {
     hasTagReleaseWorkflow: true,
     unreleasedDependencyCommits: 1,
     prs: [],
+    ...partial,
+  };
+}
+
+/** A Dependabot alert fixture with sensible defaults. */
+export function makeAlert(
+  partial: Partial<RawDependabotAlert> = {},
+): RawDependabotAlert {
+  return {
+    number: 1,
+    repo: { owner: "no42-org", name: "twiki" },
+    state: "open",
+    severity: "high",
+    ghsaId: "GHSA-xxxx-yyyy-zzzz",
+    cveId: "CVE-2026-0001",
+    packageName: "left-pad",
+    ecosystem: "npm",
+    epssPercentage: 0.42,
+    epssPercentile: 0.9,
+    relationship: "direct",
+    scope: "runtime",
+    htmlUrl: "https://github.com/no42-org/twiki/security/dependabot/1",
+    createdAt: "2026-08-01T00:00:00.000Z",
     ...partial,
   };
 }
@@ -115,7 +140,25 @@ export interface FakeRepoData {
 
 /** Read half, usable on its own by a consumer that holds only GitHubReadPort. */
 export class FakeGitHubReadPort implements GitHubReadPort {
+  /** Org-level alerts, keyed by org login. */
+  orgAlerts = new Map<string, RawDependabotAlert[]>();
+  /** Orgs whose next read should fail, for exercising failure isolation. */
+  failingOrgs = new Set<string>();
+
   constructor(protected readonly data: Map<string, FakeRepoData>) {}
+
+  /** Payloads the mapper would have dropped, per org. */
+  unreadableByOrg = new Map<string, number>();
+
+  async listOrgDependabotAlerts(org: string): Promise<OrgAlertPage> {
+    if (this.failingOrgs.has(org)) {
+      throw new Error(`fake: ${org} is unreachable`);
+    }
+    return {
+      alerts: this.orgAlerts.get(org) ?? [],
+      unreadable: this.unreadableByOrg.get(org) ?? 0,
+    };
+  }
 
   protected get(repo: RepoRef): FakeRepoData {
     const d = this.data.get(repoSlug(repo));

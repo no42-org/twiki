@@ -17,7 +17,12 @@ import {
   installationOctokit,
   loadAppAuthFromEnv,
 } from "./auth.js";
-import type { GitHubPort, RawPullRequest } from "./port.js";
+import type {
+  GitHubPort,
+  OrgAlertPage,
+  RawDependabotAlert,
+  RawPullRequest,
+} from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
 
@@ -32,6 +37,12 @@ const FAILED_CONCLUSIONS = [
 
 /** Resolves an installation-scoped Octokit for a given repo. */
 export type OctokitResolver = (repo: RepoRef) => Promise<Octokit>;
+/**
+ * Resolves the installation client for a whole organisation, for the org-level
+ * reads that collapse N repositories into one call. Optional: twiki never makes
+ * one, so its wiring does not need to supply this.
+ */
+export type OrgOctokitResolver = (org: string) => Promise<Octokit>;
 
 /**
  * GitHubPort backed by Octokit. Scoped to the allowlist: every call asserts the
@@ -42,6 +53,7 @@ export class OctokitGitHub implements GitHubPort {
   constructor(
     private readonly octokitFor: OctokitResolver,
     private readonly isAllowed: (repo: RepoRef) => boolean,
+    private readonly orgOctokitFor?: OrgOctokitResolver,
   ) {}
 
   private async client(repo: RepoRef): Promise<Octokit> {
@@ -265,6 +277,34 @@ export class OctokitGitHub implements GitHubPort {
     }
   }
 
+  async listOrgDependabotAlerts(org: string): Promise<OrgAlertPage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listOrgDependabotAlerts needs an org resolver; this client was built without one",
+      );
+    }
+    const gh = await this.orgOctokitFor(org);
+    const raw = await gh.paginate(gh.dependabot.listAlertsForOrg, {
+      org,
+      state: "open",
+      per_page: 100,
+    });
+
+    // Deliberately unfiltered. Which repositories are watched is AD-10's rule
+    // and belongs to the lane. This adapter's allowlist guard exists to stop
+    // twiki ACTING on a repository, and its case-sensitivity is load-bearing
+    // there; applying it to a read whose casing GitHub supplies would silently
+    // drop alerts and report a confident zero.
+    const alerts: RawDependabotAlert[] = [];
+    let unreadable = 0;
+    for (const item of raw) {
+      const alert = toDependabotAlert(item);
+      if (alert === null) unreadable++;
+      else alerts.push(alert);
+    }
+    return { alerts, unreadable };
+  }
+
   async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
     const gh = await this.client(repo);
     await gh.pulls.merge({
@@ -342,5 +382,63 @@ export function createGitHubFromEnv(
     return client;
   };
 
-  return new OctokitGitHub(resolver, isAllowed);
+  const orgCache = new Map<string, Octokit>();
+  const orgResolver: OrgOctokitResolver = async (org) => {
+    const cached = orgCache.get(org);
+    if (cached) return cached;
+    const { data } = await appClient.apps.getOrgInstallation({ org });
+    const client = installationOctokit(auth, data.id);
+    orgCache.set(org, client);
+    return client;
+  };
+
+  return new OctokitGitHub(resolver, isAllowed, orgResolver);
+}
+
+/**
+ * Maps one org-level alert payload. Defensive by design: the endpoint's shape
+ * has grown over time (EPSS is a recent addition) and a field the installed
+ * Octokit types do not know about would otherwise be dropped silently.
+ */
+function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
+  const a = raw as {
+    number?: number;
+    state?: string;
+    html_url?: string;
+    created_at?: string;
+    repository?: { name?: string; owner?: { login?: string } };
+    dependency?: {
+      package?: { name?: string; ecosystem?: string };
+      relationship?: string;
+      scope?: string;
+    };
+    security_advisory?: {
+      ghsa_id?: string;
+      cve_id?: string | null;
+      severity?: string;
+      epss?: { percentage?: number; percentile?: number } | null;
+    };
+  };
+  const owner = a.repository?.owner?.login;
+  const name = a.repository?.name;
+  if (typeof a.number !== "number" || !owner || !name) return null;
+
+  return {
+    number: a.number,
+    repo: { owner, name },
+    state: (a.state ?? "open") as RawDependabotAlert["state"],
+    severity: a.security_advisory?.severity ?? "unknown",
+    ghsaId: a.security_advisory?.ghsa_id ?? null,
+    cveId: a.security_advisory?.cve_id ?? null,
+    packageName: a.dependency?.package?.name ?? null,
+    ecosystem: a.dependency?.package?.ecosystem ?? null,
+    epssPercentage: a.security_advisory?.epss?.percentage ?? null,
+    epssPercentile: a.security_advisory?.epss?.percentile ?? null,
+    relationship: a.dependency?.relationship ?? null,
+    scope: a.dependency?.scope ?? null,
+    htmlUrl: a.html_url ?? null,
+    // Null, not "": an empty string reaches core/stamp.ts and throws there
+    // instead of being visibly absent here.
+    createdAt: a.created_at ?? null,
+  };
 }

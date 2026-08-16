@@ -119,6 +119,12 @@ export interface StorePort {
   // --- read side: both processes ---
 
   currentByType(type: SubjectType): CurrentValue[];
+  /**
+   * Subjects of a type whose key begins with `owner/`. Reconciliation must be
+   * bounded to what a run actually queried, so a lane sweeping one
+   * organisation can only ever tombstone that organisation's subjects (AD-16).
+   */
+  currentByTypeForOwner(type: SubjectType, owner: string): CurrentValue[];
   current(subject: Subject): CurrentValue | null;
   latestRuns(limit: number): RunRecord[];
   loadValidator(installation: string, requestUrl: string): Validator | null;
