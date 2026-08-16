@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.0/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -34,6 +34,111 @@
     }
   },
   "overrides": [
+    {
+      "includes": ["src/core/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "**/twiki/**",
+                      "**/tricorder/**",
+                      "**/github/**",
+                      "**/enrich/**"
+                    ],
+                    "message": "AD-5: leaf directory. It may import node: builtins, packages and its own files. Move shared code down, never import a feature directory."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/github/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/twiki/**", "**/tricorder/**"],
+                    "message": "AD-5: leaf directory. It may import node: builtins, packages and its own files. Move shared code down, never import a feature directory."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/enrich/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/twiki/**", "**/tricorder/**"],
+                    "message": "AD-5: leaf directory. It may import node: builtins, packages and its own files. Move shared code down, never import a feature directory."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/twiki/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/tricorder/**"],
+                    "message": "AD-5: src/twiki and src/tricorder are siblings and neither may import the other. Move shared code down into a leaf."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/tricorder/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/twiki/**"],
+                    "message": "AD-5: src/twiki and src/tricorder are siblings and neither may import the other. Move shared code down into a leaf."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     {
       "includes": ["test/**/*.ts"],
       "linter": {
