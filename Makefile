@@ -21,8 +21,10 @@ typecheck:
 lint:
 	npm run lint
 
+# node:sqlite emits one ExperimentalWarning per process. Suppress that one by
+# name; never --no-warnings, which would hide a genuine warning too.
 test:
-	npm run test
+	NODE_OPTIONS="--disable-warning=ExperimentalWarning" npm run test
 
 # Aggregate gate used by CI: lint + typecheck + tests must pass. Keeping lint
 # here means `make verify` locally matches what CI runs.
