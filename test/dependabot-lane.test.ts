@@ -36,6 +36,13 @@ describe("Dependabot alerts lane", () => {
     store,
     isWatched: (repo: { owner: string; name: string }) =>
       watched.has(watchKey(repo)),
+    watchedIn: (installation: string) =>
+      [...watched]
+        .filter((slug) => slug.startsWith(`${installation.toLowerCase()}/`))
+        .map((slug) => {
+          const [owner = "", name = ""] = slug.split("/");
+          return { owner, name };
+        }),
     now: () => new Date(Date.UTC(2026, 7, 16, 10, clock++)).toISOString(),
     log: (m: string) => logs.push(m),
   });
