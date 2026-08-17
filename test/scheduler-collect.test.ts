@@ -329,29 +329,22 @@ describe("the CLI still offers what it advertises", () => {
   });
 
   it("implements every role it lists", () => {
-    // Each role reaches its own branch rather than falling through to usage.
     for (const role of roles) {
-      let out = "";
-      try {
-        execFileSync(
-          "node",
-          ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", role],
-          {
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-            env: {
-              ...process.env,
-              TRICORDER_DB: "/nonexistent/x.db",
-              TRICORDER_GITHUB_APP_ID: "",
-              TWIKI_CONFIG: "repos.yaml",
-            },
-            timeout: 15_000,
-          },
-        );
-      } catch (err) {
-        const e = err as { stderr?: string; stdout?: string };
-        out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
-      }
+      // Each role gets a deliberately unusable environment, so it fails INSIDE
+      // its own branch. What matters is that it reaches that branch at all.
+      const out = runRole(role, {
+        TRICORDER_DB: "/nonexistent/dir/x.db",
+        TRICORDER_GITHUB_APP_ID: "",
+        TRICORDER_GITHUB_APP_PRIVATE_KEY: "",
+        TRICORDER_GITHUB_APP_PRIVATE_KEY_PATH: "",
+        TRICORDER_ONCE: "1",
+      });
+      // Guard against the vacuous pass: if the entrypoint could not be loaded
+      // at all, this test proves nothing, and an earlier version of it was
+      // green for exactly that reason.
+      expect(out, `${role} did not run at all`).not.toContain(
+        "MODULE_NOT_FOUND",
+      );
       expect(out, `${role} fell through to usage`).not.toContain(
         "usage: tricorder",
       );
