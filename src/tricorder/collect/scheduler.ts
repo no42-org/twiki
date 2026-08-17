@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { redact } from "../../core/redact.js";
 import type {
   RunOutcome,
   RunRecord,
@@ -135,25 +136,6 @@ export async function runCycle(
   return report;
 }
 
-/**
- * Scrub anything that looks like a credential.
- *
- * AD-16 says no token appears in any log line, and error messages are the way
- * one gets there: an auth failure from GitHub or a misconfigured header can
- * carry the credential in its text, and that text is passed through to the log
- * verbatim. Redacting at the formatter means every line is covered, including
- * lines a future lane adds without thinking about it.
- *
- * Shapes: GitHub's token prefixes, its fine-grained PATs, and the JWT the App
- * mints to request an installation token.
- */
-export function redact(text: string): string {
-  return text
-    .replace(/gh[pousr]_[A-Za-z0-9]{8,}/g, "gh?_REDACTED")
-    .replace(/github_pat_[A-Za-z0-9_]{8,}/g, "github_pat_REDACTED")
-    .replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9._-]{8,}/g, "JWT_REDACTED");
-}
-
 /** Format one line so every field AD-16 asks for is present and greppable. */
 export function formatLine(fields: LogFields, msg: string): string {
   const parts = [
@@ -187,28 +169,37 @@ export function normaliseTickMs(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_TICK_MS;
 }
 
+/**
+ * Returns how many lane runs failed in the LAST cycle, so a caller running
+ * once (cron) can exit non-zero rather than reporting success it did not have.
+ */
 export async function loop(
   deps: CycleDeps,
   schedules: readonly LaneSchedule[],
   installations: readonly string[],
   opts: LoopOptions,
-): Promise<void> {
+): Promise<number> {
   const tickMs = normaliseTickMs(opts.tickMs);
   if (tickMs !== opts.tickMs) {
     opts.log(`tick interval ${opts.tickMs} is not usable; using ${tickMs}ms`);
   }
 
-  const tick = async () => {
+  const tick = async (): Promise<number> => {
     try {
       const r = await runCycle(deps, schedules, installations);
       opts.log(`cycle: ${r.ran} ran, ${r.skipped} not due, ${r.failed} failed`);
+      return r.failed;
     } catch (err) {
-      opts.log(`cycle failed: ${err instanceof Error ? err.message : err}`);
+      opts.log(
+        `cycle failed: ${redact(String(err instanceof Error ? err.message : err))}`,
+      );
+      // The cycle itself falling over is worse than a lane failing, not better.
+      return Math.max(1, schedules.length * installations.length);
     }
   };
 
-  await tick();
-  if (opts.once) return;
+  const failed = await tick();
+  if (opts.once) return failed;
 
   // Re-armed only after the cycle settles. An interval would start a second
   // cycle on top of a slow one, sweeping the same installation twice at once.
@@ -218,4 +209,5 @@ export async function loop(
     }, tickMs);
   };
   rearm();
+  return failed;
 }

@@ -57,10 +57,44 @@ export function parsePort(raw: string | undefined): number | undefined {
   return n;
 }
 
-/** Seconds between wake-ups. Invalid values fall back rather than hot-loop. */
-function parseTickMs(raw: string | undefined): number {
-  const n = Number((raw ?? "").trim());
-  return Number.isFinite(n) && n > 0 ? n * 1000 : 60_000;
+/**
+ * An env flag that reads the way an operator expects.
+ *
+ * `!== ""` would make TRICORDER_ONCE=false enable once-mode, so a compose file
+ * written to turn the feature OFF would turn it on and the container would run
+ * one cycle and exit. No other flag in src/ sets a precedent, so this is it.
+ */
+export function envFlag(raw: string | undefined): boolean {
+  const v = (raw ?? "").trim().toLowerCase();
+  if (v === "") return false;
+  return !["false", "0", "no", "off"].includes(v);
+}
+
+/**
+ * Seconds between wake-ups, with a floor.
+ *
+ * The floor is the point. `TRICORDER_TICK_SECONDS=0.001` is finite and above
+ * zero, so a "> 0" check passes it through as one millisecond: a cycle against
+ * GitHub every millisecond, which is the exact failure the guard exists to
+ * prevent. Anything unusable or below the floor falls back, loudly.
+ */
+export const MIN_TICK_SECONDS = 1;
+export const DEFAULT_TICK_SECONDS = 60;
+
+export function parseTickSeconds(
+  raw: string | undefined,
+  warn: (msg: string) => void = () => {},
+): number {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return DEFAULT_TICK_SECONDS;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < MIN_TICK_SECONDS) {
+    warn(
+      `TRICORDER_TICK_SECONDS=${raw} is not usable (minimum ${MIN_TICK_SECONDS}s); using ${DEFAULT_TICK_SECONDS}s`,
+    );
+    return DEFAULT_TICK_SECONDS;
+  }
+  return n;
 }
 
 function usage(): never {
@@ -136,9 +170,6 @@ async function main(): Promise<void> {
       ...new Set(watched.map((r) => r.owner.toLowerCase())),
     ].sort();
 
-    const app = createTricorderAppFromEnv(env);
-    const github = await createTricorderReadPort(app, env);
-
     const watchedIn = (installation: string) =>
       watched.filter((r) => r.owner.toLowerCase() === installation);
     const isWatched = (repo: { owner: string; name: string }) =>
@@ -147,6 +178,9 @@ async function main(): Promise<void> {
           r.owner.toLowerCase() === repo.owner.toLowerCase() &&
           r.name.toLowerCase() === repo.name.toLowerCase(),
       );
+
+    const app = createTricorderAppFromEnv(env);
+    const github = await createTricorderReadPort(app, isWatched, env);
 
     const laneDeps = {
       github,
@@ -176,8 +210,23 @@ async function main(): Promise<void> {
       `collecting ${watched.length} repositories across ${installations.length} installations: ${installations.join(", ")}`,
     );
 
-    const once = (env.TRICORDER_ONCE ?? "").trim() !== "";
-    await loop(
+    const once = envFlag(env.TRICORDER_ONCE);
+
+    // Registered BEFORE the first cycle. A full cycle is one call per watched
+    // repository for the coverage lane, so it can run for minutes; a container
+    // stopped in that window would otherwise get default signal handling and
+    // die without closing the WAL handle.
+    let stopping = false;
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      process.once(signal, () => {
+        stopping = true;
+        log(`${signal}, shutting down`);
+        store.close();
+        process.exit(0);
+      });
+    }
+
+    const failures = await loop(
       {
         store,
         now: () => new Date(),
@@ -185,21 +234,37 @@ async function main(): Promise<void> {
       },
       schedules,
       installations,
-      { once, tickMs: parseTickMs(env.TRICORDER_TICK_SECONDS), log },
+      {
+        once,
+        tickMs: parseTickSeconds(env.TRICORDER_TICK_SECONDS, log) * 1000,
+        log,
+      },
     );
 
     if (once) {
-      store.close();
+      if (!stopping) store.close();
+      // A cron entry whose collection failed everywhere must not report
+      // success. That is the same lie the old stub was changed to stop telling.
+      if (failures > 0) {
+        log(`${failures} lane runs failed`);
+        process.exitCode = 1;
+      }
       return;
     }
+    return;
+  }
 
-    for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      process.once(signal, () => {
-        log(`${signal}, shutting down`);
-        store.close();
-        process.exit(0);
-      });
-    }
+  if (role === "doctor") {
+    // Setup diagnostics. Reads GitHub, writes nothing, touches no store, so it
+    // is safe to run against a live installation before anything is wired up.
+    const config = loadConfig(configPath);
+    const report = await diagnose(createTricorderAppFromEnv(env), config.repos);
+    console.log(formatReport(report));
+    // Non-zero on a bad setup, so this is usable as a gate rather than
+    // something whose output somebody has to remember to read. exitCode rather
+    // than exit(): a piped stdout is written asynchronously, and exiting here
+    // truncates the tail naming the unreachable repositories.
+    process.exitCode = report.ok ? 0 : 1;
     return;
   }
 

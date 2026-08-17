@@ -4,6 +4,7 @@
  */
 
 import type { CoverageState } from "../../core/coverage.js";
+import { redact } from "../../core/redact.js";
 import { coverageSubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import { repoSlug } from "../../core/types.js";
@@ -151,7 +152,9 @@ export async function collectCoverage(
     );
     return { installation, outcome, covered, notCovered, unknown };
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    // Redacted before it reaches either the log or collection_run.detail: a
+    // GitHub auth failure can quote the credential it rejected (AD-16).
+    const detail = redact(err instanceof Error ? err.message : String(err));
     if (run) {
       try {
         deps.store.finishRun(run, "failed", deps.now(), detail);

@@ -614,6 +614,8 @@ export function createTricorderAppFromEnv(env = process.env): GitHubAppPort {
  */
 export async function createTricorderReadPort(
   appPort: GitHubAppPort,
+  /** repos.yaml is the entire universe (AD-10); the adapter enforces it too. */
+  isAllowed: (repo: RepoRef) => boolean,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<GitHubReadPort> {
   const auth = loadAppAuthFromEnv(env, "TRICORDER");
@@ -644,8 +646,22 @@ export async function createTricorderReadPort(
     return c;
   };
 
+  let resolved = false;
   const forAccount = async (account: string): Promise<Octokit> => {
-    const id = byAccount.get(account.toLowerCase());
+    let id = byAccount.get(account.toLowerCase());
+    if (id === undefined && !resolved) {
+      // Re-resolve once per miss. Installation ids change when an App is
+      // uninstalled and reinstalled, which is exactly what an operator does
+      // after `doctor` reports a problem, and a cache fixed at startup would
+      // fail that organisation every cycle until somebody restarted the
+      // container, with nothing in the log suggesting that.
+      resolved = true;
+      for (const i of await appPort.listInstallations()) {
+        if (i.account) byAccount.set(i.account.toLowerCase(), i.id);
+      }
+      clients.clear();
+      id = byAccount.get(account.toLowerCase());
+    }
     if (id === undefined) {
       // Named rather than guessed. The doctor reports this case up front, and
       // a lane that hit it should say which account, not "not accessible".
@@ -656,9 +672,12 @@ export async function createTricorderReadPort(
     return clientFor(id);
   };
 
+  // The guard is kept, not passed as `() => true`. Both current lanes filter
+  // by their own watched set, so it is redundant today; the next lane to call a
+  // per-repository method would otherwise get no guard at all, silently.
   return new OctokitGitHub(
     async (repo) => forAccount(repo.owner),
-    () => true,
+    isAllowed,
     forAccount,
   );
 }

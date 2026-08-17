@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,12 @@ import {
 } from "../src/tricorder/collect/scheduler.js";
 import type { RunRecord } from "../src/tricorder/store/port.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
+import {
+  DEFAULT_TICK_SECONDS,
+  envFlag,
+  MIN_TICK_SECONDS,
+  parseTickSeconds,
+} from "../src/tricorder.js";
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 
@@ -282,5 +289,114 @@ describe("the cycle", () => {
       expect(line, secret).not.toContain(secret);
       expect(line).toContain("failed with");
     }
+  });
+});
+
+describe("the CLI still offers what it advertises", () => {
+  // A whole role was once deleted by a refactor while `usage` kept listing it,
+  // the README kept documenting it, and an adapter error kept telling operators
+  // to run it. Biome flagged the orphaned imports, but only as a warning, and
+  // `biome check` exits 0 on warnings.
+  const roles = ["collect", "web", "doctor"];
+
+  const usage = (): string => {
+    try {
+      execFileSync(
+        "node",
+        [
+          "--disable-warning=ExperimentalWarning",
+          "dist/tricorder.js",
+          "definitely-not-a-role",
+        ],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      return "";
+    } catch (err) {
+      const e = err as { stderr?: string; stdout?: string };
+      return `${e.stdout ?? ""}${e.stderr ?? ""}`;
+    }
+  };
+
+  it("lists exactly the roles it implements", () => {
+    const text = usage();
+    for (const role of roles) {
+      expect(text, `usage should mention ${role}`).toContain(role);
+    }
+  });
+
+  it("implements every role it lists", () => {
+    // Each role reaches its own branch rather than falling through to usage.
+    for (const role of roles) {
+      let out = "";
+      try {
+        execFileSync(
+          "node",
+          ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", role],
+          {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              TRICORDER_DB: "/nonexistent/x.db",
+              TRICORDER_GITHUB_APP_ID: "",
+              TWIKI_CONFIG: "repos.yaml",
+            },
+            timeout: 15_000,
+          },
+        );
+      } catch (err) {
+        const e = err as { stderr?: string; stdout?: string };
+        out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+      }
+      expect(out, `${role} fell through to usage`).not.toContain(
+        "usage: tricorder",
+      );
+    }
+  });
+});
+
+describe("environment flags read the way an operator expects", () => {
+  it("does not treat the word false as true", () => {
+    // A compose file written to turn the feature OFF would otherwise turn it
+    // on, and the container would run one cycle and exit.
+    for (const off of ["false", "0", "no", "off", "", "  ", "FALSE"]) {
+      expect(envFlag(off), JSON.stringify(off)).toBe(false);
+    }
+  });
+
+  it("accepts the usual ways of saying yes", () => {
+    for (const on of ["1", "true", "yes", "on"]) {
+      expect(envFlag(on), on).toBe(true);
+    }
+  });
+});
+
+describe("the tick floor", () => {
+  it("refuses a fractional interval that would hammer GitHub", () => {
+    // 0.001 is finite and above zero, so a "> 0" check passes it through as one
+    // millisecond: a cycle against GitHub every millisecond.
+    const warnings: string[] = [];
+    expect(parseTickSeconds("0.001", (m) => warnings.push(m))).toBe(
+      DEFAULT_TICK_SECONDS,
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("warns rather than silently substituting", () => {
+    // The previous guard normalised before the warning could compare, so an
+    // operator typing 5m got 60s with no message at all.
+    const warnings: string[] = [];
+    parseTickSeconds("5m", (m) => warnings.push(m));
+    expect(warnings[0]).toContain("5m");
+    expect(warnings[0]).toContain("not usable");
+  });
+
+  it("keeps a sane interval and defaults an unset one", () => {
+    expect(parseTickSeconds(String(MIN_TICK_SECONDS))).toBe(MIN_TICK_SECONDS);
+    expect(parseTickSeconds("300")).toBe(300);
+    expect(parseTickSeconds(undefined)).toBe(DEFAULT_TICK_SECONDS);
   });
 });
