@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { CVE_ID } from "../core/cve.js";
 import type { EnrichmentPort, KevCatalogue } from "./port.js";
 
 // CISA's Known Exploited Vulnerabilities catalogue.
@@ -14,9 +15,6 @@ import type { EnrichmentPort, KevCatalogue } from "./port.js";
 
 export const KEV_URL =
   "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
-
-/** A CVE id, as CISA writes them. Exported: the lookup rejects anything else. */
-export const CVE_ID = /^CVE-\d{4}-\d{4,}$/i;
 
 /** Reject a body larger than this rather than buffering it. */
 const MAX_BODY_BYTES = 32 * 1024 * 1024;

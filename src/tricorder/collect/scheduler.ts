@@ -71,6 +71,30 @@ export interface LogFields {
  * cycle early is cheap; silently stopping is the failure this whole build is
  * organised against.
  */
+/**
+ * Reject a schedule that cannot work, at the point it is built.
+ *
+ * Not inside the cycle: throwing there aborts every remaining lane and
+ * installation, which is exactly what AD-16 forbids, and turns one
+ * misconfigured lane into a total collection outage repeated every tick.
+ */
+export function assertSchedules(
+  schedules: readonly LaneSchedule[],
+  installations: readonly string[],
+): void {
+  for (const s of schedules) {
+    if (s.installations && s.installations.length === 0) {
+      throw new Error(`lane ${s.lane} declares no installations`);
+    }
+    const orphan = s.installations?.find((i) => !installations.includes(i));
+    if (orphan !== undefined) {
+      throw new Error(
+        `lane ${s.lane} declares installation ${orphan}, which the cycle never visits`,
+      );
+    }
+  }
+}
+
 export function isDue(
   last: RunRecord | undefined,
   cadenceMs: number,
@@ -78,9 +102,13 @@ export function isDue(
   retryAfterMs?: number,
 ): boolean {
   if (!last) return true;
+  // Anything that is not a clean success, not just `failed`. beginRun writes
+  // `partial` as its in-flight placeholder, so a collector killed mid-run
+  // leaves a row that would otherwise wait a full cadence, and a lane that
+  // finished `partial` has not delivered what it was scheduled to deliver.
   const wait =
-    last.outcome === "failed" && retryAfterMs !== undefined
-      ? Math.min(retryAfterMs, cadenceMs)
+    last.outcome !== "ok" && retryAfterMs !== undefined
+      ? Math.min(Math.max(retryAfterMs, 1_000), cadenceMs)
       : cadenceMs;
   const since = now.getTime() - new Date(last.verifiedAt).getTime();
   if (Number.isNaN(since)) return true;
@@ -119,14 +147,7 @@ export async function runCycle(
 
   for (const installation of installations) {
     for (const s of schedules) {
-      if (s.installations) {
-        // An empty list means the lane runs nowhere and appears in no bucket
-        // of the report, which is indistinguishable from a healthy lane.
-        if (s.installations.length === 0) {
-          throw new Error(`lane ${s.lane} declares no installations`);
-        }
-        if (!s.installations.includes(installation)) continue;
-      }
+      if (s.installations && !s.installations.includes(installation)) continue;
       const key = `${s.lane}|${installation}|${s.scope}`;
       const fields = {
         lane: s.lane,

@@ -815,4 +815,55 @@ describe("issues found in review (round 2)", () => {
       expect(rows[0]?.coverage).toBeNull();
     });
   });
+
+  describe("per-lane cadences reach the rendered page", () => {
+    it("does not show a daily lane as stale through createApp", async () => {
+      // The unit test for this bypassed createApp, so deleting the argument at
+      // its only wiring point left 401 tests green while the dashboard
+      // permanently red-flagged two healthy lanes.
+      const r = store.beginRun({
+        lane: "kev",
+        installation: "cisa",
+        scope: "full",
+        startedAt: "2026-08-16T06:00:00.000Z",
+      });
+      store.finishRun(r, "ok", "2026-08-16T06:00:00.000Z");
+
+      const html = await (
+        await createApp({
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          lanePolicies: { kev: { cadenceMs: 24 * 60 * 60_000 } },
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      const kevRow = html.slice(html.indexOf("kev"));
+      expect(kevRow).toContain("fresh");
+      expect(kevRow.slice(0, 200)).not.toContain("stale");
+    });
+
+    it("falls back to the sweep policy for a lane with no entry", async () => {
+      const r = store.beginRun({
+        lane: "rest-org-dependabot",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-08-16T06:00:00.000Z",
+      });
+      store.finishRun(r, "ok", "2026-08-16T06:00:00.000Z");
+
+      const html = await (
+        await createApp({
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          lanePolicies: { kev: { cadenceMs: 24 * 60 * 60_000 } },
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      expect(html).toContain("stale");
+    });
+  });
 });

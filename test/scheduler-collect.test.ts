@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  assertSchedules,
   DEFAULT_TICK_MS,
   formatLine,
   isDue,
@@ -73,6 +74,35 @@ describe("deciding what is due", () => {
     expect(isDue(record({ verifiedAt: "last tuesday" }), 60_000, NOW)).toBe(
       true,
     );
+  });
+
+  it("retries anything that did not finish cleanly, not only failures", () => {
+    // beginRun writes `partial` as its in-flight placeholder, so a collector
+    // killed mid-run leaves a row that would otherwise wait a full cadence.
+    const daily = 24 * 60 * 60_000;
+    const hourly = 60 * 60_000;
+    for (const outcome of ["failed", "partial"] as const) {
+      const last = record({
+        outcome,
+        verifiedAt: "2026-08-17T10:30:00.000Z",
+      });
+      expect(isDue(last, daily, NOW, hourly), outcome).toBe(true);
+    }
+  });
+
+  it("clamps a zero or negative retry to a floor", () => {
+    // The tick interval already bounds how often this can fire, so the floor
+    // is belt-and-braces rather than the real protection; it makes the intent
+    // explicit and stops a `0` meaning "always due".
+    const last = record({
+      outcome: "failed",
+      verifiedAt: "2026-08-17T11:59:59.500Z",
+    });
+    for (const retry of [0, -1]) {
+      expect(isDue(last, 24 * 60 * 60_000, NOW, retry), String(retry)).toBe(
+        false,
+      );
+    }
   });
 
   it("retries a failed run sooner when the lane asks for it", () => {
@@ -250,6 +280,43 @@ describe("the cycle", () => {
       ["org-1", "org-2"],
     );
     expect(seen).toEqual(["org-1", "org-2"]);
+  });
+
+  it("rejects an unusable schedule where it is built, not mid-cycle", () => {
+    // Throwing inside runCycle aborts every remaining lane and installation,
+    // which is what AD-16 forbids, and repeats every tick forever.
+    expect(() =>
+      assertSchedules(
+        [{ ...lane("a", async () => ({ outcome: "ok" })), installations: [] }],
+        ["org-1"],
+      ),
+    ).toThrow(/declares no installations/);
+
+    expect(() =>
+      assertSchedules(
+        [
+          {
+            ...lane("a", async () => ({ outcome: "ok" })),
+            installations: ["nowhere"],
+          },
+        ],
+        ["org-1"],
+      ),
+    ).toThrow(/never visits/);
+  });
+
+  it("does not abort the cycle when a lane matches no installation", async () => {
+    const report = await runCycle(
+      deps(),
+      [
+        {
+          ...lane("a", async () => ({ outcome: "ok" as const })),
+          installations: [],
+        },
+      ],
+      ["org-1"],
+    );
+    expect(report).toEqual({ ran: 0, skipped: 0, failed: 0 });
   });
 
   it("skips a lane whose cadence has not elapsed", async () => {

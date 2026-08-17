@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { CVE_ID } from "../core/cve.js";
 import { NOT_APPLICABLE, type Signal } from "../core/rank.js";
 import { KEV_SUBJECT } from "../core/subject.js";
-import { CVE_ID } from "../enrich/kev.js";
 import type { KevObservation } from "./collect/kev.js";
 import type { StorePort } from "./store/port.js";
 import { type FreshnessPolicy, freshness } from "./web/freshness.js";
@@ -27,15 +27,6 @@ export interface KevIndex {
   has: (cve: string) => boolean;
   /** Whether there is a catalogue current enough to answer with at all. */
   usable: boolean;
-  /**
-   * Whether a MISS can be trusted.
-   *
-   * A catalogue missing entries still proves a positive: an id we can see is
-   * genuinely listed. It cannot prove a negative, because the CVE being asked
-   * about may be one of the entries we failed to read. So a partial catalogue
-   * answers `true` confidently and `unknown` for everything else.
-   */
-  negativesTrustworthy: boolean;
   version: string | null;
   verifiedAt: string | null;
 }
@@ -55,13 +46,12 @@ export function loadKevIndex(
   const unusable: KevIndex = {
     has: () => false,
     usable: false,
-    negativesTrustworthy: false,
     version: null,
     verifiedAt: null,
   };
 
   const row = store.current(KEV_SUBJECT);
-  if (!row || row.state !== "present") return unusable;
+  if (row?.state !== "present") return unusable;
 
   const payload = row.payload as KevObservation | undefined;
   // A row of an unexpected shape degrades to unknown rather than throwing.
@@ -74,12 +64,19 @@ export function loadKevIndex(
   if (!payload || !Array.isArray(payload.cveIds)) return unusable;
   if (payload.cveIds.length === 0) return unusable;
 
-  const ids = new Set(payload.cveIds.map((c) => String(c).toUpperCase()));
+  // Every id must be a CVE. A list holding anything else would be a fresh,
+  // confident-looking index answering false for every real CVE asked.
+
+  // Every id must be a CVE. A list holding anything else would be a fresh,
+  // confident-looking index answering false for every real CVE asked.
+  if (!payload.cveIds.every((c) => typeof c === "string" && CVE_ID.test(c))) {
+    return unusable;
+  }
+  const ids = new Set(payload.cveIds.map((c) => c.toUpperCase()));
 
   return {
     has: (cve) => ids.has(cve.trim().toUpperCase()),
     usable: freshness(row.verifiedAt, now, policy) === "fresh",
-    negativesTrustworthy: (payload.unreadable ?? 0) === 0,
     version: payload.version || null,
     verifiedAt: row.verifiedAt,
   };
@@ -109,7 +106,8 @@ export function kevSignal(
   if (!CVE_ID.test(cve.trim())) return NOT_APPLICABLE;
 
   if (!index.usable) return null;
-  if (index.has(cve)) return true;
-  // A miss on a catalogue with unreadable entries might BE one of them.
-  return index.negativesTrustworthy ? false : null;
+  // A stored catalogue is always one the lane could vouch for in full, so a
+  // miss is a real miss. The lane writes nothing at all when it cannot read
+  // every entry, which is what makes this answer safe to give.
+  return index.has(cve);
 }

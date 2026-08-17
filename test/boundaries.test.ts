@@ -226,13 +226,10 @@ const BOUNDARIES: Record<
     allowed: ["../core/types.js", "../github/port.js"],
   },
   "src/twiki": {
-    forbidden: [
-      "../tricorder/store/port.js",
-      // The write side that merges pull requests has no business reaching the
-      // network fetcher. Declaring src/enrich's own boundary did not close
-      // this reverse edge, and nothing asserted it.
-      "../enrich/kev.js",
-    ],
+    forbidden: ["../tricorder/store/port.js"],
+    // NOT forbidden from importing src/enrich: AD-5 rule 3 says a feature
+    // directory may import any leaf, and enrich is a leaf. A ban was added
+    // here on a reviewer's say-so and contradicted the spine.
     allowed: [
       "../core/types.js",
       "../github/port.js",

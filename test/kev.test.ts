@@ -10,19 +10,20 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NOT_APPLICABLE } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
 import { HttpEnrichment, KEV_URL, parseKev } from "../src/enrich/kev.js";
-import type { EnrichmentPort } from "../src/enrich/port.js";
 import {
   collectKev,
   KEV_CADENCE_MS,
   KEV_INSTALLATION,
-  MAX_UNREADABLE_RATIO,
-  MIN_RETAINED_RATIO,
-  usablePrior,
 } from "../src/tricorder/collect/kev.js";
 import { kevSignal, loadKevIndex } from "../src/tricorder/kev-lookup.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { buildCollectionHealth } from "../src/tricorder/web/view.js";
-import { buildSchedules, cycleInstallations } from "../src/tricorder.js";
+import {
+  buildSchedules,
+  cycleInstallations,
+  parseKevUrl,
+} from "../src/tricorder.js";
+import { FakeEnrichmentPort } from "./fakes.js";
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 const DAILY = { cadenceMs: 24 * 60 * 60_000 };
@@ -105,18 +106,21 @@ describe("fetching", () => {
   });
 });
 
-describe("the KEV lane", () => {
+describe("the KEV lane stores only what it can vouch for", () => {
   let dir: string;
   let store: SqliteStore;
   let logs: string[];
 
-  const fake = (impl: () => Promise<ReturnType<typeof parseKev>>) =>
-    ({ fetchKev: impl }) as EnrichmentPort;
+  const port = (over: Partial<FakeEnrichmentPort> = {}) => {
+    const p = new FakeEnrichmentPort();
+    Object.assign(p, over);
+    return p;
+  };
 
-  const deps = (enrichment: EnrichmentPort) => ({
+  const deps = (enrichment: FakeEnrichmentPort, now = NOW.toISOString()) => ({
     enrichment,
     store,
-    now: () => NOW.toISOString(),
+    now: () => now,
     log: (m: string) => logs.push(m),
   });
 
@@ -128,155 +132,96 @@ describe("the KEV lane", () => {
     store = SqliteStore.openForWrite(join(dir, "k.db"));
     logs = [];
   });
-
   afterEach(() => {
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("stores the catalogue as one subject", async () => {
+  it("stores a catalogue it read in full", async () => {
+    const r = await collectKev(deps(port({ cveIds: ["CVE-2021-1111"] })));
+    expect(r).toMatchObject({ outcome: "ok", listed: 1, unreadable: 0 });
+    expect(stored()?.cveIds).toEqual(["CVE-2021-1111"]);
+  });
+
+  it("stores nothing at all when any entry was unreadable", async () => {
     const r = await collectKev(
-      deps(fake(async () => parseKev(payload(["CVE-2021-1111"])))),
+      deps(port({ cveIds: ["CVE-2021-1111"], unreadable: 1 })),
     );
-    expect(r).toMatchObject({ outcome: "ok", listed: 1 });
+    expect(r.outcome).toBe("partial");
+    expect(store.current(KEV_SUBJECT)).toBeNull();
+    expect(store.latestRuns(1)[0]?.detail).toContain("stored nothing");
+  });
+
+  it("leaves a good catalogue alone rather than replacing it with a worse one", async () => {
+    await collectKev(
+      deps(port({ cveIds: ["CVE-2021-1111", "CVE-2021-2222"] })),
+    );
+    const r = await collectKev(
+      deps(port({ cveIds: ["CVE-2021-1111"], unreadable: 1 })),
+    );
+    expect(r.outcome).toBe("partial");
+    expect(stored()?.cveIds).toHaveLength(2);
+  });
+
+  it("does not keep a degraded feed alive by topping up its freshness", async () => {
+    // The regression this rewrite exists to remove. The previous version
+    // touched the prior on every kept run, resetting the clock its own escape
+    // hatch read, so the catalogue froze permanently AND rendered fresh with
+    // trustworthy negatives. Ten degraded cycles: verified_at must not move.
+    await collectKev(
+      deps(port({ cveIds: ["CVE-2021-1111"] }), "2026-08-01T00:00:00.000Z"),
+    );
+    const first = store.current(KEV_SUBJECT)?.verifiedAt;
+
+    for (let day = 2; day <= 11; day++) {
+      await collectKev(
+        deps(
+          port({ cveIds: ["CVE-2021-1111", "CVE-2026-9999"], unreadable: 1 }),
+          `2026-08-${String(day).padStart(2, "0")}T00:00:00.000Z`,
+        ),
+      );
+    }
+
+    expect(store.current(KEV_SUBJECT)?.verifiedAt).toBe(first);
+    // And because it stopped being confirmed, the term goes unknown rather
+    // than answering confidently from a ten-day-old list.
+    const index = loadKevIndex(
+      store,
+      new Date("2026-08-11T00:00:00.000Z"),
+      DAILY,
+    );
+    expect(index.usable).toBe(false);
+    expect(kevSignal(index, "CVE-2099-9999")).toBeNull();
+  });
+
+  it("heals the moment one clean fetch arrives", async () => {
+    await collectKev(deps(port({ cveIds: ["CVE-2021-1111"], unreadable: 1 })));
+    expect(store.current(KEV_SUBJECT)).toBeNull();
+
+    await collectKev(deps(port({ cveIds: ["CVE-2021-1111"] })));
     expect(stored()?.cveIds).toEqual(["CVE-2021-1111"]);
   });
 
   it("writes nothing when the fetch fails, so lookups stay unknown", async () => {
-    // AD-20: a failed KEV fetch must leave every lookup unknown, never "not
-    // listed". Writing nothing is what achieves that.
     const r = await collectKev(
-      deps(
-        fake(async () => {
-          throw new Error("CISA is unreachable");
-        }),
-      ),
+      deps(port({ failWith: new Error("CISA is unreachable") })),
     );
     expect(r.outcome).toBe("failed");
     expect(store.current(KEV_SUBJECT)).toBeNull();
     expect(store.latestRuns(1)[0]?.detail).toContain("unreachable");
   });
 
-  it("keeps the previous catalogue rather than shrinking it", async () => {
-    // Superseded in intent by the freshness-aware cases above; retained
-    // because it pins the no-freshFor default, which keeps the prior.
-    await collectKev(
-      deps(
-        fake(async () =>
-          parseKev(
-            payload(["CVE-1", "CVE-2"].map((_, i) => `CVE-2021-111${i}`)),
-          ),
-        ),
-      ),
-    );
-    const before = stored()?.cveIds;
-
-    // A partly-readable fetch would answer "not listed" for everything it
-    // dropped: a false negative on the chain's top term.
-    const degraded = parseKev(payload(["CVE-2021-1110"]));
-    const r = await collectKev(
-      deps(fake(async () => ({ ...degraded, unreadable: 1 }))),
-    );
-
-    expect(r.outcome).toBe("partial");
-    expect(stored()?.cveIds).toEqual(before);
-  });
-
-  it("does store a partial catalogue when there is nothing to keep", async () => {
-    const degraded = parseKev(payload(["CVE-2021-1110"]));
-    const r = await collectKev(
-      deps(fake(async () => ({ ...degraded, unreadable: 3 }))),
-    );
-    expect(r.outcome).toBe("partial");
-    expect(stored()?.cveIds).toEqual(["CVE-2021-1110"]);
-  });
-
-  it("keeps the complete catalogue it holds while that one is still fresh", async () => {
-    // The policy: prefer a complete catalogue over a degraded one, but only
-    // while the complete one can still be vouched for.
-    const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
-    await collectKev(deps(fake(async () => parseKev(payload(many)))));
-
-    const next = parseKev(payload([...many, "CVE-2026-9999"]));
+  it("does not rewrite a finished run as failed if logging throws", async () => {
+    // finishRun already committed `ok`; a throw afterwards must not turn a
+    // successful run into a fetch failure that never happened.
     const r = await collectKev({
-      ...deps(fake(async () => ({ ...next, unreadable: 1 }))),
-      freshFor: DAILY,
+      ...deps(port({ cveIds: ["CVE-2021-1111"] })),
+      log: () => {
+        throw new Error("logging blew up");
+      },
     });
-
-    expect(r.outcome).toBe("partial");
-    expect(stored()?.cveIds).toHaveLength(200);
-    expect(r.listed).toBe(200);
-  });
-
-  it("takes the degraded catalogue once the one it holds is going stale", async () => {
-    // And this is why it cannot freeze. Holding a complete catalogue forever
-    // was the original trap: a feed that stays slightly broken would keep the
-    // old one, it would age past its budget, and the term would go unknown
-    // with no way back.
-    const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
-    await collectKev({
-      ...deps(fake(async () => parseKev(payload(many)))),
-      now: () => "2026-08-14T12:00:00.000Z",
-    });
-
-    const next = parseKev(payload([...many, "CVE-2026-9999"]));
-    const r = await collectKev({
-      ...deps(fake(async () => ({ ...next, unreadable: 1 }))),
-      freshFor: DAILY,
-    });
-
-    expect(r.outcome).toBe("partial");
-    expect(stored()?.cveIds).toContain("CVE-2026-9999");
-  });
-
-  it("keeps a complete catalogue when a well-formed fetch has shrunk", async () => {
-    // Nothing in the unreadable count shows this. A truncated body parses
-    // cleanly, reports zero unreadable, and would otherwise be accepted as a
-    // complete catalogue that happens to be smaller, flipping every dropped
-    // CVE to a confident "not in KEV".
-    const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
-    await collectKev(deps(fake(async () => parseKev(payload(many)))));
-
-    const truncated = parseKev(payload(many.slice(0, 5)));
-    const r = await collectKev({
-      ...deps(fake(async () => truncated)),
-      freshFor: DAILY,
-    });
-
-    expect(r.outcome).toBe("partial");
-    expect(stored()?.cveIds).toHaveLength(200);
-    expect(store.latestRuns(1)[0]?.detail).toContain("shrank");
-  });
-
-  it("keeps the kept catalogue fresh, so holding it does not age it out", async () => {
-    const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
-    await collectKev({
-      ...deps(fake(async () => parseKev(payload(many)))),
-      now: () => "2026-08-17T00:00:00.000Z",
-    });
-
-    await collectKev({
-      ...deps(
-        fake(async () => ({ ...parseKev(payload(many)), unreadable: 5 })),
-      ),
-      now: () => "2026-08-17T06:00:00.000Z",
-      freshFor: DAILY,
-    });
-
-    // Without this the kept catalogue silently ages into stale and the term
-    // goes unknown anyway, which is the freeze by another route.
-    expect(store.current(KEV_SUBJECT)?.verifiedAt).toBe(
-      "2026-08-17T06:00:00.000Z",
-    );
-  });
-
-  it("records how many entries it could not read", async () => {
-    const degraded = parseKev(payload(["CVE-2021-1110"]));
-    await collectKev(deps(fake(async () => ({ ...degraded, unreadable: 2 }))));
-    const row = store.current(KEV_SUBJECT)?.payload as
-      | { unreadable: number }
-      | undefined;
-    expect(row?.unreadable).toBe(2);
+    expect(r.outcome).toBe("failed");
+    expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
   });
 });
 
@@ -340,26 +285,14 @@ describe("the chain's first term", () => {
     expect(kevSignal(index, null)).toBe(NOT_APPLICABLE);
   });
 
-  it("trusts a hit but not a miss when entries were unreadable", async () => {
-    // A catalogue missing entries still proves a positive: an id we can see is
-    // listed. It cannot prove a negative, because the CVE being asked about may
-    // be one of the entries we failed to read.
-    await collectKev({
-      enrichment: {
-        fetchKev: async () => ({
-          ...parseKev(payload(["CVE-2021-1111"])),
-          unreadable: 1,
-        }),
-      },
-      store,
-      now: () => NOW.toISOString(),
-      log: () => {},
-    });
-
+  it("can only ever be asked about a catalogue that was read in full", async () => {
+    // The lane writes nothing when any entry was unreadable, so a partial
+    // catalogue cannot reach the store. That is what makes a miss safe to
+    // answer as false: the whole notion of an untrustworthy negative is gone.
+    await seed(["CVE-2021-1111"]);
     const index = loadKevIndex(store, NOW, DAILY);
-    expect(index.negativesTrustworthy).toBe(false);
     expect(kevSignal(index, "CVE-2021-1111")).toBe(true);
-    expect(kevSignal(index, "CVE-2099-9999")).toBeNull();
+    expect(kevSignal(index, "CVE-2099-9999")).toBe(false);
   });
 
   it("degrades to unknown on a payload of the wrong shape", async () => {
@@ -475,48 +408,41 @@ describe("the constants that hold the guards in place", () => {
   // Each of these was free to drift with a green suite. The threshold could be
   // set to 0.4, the URL to a nonexistent file, and the timeout deleted, and all
   // 378 tests still passed.
-  it("pins the unreadable threshold at its documented boundary", () => {
-    expect(MAX_UNREADABLE_RATIO).toBe(0.01);
+  it("refuses a KEV url that is not https, rather than silently defaulting", () => {
+    // Every neighbouring setting validates. A typo here would revert to CISA's
+    // feed and look like a working mirror until someone read the logs.
+    expect(() => parseKevUrl("not a url")).toThrow(/not a URL/);
+    expect(() => parseKevUrl("http://mirror.example/kev.json")).toThrow(
+      /must be https/,
+    );
+    expect(parseKevUrl("  ")).toBeUndefined();
+    expect(parseKevUrl(undefined)).toBeUndefined();
+    expect(parseKevUrl("https://mirror.example/kev.json")).toBe(
+      "https://mirror.example/kev.json",
+    );
   });
 
-  it("treats exactly the threshold as acceptable, and just over it as not", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "kevt-"));
-    const store = SqliteStore.openForWrite(join(dir, "t.db"));
-    const seed = Array.from({ length: 100 }, (_, i) => `CVE-2021-${1000 + i}`);
-    const base = {
-      store,
-      now: () => NOW.toISOString(),
-      log: () => {},
-      freshFor: DAILY,
-    };
-    await collectKev({
-      ...base,
-      enrichment: { fetchKev: async () => parseKev(payload(seed)) },
-    });
-
-    // 1 unreadable in 100 is exactly 0.01; the guard is `>`, so it passes the
-    // ratio test and is refused only because it also lost an entry.
-    const r = await collectKev({
-      ...base,
-      enrichment: {
-        fetchKev: async () => ({
-          ...parseKev(payload(seed.slice(0, 99))),
-          unreadable: 1,
-        }),
-      },
-    });
-    expect(r.outcome).toBe("partial");
-
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
+  it("refuses a body the declared length says is too large", async () => {
+    const port = new HttpEnrichment(
+      "https://x/k.json",
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          headers: new Headers({
+            "content-type": "application/json",
+            "content-length": String(64 * 1024 * 1024),
+          }),
+          json: async () => payload(["CVE-2021-1111"]),
+        }) as Response,
+    );
+    await expect(port.fetchKev()).rejects.toThrow(/too large/);
   });
 
-  it("pins the endpoint and the shrink floor", () => {
+  it("pins the endpoint", () => {
     expect(new HttpEnrichment().endpoint()).toBe(KEV_URL);
     expect(KEV_URL).toContain("cisa.gov");
     expect(KEV_URL).toContain("known_exploited_vulnerabilities.json");
-    expect(MIN_RETAINED_RATIO).toBeGreaterThan(0);
-    expect(MIN_RETAINED_RATIO).toBeLessThan(1);
   });
 
   it("sends a timeout, an accept header and a user agent", async () => {
@@ -616,15 +542,8 @@ describe("guards on what the index will answer with", () => {
     expect(kevSignal(index, "CVE-2021-1111")).toBe(true);
   });
 
-  it("ignores a tombstoned catalogue instead of keeping it", async () => {
-    // The lane and the lookup disagreed: the lookup rejected a resolved row
-    // while the lane counted it as "something better to keep".
-    write({
-      version: "v",
-      released: "r",
-      cveIds: ["CVE-2021-1111"],
-      unreadable: 0,
-    });
+  it("ignores a tombstoned catalogue", () => {
+    write({ version: "v", released: "r", cveIds: ["CVE-2021-1111"] });
     store.recordTombstones(
       store.beginRun({
         lane: "kev",
@@ -635,8 +554,6 @@ describe("guards on what the index will answer with", () => {
       NOW.toISOString(),
       [KEV_SUBJECT],
     );
-
-    expect(usablePrior(store)).toBeNull();
     expect(loadKevIndex(store, NOW, DAILY).usable).toBe(false);
   });
 });
