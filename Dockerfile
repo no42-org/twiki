@@ -32,4 +32,13 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./
 # distroless/nodejs sets ENTRYPOINT ["/usr/bin/node"]; pass the script as CMD.
+#
+# One image, three roles (AD-13). twiki is the default so existing deployments
+# are unaffected; the read side is reached by overriding the command:
+#
+#   command: ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "collect"]
+#   command: ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "web"]
+#
+# The flag suppresses node:sqlite's one-per-process ExperimentalWarning by
+# name. Never --no-warnings, which would hide a genuine one.
 CMD ["dist/index.js"]

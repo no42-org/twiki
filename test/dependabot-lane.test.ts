@@ -36,6 +36,13 @@ describe("Dependabot alerts lane", () => {
     store,
     isWatched: (repo: { owner: string; name: string }) =>
       watched.has(watchKey(repo)),
+    watchedIn: (installation: string) =>
+      [...watched]
+        .filter((slug) => slug.startsWith(`${installation.toLowerCase()}/`))
+        .map((slug) => {
+          const [owner = "", name = ""] = slug.split("/");
+          return { owner, name };
+        }),
     now: () => new Date(Date.UTC(2026, 7, 16, 10, clock++)).toISOString(),
     log: (m: string) => logs.push(m),
   });
@@ -133,7 +140,7 @@ describe("Dependabot alerts lane", () => {
 
     it("notices when an alert's severity changes", async () => {
       github.orgAlerts.set("no42-org", [
-        makeAlert({ number: 1, severity: "medium" }),
+        makeAlert({ number: 1, severity: "moderate" }),
       ]);
       await collectOrgAlerts(deps(), "no42-org", "full");
       const before = store.currentByType("dependabot_alert")[0];
@@ -363,6 +370,151 @@ describe("Dependabot alerts lane", () => {
     it("records the scope it ran at", async () => {
       await collectOrgAlerts(deps(), "no42-org", "hot");
       expect(store.latestRuns(1)[0]?.scope).toBe("hot");
+    });
+  });
+
+  // The confirmation row is what makes "we looked and there are none"
+  // expressible. Every test below was written after a review found the lane
+  // could stop writing it, or write it when it should not, with the whole
+  // suite still green.
+  describe("repository confirmations", () => {
+    const confirmed = () =>
+      store
+        .currentByType("repository")
+        .filter((c) => c.state === "present")
+        .map((c) => c.subject.key)
+        .sort();
+
+    it("writes one per watched repository in the installation", async () => {
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      watched.add("no42-org/quiet");
+
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      // Including no42-org/quiet, which had no alerts. That row IS the zero.
+      expect(confirmed()).toEqual(["no42-org/quiet", "no42-org/twiki"]);
+    });
+
+    it("carries the count and worst severity", async () => {
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1, severity: "low" }),
+        makeAlert({ number: 2, severity: "moderate" }),
+      ]);
+
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      const row = store.currentByType("repository")[0];
+      expect(row?.payload).toMatchObject({
+        repo: "no42-org/twiki",
+        openAlerts: 2,
+        worstSeverity: "moderate",
+      });
+    });
+
+    it("confirms a repository with no alerts as a real zero", async () => {
+      github.orgAlerts.set("no42-org", []);
+
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(store.currentByType("repository")[0]?.payload).toMatchObject({
+        openAlerts: 0,
+        worstSeverity: null,
+      });
+    });
+
+    it("writes none on a partial sweep, rather than publishing an undercount", async () => {
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.unreadableByOrg.set("no42-org", 3);
+
+      const result = await collectOrgAlerts(deps(), "no42-org", "full");
+
+      // Three payloads we could not read. The count we can compute is smaller
+      // than the truth, and writing it would render as a confident number with
+      // a fresh badge on exactly the repository that failed.
+      expect(result.outcome).toBe("partial");
+      expect(confirmed()).toEqual([]);
+    });
+
+    it("writes none on a hot sweep, which queried a subset", async () => {
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+
+      await collectOrgAlerts(deps(), "no42-org", "hot");
+
+      // Same reasoning the tombstone guard already uses: absence from a hot run
+      // means nothing, so a count derived from it must not overwrite a full
+      // sweep's real number with a smaller one.
+      expect(confirmed()).toEqual([]);
+    });
+
+    it("stops confirming a repository dropped from the watched set", async () => {
+      github.orgAlerts.set("no42-org", []);
+      watched.add("no42-org/quiet");
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(confirmed()).toContain("no42-org/quiet");
+
+      watched.delete("no42-org/quiet");
+      const before = store.current({
+        type: "repository",
+        key: "no42-org/quiet",
+      })?.verifiedAt;
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      // Out of scope, not fixed: the row is left to go stale on its own rather
+      // than being re-confirmed by a sweep that no longer looks at it.
+      expect(
+        store.current({ type: "repository", key: "no42-org/quiet" })
+          ?.verifiedAt,
+      ).toBe(before);
+    });
+  });
+
+  describe("severity vocabulary", () => {
+    it("ranks moderate above low", async () => {
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1, severity: "low" }),
+        makeAlert({ number: 2, severity: "moderate" }),
+      ]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(store.currentByType("repository")[0]?.payload).toMatchObject({
+        worstSeverity: "moderate",
+      });
+    });
+
+    it("does not depend on the order the page happened to list them", async () => {
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1, severity: "moderate" }),
+        makeAlert({ number: 2, severity: "low" }),
+      ]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(store.currentByType("repository")[0]?.payload).toMatchObject({
+        worstSeverity: "moderate",
+      });
+    });
+
+    it("reports an unrecognised severity as unknown, not as the lowest known one", async () => {
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1, severity: "low" }),
+        // What the adapter stores when GitHub omits the advisory.
+        makeAlert({ number: 2, severity: "unknown" }),
+      ]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      // AD-20: absent ranks as unknown, never as zero risk. Calling this "low"
+      // is the confident-zero mistake at severity scale.
+      expect(store.currentByType("repository")[0]?.payload).toMatchObject({
+        worstSeverity: "unknown",
+      });
+    });
+
+    it("still reports critical, which nothing can outrank", async () => {
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1, severity: "critical" }),
+        makeAlert({ number: 2, severity: "not-a-severity" }),
+      ]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(store.currentByType("repository")[0]?.payload).toMatchObject({
+        worstSeverity: "critical",
+      });
     });
   });
 });

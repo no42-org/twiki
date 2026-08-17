@@ -111,11 +111,43 @@ with copy-paste examples for **Slack**, **Discord**, and **Matrix**.
 3. Flip to **enforce** (`mode: enforce` or `TWIKI_MODE=enforce`).
    Rollback is instant: flip back to `shadow`.
 
+## gitricorder (the dashboard)
+
+A second product in this repository, sharing `core/` and `github/` but nothing
+else: twiki notifies and merges, gitricorder collects and shows. It is a
+separate entrypoint (`dist/tricorder.js`) with two roles from one image.
+
+```sh
+tricorder collect   # writes: migrates the schema, then collects (see below)
+tricorder web       # reads: serves the dashboard, read-only, never migrates
+```
+
+`collect` currently prepares the schema and then **exits 2**: lane wiring and
+scheduling are not in this build. It exits non-zero deliberately, so a
+restarting orchestrator cannot report success forever.
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `TRICORDER_DB` | SQLite database path. Relative paths land in the working directory, which in a container dies with it. | `tricorder.db` |
+| `TRICORDER_HOST` | Bind address for `web`. | `127.0.0.1` |
+| `TRICORDER_PORT` | Port for `web`. Decimal, 1-65535; `0` is rejected. | `8787` |
+| `TWIKI_CONFIG` | Watched repositories. gitricorder shares twiki's `repos.yaml`: it is the entire universe for both. | `repos.yaml` |
+
+The default bind is loopback, and there is no code path that defaults to
+`0.0.0.0`. There is **no authentication in front of the dashboard**, so binding
+it anywhere else exposes every collected alert to anything that can reach the
+port. Doing so logs a warning; put your own authenticated proxy in front.
+
+The `web` process opens the database read-only and refuses to start if the
+schema is a version it was not built against, rather than serving misread rows.
+Upgrading means restarting both roles, not just the collector.
+
 ## Layout
 
 ```
 src/
-  index.ts         entrypoint: env, config load, dependency wiring
+  index.ts         entrypoint: env, config load, dependency wiring (twiki)
+  tricorder.ts     entrypoint: role dispatch, store open, server (gitricorder)
   core/            shared domain, a closed leaf (see "Module boundaries" below)
     config.ts      allowlist + per-repo policy (strict YAML schema)
     semver.ts      bump classification + next-patch tag (pure)
@@ -136,6 +168,10 @@ src/
     result.ts      per-run result types
     run.ts         orchestrate one tick
     scheduler.ts   single tick, or a tick every interval
+  tricorder/       the read side: collect into a store, serve a page
+    store/         append-only observations + materialised projection (node:sqlite)
+    collect/       one lane per source; dependabot-alerts.ts is the first
+    web/           freshness policy, view model, JSX components, routes, server
 test/              pure-logic suites + ports + injection + shadow e2e (fakes, no network)
 scripts/           release-plan (CI release glue), matrix-smoke
 ```

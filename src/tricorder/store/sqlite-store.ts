@@ -451,6 +451,38 @@ export class SqliteStore implements StorePort {
     }));
   }
 
+  latestRunPerKey(): RunRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, lane, installation, scope, outcome, detail, started_at, verified_at
+         FROM collection_run
+         WHERE id IN (
+           SELECT MAX(id) FROM collection_run GROUP BY lane, installation, scope
+         )
+         ORDER BY lane, installation, scope`,
+      )
+      .all() as {
+      id: number;
+      lane: string;
+      installation: string;
+      scope: "hot" | "full";
+      outcome: RunOutcome;
+      detail: string | null;
+      started_at: string;
+      verified_at: string;
+    }[];
+    return rows.map((r) => ({
+      id: r.id,
+      lane: r.lane,
+      installation: r.installation,
+      scope: r.scope,
+      outcome: r.outcome,
+      detail: r.detail,
+      startedAt: r.started_at,
+      verifiedAt: r.verified_at,
+    }));
+  }
+
   loadValidator(installation: string, requestUrl: string): Validator | null {
     const row = this.db
       .prepare(

@@ -7,7 +7,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["test/**/*.test.ts"],
+    // Both extensions, so a .tsx test cannot be linted and typechecked while
+    // silently never running.
+    include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
     environment: "node",
   },
 });

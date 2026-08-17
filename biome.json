@@ -6,7 +6,13 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
+    "includes": [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "test/**/*.ts",
+      "test/**/*.tsx",
+      "scripts/**/*.ts"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -35,7 +41,7 @@
   },
   "overrides": [
     {
-      "includes": ["src/core/**/*.ts"],
+      "includes": ["src/core/**/*.ts", "src/core/**/*.tsx"],
       "linter": {
         "rules": {
           "style": {
@@ -52,6 +58,10 @@
                       "**/enrich/**"
                     ],
                     "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
+                  },
+                  {
+                    "group": ["**/index.js", "**/tricorder.js"],
+                    "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
               }
@@ -61,7 +71,7 @@
       }
     },
     {
-      "includes": ["src/github/**/*.ts"],
+      "includes": ["src/github/**/*.ts", "src/github/**/*.tsx"],
       "linter": {
         "rules": {
           "style": {
@@ -77,6 +87,10 @@
                       "**/enrich/**"
                     ],
                     "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
+                  },
+                  {
+                    "group": ["**/index.js", "**/tricorder.js"],
+                    "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
               }
@@ -86,7 +100,7 @@
       }
     },
     {
-      "includes": ["src/enrich/**/*.ts"],
+      "includes": ["src/enrich/**/*.ts", "src/enrich/**/*.tsx"],
       "linter": {
         "rules": {
           "style": {
@@ -102,6 +116,10 @@
                       "**/github/**"
                     ],
                     "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
+                  },
+                  {
+                    "group": ["**/index.js", "**/tricorder.js"],
+                    "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
               }
@@ -111,7 +129,7 @@
       }
     },
     {
-      "includes": ["src/twiki/**/*.ts"],
+      "includes": ["src/twiki/**/*.ts", "src/twiki/**/*.tsx"],
       "linter": {
         "rules": {
           "style": {
@@ -122,6 +140,10 @@
                   {
                     "group": ["**/tricorder/**", "**/tricorder.ts"],
                     "message": "AD-5: this directory may not import a feature directory. Move shared code down into a leaf."
+                  },
+                  {
+                    "group": ["**/index.js", "**/tricorder.js"],
+                    "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
               }
@@ -131,7 +153,7 @@
       }
     },
     {
-      "includes": ["src/tricorder/**/*.ts"],
+      "includes": ["src/tricorder/**/*.ts", "src/tricorder/**/*.tsx"],
       "linter": {
         "rules": {
           "style": {
@@ -142,6 +164,10 @@
                   {
                     "group": ["**/twiki/**"],
                     "message": "AD-5: this directory may not import a feature directory. Move shared code down into a leaf."
+                  },
+                  {
+                    "group": ["**/index.js", "**/tricorder.js"],
+                    "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
               }
@@ -191,7 +217,7 @@
       }
     },
     {
-      "includes": ["test/**/*.ts"],
+      "includes": ["test/**/*.ts", "test/**/*.tsx"],
       "linter": {
         "rules": {
           "style": {

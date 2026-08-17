@@ -40,7 +40,7 @@ export interface RawDependabotAlert {
   number: number;
   repo: RepoRef;
   state: "open" | "fixed" | "dismissed" | "auto_dismissed";
-  /** low, medium, high or critical; `unknown` when GitHub omitted it. */
+  /** low, moderate, high or critical (the GHSA scale); `unknown` when GitHub omitted it. */
   severity: string;
   ghsaId: string | null;
   cveId: string | null;

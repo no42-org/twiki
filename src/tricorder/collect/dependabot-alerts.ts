@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { alertSubject } from "../../core/subject.js";
+import { alertSubject, repositorySubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import type { GitHubReadPort, RawDependabotAlert } from "../../github/port.js";
 import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
@@ -19,6 +19,22 @@ import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
 // captures EPSS at ingest so the ranking has something honest to read (AD-18).
 
 /** What we store about an alert. Keep it flat: the ranking chain reads it. */
+/**
+ * Per-repository confirmation. Written for every watched repository on every
+ * successful sweep, whether or not it had an alert.
+ *
+ * Without it, "we looked and there are none" is inexpressible: a healthy
+ * repository has no alert rows, and absence of rows is indistinguishable from
+ * absence of collection. It also keeps a repository that just became clean
+ * from going permanently stale, because its alert rows stop being updated the
+ * moment they are tombstoned.
+ */
+export interface RepoObservation {
+  repo: string;
+  openAlerts: number;
+  worstSeverity: string | null;
+}
+
 export interface AlertObservation {
   number: number;
   repo: string;
@@ -77,9 +93,53 @@ export function watchKey(repo: RepoRef): string {
   return `${repo.owner}/${repo.name}`.toLowerCase();
 }
 
+/** Summarise one repository's alerts into its confirmation row. */
+export function summariseRepo(
+  repo: RepoRef,
+  alerts: readonly RawDependabotAlert[],
+): ObservationInput {
+  const slug = watchKey(repo);
+  const mine = alerts.filter((a) => watchKey(a.repo) === slug);
+  const payload: RepoObservation = {
+    repo: slug,
+    openAlerts: mine.length,
+    worstSeverity: worstOf(mine.map((a) => a.severity)),
+  };
+  return { subject: repositorySubject(repo), payload };
+}
+
+/**
+ * GitHub's advisory vocabulary, worst first.
+ *
+ * `moderate`, not `medium`: this is the GHSA scale, and the adapter stores
+ * `security_advisory.severity` verbatim. Spelling it `medium` made every
+ * moderate alert unrecognised and fell through to whatever the page happened
+ * to list first.
+ */
+const SEVERITY_ORDER = ["critical", "high", "moderate", "low"];
+
+/**
+ * The worst severity present, or `unknown` when we cannot say.
+ *
+ * An unrecognised severity (the adapter's `unknown` for a missing advisory, or
+ * a value GitHub adds later) could be anything. Reporting it as the lowest
+ * severity we do recognise is the confident-zero mistake in miniature, so it
+ * yields `unknown` unless a `critical` is present, which nothing can outrank
+ * (AD-20: absent ranks as unknown, never as zero risk).
+ */
+function worstOf(severities: readonly string[]): string | null {
+  if (severities.length === 0) return null;
+  const known = SEVERITY_ORDER.find((l) => severities.includes(l)) ?? null;
+  const unrecognised = severities.some((s) => !SEVERITY_ORDER.includes(s));
+  if (unrecognised && known !== "critical") return "unknown";
+  return known;
+}
+
 export interface LaneDeps {
   github: GitHubReadPort;
   store: StorePort;
+  /** Watched repositories belonging to this installation. */
+  watchedIn: (installation: string) => readonly RepoRef[];
   /**
    * The watched set, as case-folded `owner/name`. This is AD-10's rule and it
    * lives here rather than in the adapter: twiki's allowlist guard is
@@ -129,10 +189,6 @@ export async function collectOrgAlerts(
     const watched = page.alerts.filter((a) => deps.isWatched(a.repo));
     const observations = watched.map(normalise);
 
-    // One transaction: every observation and its projection advance land
-    // together, or none do (AD-3).
-    deps.store.recordObservations(run, deps.now(), observations);
-
     // Unreadable payloads mean the result is incomplete. Finishing `ok` here
     // would report a confident zero if the endpoint's shape ever shifts.
     const outcome = page.unreadable > 0 ? "partial" : "ok";
@@ -140,6 +196,36 @@ export async function collectOrgAlerts(
       page.unreadable > 0
         ? `${page.unreadable} alert payloads could not be read`
         : undefined;
+
+    // One confirmation per watched repository in this installation, including
+    // the ones with nothing to report. This is what makes a real zero
+    // expressible and stops a newly-clean repository going stale.
+    //
+    // Written under the same two guards as the tombstone reconciliation below,
+    // for the same reason: a confirmation asserts "we looked, and this is the
+    // whole answer". A sweep that cannot back that assertion must stay silent
+    // and leave the prior value to go stale on its own.
+    //
+    //   scope must be full   a hot run queried a subset, so its count is an
+    //                        undercount, and writing it would overwrite a full
+    //                        sweep's real number with a smaller one
+    //   outcome must be ok   a partial run could not read some payloads, so its
+    //                        count publishes a confident zero for exactly the
+    //                        repository whose alerts failed to map
+    const repoObservations =
+      scope === "full" && outcome === "ok"
+        ? deps
+            .watchedIn(installation)
+            .map((repo) => summariseRepo(repo, watched))
+        : [];
+
+    // One transaction: every observation and its projection advance land
+    // together, or none do (AD-3).
+    deps.store.recordObservations(run, deps.now(), [
+      ...observations,
+      ...repoObservations,
+    ]);
+
     // Reconcile disappearance into explicit tombstones (AD-23), under three
     // guards, because a wrong tombstone silently wipes real state:
     //
