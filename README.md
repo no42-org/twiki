@@ -142,6 +142,30 @@ The `web` process opens the database read-only and refuses to start if the
 schema is a version it was not built against, rather than serving misread rows.
 Upgrading means restarting both roles, not just the collector.
 
+### Sharing the database between the two roles
+
+Both roles open one SQLite file in WAL mode. Measured across two containers on
+one host bind mount: no corruption, no lock contention, snapshot isolation
+holds, and a collector killed mid-transaction leaves a database the next open
+recovers cleanly.
+
+Two constraints follow from how WAL works, and both are easy to get wrong:
+
+- **Do not mount the data volume read-only, not even for `web`.** WAL keeps its
+  shared memory in a `-shm` file beside the database, so SQLite must be able to
+  write the *directory* even when the connection is `readOnly`. A `:ro` mount
+  fails with `SQLITE_CANTOPEN`. The read-only guarantee comes from the handle,
+  which SQLite enforces, not from the filesystem.
+- **Start the collector before the web process on a cold start.** A read-only
+  handle cannot recover a hot WAL whose `-shm` is missing, which is what a
+  backup restore that captured only `<db>` leaves behind. Any write open
+  repairs it; the collector's startup migration is that write open.
+
+The database must be on a **local** filesystem. WAL requires processes to share
+memory through that `-shm` file and mmap, which NFS and SMB do not provide
+reliably. This was not tested here, and a network volume should be treated as
+unsupported.
+
 ## Layout
 
 ```
