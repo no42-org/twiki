@@ -299,21 +299,22 @@ describe("the CLI still offers what it advertises", () => {
   // `biome check` exits 0 on warnings.
   const roles = ["collect", "web", "doctor"];
 
-  const usage = (): string => {
+  /**
+   * Run the real entrypoint from source.
+   *
+   * Through tsx rather than dist/, because `make verify` does not build: a
+   * version of this test that needed a build passed locally and failed in CI,
+   * and a test whose whole job is noticing a deleted role must not itself be
+   * the fragile one.
+   */
+  const runRole = (role: string, env: NodeJS.ProcessEnv = {}): string => {
     try {
-      execFileSync(
-        "node",
-        [
-          "--disable-warning=ExperimentalWarning",
-          "dist/tricorder.js",
-          "definitely-not-a-role",
-        ],
-        {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-        },
-      );
-      return "";
+      return execFileSync("npx", ["tsx", "src/tricorder.ts", role], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+        env: { ...process.env, ...env },
+      });
     } catch (err) {
       const e = err as { stderr?: string; stdout?: string };
       return `${e.stdout ?? ""}${e.stderr ?? ""}`;
@@ -321,7 +322,7 @@ describe("the CLI still offers what it advertises", () => {
   };
 
   it("lists exactly the roles it implements", () => {
-    const text = usage();
+    const text = runRole("definitely-not-a-role");
     for (const role of roles) {
       expect(text, `usage should mention ${role}`).toContain(role);
     }
