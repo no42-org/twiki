@@ -75,6 +75,9 @@ async function main(): Promise<void> {
       watched,
       // Matches the full-sweep cadence the architecture plans for.
       policy: { cadenceMs: 15 * 60_000 },
+      // The coverage lane is daily (AD-15), so judging it on the sweep cadence
+      // would report every attestation as stale within half an hour.
+      coveragePolicy: { cadenceMs: 24 * 60 * 60_000 },
       now: () => new Date(),
     });
 

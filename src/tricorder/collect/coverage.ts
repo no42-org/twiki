@@ -28,8 +28,6 @@ export const LANE = "coverage";
 export interface CoverageObservation {
   repo: string;
   state: CoverageState;
-  /** Archived repositories are reported even when they are otherwise covered. */
-  archived: boolean;
 }
 
 export interface CoverageDeps {
@@ -65,7 +63,9 @@ export function decideCoverage(
   // still answer 200 with old alerts, and reporting it as covered would promise
   // that something is watching a repository nothing can update.
   if (meta?.archived) return "archived";
-  if (meta?.disabled) return "unreachable";
+  // GitHub's `disabled` is about the repository itself, for billing, DMCA or
+  // abuse. It is not a missing installation and must not be reported as one.
+  if (meta?.disabled) return "repo_disabled";
   return probe;
 }
 
@@ -118,13 +118,18 @@ export async function collectCoverage(
 
       if (state === "covered") covered++;
       else notCovered++;
-      if (state === "unknown") unknown++;
 
-      const payload: CoverageObservation = {
-        repo: slug,
-        state,
-        archived: meta?.archived === true,
-      };
+      if (state === "unknown") {
+        unknown++;
+        // Do not overwrite what we already knew with what we failed to learn.
+        // A rate-limited probe returns an unrecognised 403, and persisting that
+        // over a good `covered` would blank a correct alert count until the
+        // next successful run. The alert lane already refuses to write a
+        // confirmation it cannot back; this is the same rule.
+        if (deps.store.current(coverageSubject(repo)) !== null) continue;
+      }
+
+      const payload: CoverageObservation = { repo: slug, state };
       observations.push({ subject: coverageSubject(repo), payload });
     }
 

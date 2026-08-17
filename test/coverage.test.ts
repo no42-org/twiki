@@ -10,7 +10,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { coverageReason, isCovered } from "../src/core/coverage.js";
 import { coverageSubject } from "../src/core/subject.js";
 import type { RepoRef } from "../src/core/types.js";
-import { translateDependabotProbe } from "../src/github/octokit-adapter.js";
+import {
+  OctokitGitHub,
+  translateDependabotProbe,
+} from "../src/github/octokit-adapter.js";
 import {
   type CoverageObservation,
   collectCoverage,
@@ -62,6 +65,15 @@ describe("translating the probe on observed behaviour (story 23)", () => {
     ).toBe("unreachable");
   });
 
+  it("does not throw on a rejection that is not an object", () => {
+    // Aborted requests can surface null. Throwing inside a catch escapes the
+    // probe and fails the whole installation run, turning one repository's odd
+    // rejection into zero coverage rows for the organisation.
+    expect(translateDependabotProbe(null)).toBe("unknown");
+    expect(translateDependabotProbe(undefined)).toBe("unknown");
+    expect(translateDependabotProbe("a string")).toBe("unknown");
+  });
+
   it("refuses to guess between the two 403s when the message is new", () => {
     // Guessing produces either a false accusation about the operator's
     // settings or a false claim of inaccessibility, and both read as confident.
@@ -75,6 +87,31 @@ describe("translating the probe on observed behaviour (story 23)", () => {
   });
 });
 
+describe("the adapter's own probe", () => {
+  it("does not call a resolution failure an uninstalled App", async () => {
+    // The catch around client() also sees the allowlist guard and any transient
+    // token-mint failure. Reporting those as "not installed" would, during a
+    // token outage, mark every repository in the organisation as uncovered at
+    // once, each naming a cause that is not true. This is precisely the guess
+    // translateDependabotProbe refuses to make a few lines below.
+    const gh = new OctokitGitHub(
+      async () => {
+        throw new Error("could not mint an installation token");
+      },
+      () => true,
+    );
+    expect(await gh.probeDependabotAccess(REPO)).toBe("unknown");
+  });
+
+  it("does not call a non-allowlisted repository uninstalled either", async () => {
+    const gh = new OctokitGitHub(
+      async () => ({}) as never,
+      () => false,
+    );
+    expect(await gh.probeDependabotAccess(REPO)).toBe("unknown");
+  });
+});
+
 describe("deciding coverage from cheap facts plus the probe", () => {
   it("lets archived win over a probe that says covered", () => {
     // An archived repository can still answer 200 with old alerts. Reporting it
@@ -82,6 +119,19 @@ describe("deciding coverage from cheap facts plus the probe", () => {
     expect(decideCoverage({ archived: true, disabled: false }, "covered")).toBe(
       "archived",
     );
+  });
+
+  it("does not call a GitHub-disabled repository an uninstalled App", () => {
+    // GitHub's `disabled` flag is about the repository, for billing, DMCA or
+    // abuse. Reporting it as a missing installation sends the operator to check
+    // a setting that is fine.
+    expect(decideCoverage({ archived: false, disabled: true }, "covered")).toBe(
+      "repo_disabled",
+    );
+    expect(coverageReason("repo_disabled")).toContain(
+      "disabled this repository",
+    );
+    expect(coverageReason("repo_disabled")).not.toContain("not installed");
   });
 
   it("takes the probe when the cheap facts say nothing", () => {
@@ -158,6 +208,17 @@ describe("the coverage lane", () => {
     expect(stateOf(REPO)).toBe("covered");
   });
 
+  it("does not call a resolution failure an uninstalled App", async () => {
+    // The adapter's catch around client() also sees the allowlist guard and any
+    // transient token-mint failure. Reporting those as "not installed" would,
+    // during a token outage, mark every repository in the organisation as
+    // uncovered at once, and each one would name a cause that is not true.
+    github.probeDependabotAccess = async () => "unknown";
+    const result = await collectCoverage(deps(), "no42-org");
+    expect(stateOf(REPO)).toBe("unknown");
+    expect(result.outcome).toBe("partial");
+  });
+
   it("records a repository whose alerts are switched off", async () => {
     // The case that motivates the whole lane: 14 of 36 real repositories.
     watched = [REPO, OFF];
@@ -205,6 +266,29 @@ describe("the coverage lane", () => {
     ]);
     await collectCoverage(deps(), "no42-org");
     expect(stateOf(REPO)).toBe("covered");
+  });
+
+  it("does not overwrite known coverage with a probe that failed", async () => {
+    // A rate-limited probe returns an unrecognised 403. Persisting that over a
+    // good `covered` would blank a correct alert count until the next
+    // successful run, up to a day later.
+    await collectCoverage(deps(), "no42-org");
+    expect(stateOf(REPO)).toBe("covered");
+
+    github.access.set("no42-org/twiki", "unknown");
+    const result = await collectCoverage(deps(), "no42-org");
+
+    expect(result.unknown).toBe(1);
+    expect(result.outcome).toBe("partial");
+    expect(stateOf(REPO), "prior knowledge survives the failure").toBe(
+      "covered",
+    );
+  });
+
+  it("does record an unknown when nothing was known before", async () => {
+    github.access.set("no42-org/twiki", "unknown");
+    await collectCoverage(deps(), "no42-org");
+    expect(stateOf(REPO)).toBe("unknown");
   });
 
   it("contains a failure rather than aborting the cycle", async () => {

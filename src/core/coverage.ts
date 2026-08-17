@@ -19,6 +19,7 @@ export const COVERAGE_STATES = [
   "covered",
   "alerts_disabled",
   "archived",
+  "repo_disabled",
   "unreachable",
   "unknown",
 ] as const;
@@ -45,6 +46,11 @@ export function coverageReason(state: CoverageState): string | null {
       return "Dependabot alerts are switched off for this repository";
     case "archived":
       return "the repository is archived, so nothing is updating it";
+    case "repo_disabled":
+      // GitHub's `disabled` flag is about the repository itself, for billing,
+      // DMCA or abuse. Reporting it as a missing installation would send the
+      // operator to check a setting that is fine.
+      return "GitHub has disabled this repository";
     case "unreachable":
       return "the App is not installed on this repository";
     case "unknown":

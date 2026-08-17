@@ -760,6 +760,48 @@ describe("issues found in review (round 2)", () => {
       expect(html).not.toContain("not collected");
     });
 
+    it("stops trusting coverage once its own attestation goes stale", () => {
+      // The reason coverage is a separate subject at all. If the coverage lane
+      // dies and somebody then switches Dependabot off, a cached `covered`
+      // would keep the page showing a confident, freshly-badged zero.
+      store.recordObservations(run, "2026-08-10T00:00:00.000Z", [
+        cov(REPO, "covered"),
+      ]);
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, []),
+      ]);
+
+      const daily = { cadenceMs: 24 * 60 * 60_000 };
+      const rows = buildRepoRows(store, [REPO], NOW, POLICY, daily);
+
+      expect(rows[0]?.coverage, "a week old is not an attestation").toBe(
+        "unknown",
+      );
+    });
+
+    it("judges coverage on its own daily cadence, not the sweep cadence", () => {
+      // Judged on the 15-minute sweep policy, every daily attestation would
+      // read as stale within half an hour and coverage would never be trusted.
+      store.recordObservations(run, "2026-08-16T09:00:00.000Z", [
+        cov(REPO, "covered"),
+        summariseRepo(REPO, []),
+      ]);
+      const daily = { cadenceMs: 24 * 60 * 60_000 };
+      const rows = buildRepoRows(store, [REPO], NOW, POLICY, daily);
+      expect(rows[0]?.coverage).toBe("covered");
+    });
+
+    it("does not blank a count merely because a probe failed", () => {
+      // `unknown` is not positive evidence of non-coverage. Blanking on it
+      // would let one rate-limited probe wipe correct numbers off the page.
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, [makeAlert({ number: 1, repo: REPO })]),
+        cov(REPO, "unknown"),
+      ]);
+      const rows = buildRepoRows(store, [REPO], NOW, POLICY, POLICY);
+      expect(rows[0]?.openAlerts).toBe(1);
+    });
+
     it("ignores a tombstoned coverage row rather than trusting it", () => {
       store.recordObservations(run, "2026-08-16T11:50:00.000Z", [
         summariseRepo(REPO, []),

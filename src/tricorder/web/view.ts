@@ -59,6 +59,8 @@ export function buildRepoRows(
   watched: readonly RepoRef[],
   now: Date,
   policy: FreshnessPolicy,
+  /** The coverage lane runs daily, so it is judged on its own cadence (AD-11). */
+  coveragePolicy?: FreshnessPolicy,
 ): RepoRow[] {
   // The repository confirmation is the source of truth for "did we look".
   // Deriving it from alert rows cannot work: a healthy repository has none,
@@ -71,12 +73,20 @@ export function buildRepoRows(
     if (value.state === "present") confirmations.set(value.subject.key, value);
   }
 
+  // Coverage is trusted only while its own attestation is fresh. This is the
+  // whole reason coverage is a separate subject: if the coverage lane dies and
+  // somebody then switches Dependabot off on a repository, a cached `covered`
+  // would keep the page showing a confident, freshly-badged zero, which is the
+  // exact defect the lane exists to remove (AD-28).
   const coverage = new Map<string, CoverageState>();
   for (const value of store.currentByType("repository_coverage")) {
     if (value.state !== "present") continue;
+    const attested = freshness(value.verifiedAt, now, coveragePolicy ?? policy);
     coverage.set(
       value.subject.key,
-      (value.payload as CoverageObservation).state,
+      attested === "fresh"
+        ? (value.payload as CoverageObservation).state
+        : "unknown",
     );
   }
 
@@ -90,7 +100,12 @@ export function buildRepoRows(
     // Suppressed rather than rendered alongside a warning. A number next to
     // "not covered" invites the reader to believe the number, and the whole
     // point is that we are not entitled to one (AD-28).
-    const known = covered === null || isCovered(covered);
+    // Suppressed only on POSITIVE evidence of non-coverage. `unknown` is not
+    // such evidence: blanking on it would let one rate-limited probe wipe
+    // correct counts off the page, and the alert lane's own confirmation still
+    // stands on its own footing.
+    const known =
+      covered === null || isCovered(covered) || covered === "unknown";
 
     return {
       slug,

@@ -100,8 +100,12 @@ export class OctokitGitHub implements GitHubPort {
     try {
       client = await this.client(repo);
     } catch {
-      // No installation resolves for this repository at all.
-      return "unreachable";
+      // NOT "unreachable". This catch also sees the allowlist guard and any
+      // transient token-mint failure, and reporting either as "the App is not
+      // installed" is the confident guess translateDependabotProbe refuses to
+      // make a few lines below. A token-mint outage would otherwise mark every
+      // repository in the organisation as uncovered at once.
+      return "unknown";
     }
     try {
       await client.request("GET /repos/{owner}/{repo}/dependabot/alerts", {
@@ -409,6 +413,10 @@ export class OctokitGitHub implements GitHubPort {
  * inaccessibility, and both read as confident.
  */
 export function translateDependabotProbe(err: unknown): DependabotAccess {
+  // Aborted requests can surface a null rejection. Dereferencing it would throw
+  // inside a catch block, escape the probe, and fail the whole installation
+  // run, turning one repository's odd rejection into zero coverage rows.
+  if (typeof err !== "object" || err === null) return "unknown";
   const e = err as { status?: number; message?: string };
   const message = (e.message ?? "").toLowerCase();
   if (e.status === 403 && message.includes("disabled for this repository")) {
