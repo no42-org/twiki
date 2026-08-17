@@ -105,9 +105,20 @@ export interface RankInput {
 /**
  * The tunable part. Thresholds only, never order (AD-20).
  *
- * ASSUMED, not chosen: nobody has yet said what exploitation probability
- * should change their morning. 0.5, 0.1 and 0.01 are the bands EPSS guidance
- * commonly discusses, and they want revisiting against a real queue.
+ * CHOSEN 2026-08-17 against a real queue, not inherited from a default. The
+ * measured distribution over 60 scored alerts was: 1 at or above 0.5, 6 at or
+ * above 0.1, 46 at or above 0.01.
+ *
+ * 0.1 is the line that matters, because it decides what outranks severity, and
+ * it falls in a genuine gap: the values step 0.1501, 0.1466, 0.1466 and then
+ * drop to 0.0521. 0.5 isolates the single standout. The 0.01 floor leaves most
+ * alerts tied, which is deliberate: below a 1 percent chance of exploitation in
+ * 30 days the signal is weak, and letting severity decide there is more honest
+ * than manufacturing an order EPSS cannot support.
+ *
+ * The sample was one estate at one moment, so this is a decision with evidence
+ * rather than a settled constant. It is configuration precisely so a wider
+ * allowlist can revise it.
  */
 export interface RankPolicy {
   /** EPSS probability thresholds, strictly descending, each in 0..1. */
