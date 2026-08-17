@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { worstSeverity } from "../../core/severity.js";
 import { alertSubject, repositorySubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import type { GitHubReadPort, RawDependabotAlert } from "../../github/port.js";
@@ -103,36 +104,9 @@ export function summariseRepo(
   const payload: RepoObservation = {
     repo: slug,
     openAlerts: mine.length,
-    worstSeverity: worstOf(mine.map((a) => a.severity)),
+    worstSeverity: worstSeverity(mine.map((a) => a.severity)),
   };
   return { subject: repositorySubject(repo), payload };
-}
-
-/**
- * GitHub's advisory vocabulary, worst first.
- *
- * `moderate`, not `medium`: this is the GHSA scale, and the adapter stores
- * `security_advisory.severity` verbatim. Spelling it `medium` made every
- * moderate alert unrecognised and fell through to whatever the page happened
- * to list first.
- */
-const SEVERITY_ORDER = ["critical", "high", "moderate", "low"];
-
-/**
- * The worst severity present, or `unknown` when we cannot say.
- *
- * An unrecognised severity (the adapter's `unknown` for a missing advisory, or
- * a value GitHub adds later) could be anything. Reporting it as the lowest
- * severity we do recognise is the confident-zero mistake in miniature, so it
- * yields `unknown` unless a `critical` is present, which nothing can outrank
- * (AD-20: absent ranks as unknown, never as zero risk).
- */
-function worstOf(severities: readonly string[]): string | null {
-  if (severities.length === 0) return null;
-  const known = SEVERITY_ORDER.find((l) => severities.includes(l)) ?? null;
-  const unrecognised = severities.some((s) => !SEVERITY_ORDER.includes(s));
-  if (unrecognised && known !== "critical") return "unknown";
-  return known;
 }
 
 export interface LaneDeps {
