@@ -21,6 +21,15 @@ export type Freshness = "fresh" | "stale" | "unknown";
  */
 export const DEFAULT_STALE_AFTER_CADENCES = 2;
 
+/**
+ * Clock disagreement tolerated before a future timestamp counts as broken.
+ *
+ * Two machines are never exactly in step, so a few seconds ahead is noise. A
+ * minute ahead is a wrong clock, and a wrong clock must not buy the most
+ * reassuring possible reading.
+ */
+const SKEW_TOLERANCE_MS = 60_000;
+
 export interface FreshnessPolicy {
   /** The lane's cadence, in milliseconds. */
   cadenceMs: number;
@@ -47,7 +56,14 @@ export function freshness(
   const budget =
     policy.cadenceMs *
     (policy.staleAfterCadences ?? DEFAULT_STALE_AFTER_CADENCES);
-  return now.getTime() - seen <= budget ? "fresh" : "stale";
+  const age = now.getTime() - seen;
+
+  // A verified_at in the future is a broken clock, not knowledge. Without this
+  // bound it satisfies `age <= budget` trivially, so the least trustworthy
+  // reading on the page renders as the most reassuring one.
+  if (age < -SKEW_TOLERANCE_MS) return "stale";
+
+  return age <= budget ? "fresh" : "stale";
 }
 
 /** Human-readable age, for the badge's title attribute. */
@@ -59,7 +75,12 @@ export function ageLabel(
   const seen = new Date(verifiedAt).getTime();
   if (Number.isNaN(seen)) return "never collected";
 
-  const seconds = Math.max(0, Math.round((now.getTime() - seen) / 1000));
+  const age = now.getTime() - seen;
+  // Clamping this to "0s ago" would present a broken clock as a just-collected
+  // value. Say what it actually is.
+  if (age < -SKEW_TOLERANCE_MS) return "clock skew: timestamp is in the future";
+
+  const seconds = Math.max(0, Math.round(age / 1000));
   if (seconds < 90) return `${seconds}s ago`;
   const minutes = Math.round(seconds / 60);
   if (minutes < 90) return `${minutes}m ago`;

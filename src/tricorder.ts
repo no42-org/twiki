@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { pathToFileURL } from "node:url";
 import { loadConfig } from "./core/config.js";
 import { SqliteStore } from "./tricorder/store/sqlite-store.js";
 import { createApp } from "./tricorder/web/app.js";
@@ -20,13 +21,20 @@ const DEFAULT_DB = "tricorder.db";
 /**
  * `??` does not catch NaN, so an unparseable port would reach listen(), coerce
  * to 0 and bind an arbitrary ephemeral port while the log claimed otherwise.
+ *
+ * Decimal digits only, and 0 is rejected: `Number()` also accepts `1e4` and
+ * `0x1f`, and port 0 is the exact "bind something arbitrary" case this guard
+ * exists to prevent. Throws rather than exiting so it can be tested.
  */
-function parsePort(raw: string | undefined): number | undefined {
+export function parsePort(raw: string | undefined): number | undefined {
   if (raw === undefined || raw.trim() === "") return undefined;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0 || n > 65535) {
-    console.error(`[tricorder] TRICORDER_PORT is not a valid port: ${raw}`);
-    process.exit(2);
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`TRICORDER_PORT is not a valid port: ${raw}`);
+  }
+  const n = Number(trimmed);
+  if (n < 1 || n > 65535) {
+    throw new Error(`TRICORDER_PORT is not a valid port: ${raw}`);
   }
   return n;
 }
@@ -43,7 +51,13 @@ async function main(): Promise<void> {
   const configPath = env.TWIKI_CONFIG ?? "repos.yaml";
   const log = (msg: string) => console.error(`[tricorder] ${msg}`);
 
-  const port = parsePort(env.TRICORDER_PORT);
+  let port: number | undefined;
+  try {
+    port = parsePort(env.TRICORDER_PORT);
+  } catch (err) {
+    console.error(`[tricorder] ${err instanceof Error ? err.message : err}`);
+    process.exit(2);
+  }
 
   if (role === "web") {
     // Read-only, and refuses a schema this build does not understand rather
@@ -62,18 +76,29 @@ async function main(): Promise<void> {
       now: () => new Date(),
     });
 
-    startServer(app, {
+    const server = startServer(app, {
       host: env.TRICORDER_HOST,
       port,
       log,
     });
+
+    // Without this the container takes the full 10s SIGTERM grace period on
+    // every stop and drops the WAL handle rather than closing it.
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      process.once(signal, () => {
+        log(`${signal}, shutting down`);
+        server.close(() => {
+          store.close();
+        });
+      });
+    }
     return;
   }
 
   if (role === "collect") {
-    // The collector's scheduling and lane wiring land with the scheduling
-    // story. Opening for write here migrates the schema forward, which is the
-    // collector's job and only the collector's (AD-26).
+    // Opening for write migrates the schema forward, which is the collector's
+    // job and only the collector's (AD-26). Doing that much is useful: it is
+    // how an empty deployment gets a database the web process will accept.
     const store = SqliteStore.openForWrite(dbPath);
     const config = loadConfig(configPath);
     log(
@@ -81,13 +106,29 @@ async function main(): Promise<void> {
         `${config.repos.length} watched repositories`,
     );
     store.close();
-    return;
+
+    // Then refuse, loudly and non-zero. Scheduling and lane wiring land with
+    // the scheduling story; until then this command is not a collector. Exiting
+    // 0 would let an orchestrator restart it forever while every exit reported
+    // success, which is the same lie the dashboard exists to remove.
+    log(
+      "collection is not implemented in this build: schema prepared, exiting",
+    );
+    process.exit(2);
   }
 
   usage();
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+// Only when run as a program. Without this guard, importing anything from this
+// module (parsePort, in the tests) starts a server and can exit the process,
+// which is why none of the entrypoint's safety split was testable before.
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

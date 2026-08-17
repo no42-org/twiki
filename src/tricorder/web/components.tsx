@@ -30,6 +30,8 @@ const STYLE = `
   .never { color: #57606a; font-style: italic; }
   .failed { color: #cf222e; font-weight: 600; }
   .partial { color: #9a6700; font-weight: 600; }
+  .stalled { color: #cf222e; font-weight: 600; }
+  .running { color: #57606a; }
 `;
 
 export const FreshnessBadge: FC<{ freshness: Freshness; age: string }> = ({
@@ -53,7 +55,12 @@ export const AlertCount: FC<{ row: RepoRow }> = ({ row }) => {
     return <span class="never">not collected</span>;
   }
   if (row.openAlerts === 0) {
-    return <span class="none">0</span>;
+    // Green only while the zero is current. A stale zero is a number we can no
+    // longer vouch for, and painting it as good news is what the badge column
+    // would then have to argue the reader out of.
+    return (
+      <span class={row.freshness === "fresh" ? "none" : undefined}>0</span>
+    );
   }
   const severityClass =
     row.worstSeverity === "critical"
@@ -77,6 +84,7 @@ export const Page: FC<{
   <html lang="en">
     <head>
       <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>gitricorder</title>
       <style>{STYLE}</style>
     </head>

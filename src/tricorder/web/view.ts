@@ -6,7 +6,7 @@
 import type { RepoRef } from "../../core/types.js";
 import type { RepoObservation } from "../collect/dependabot-alerts.js";
 import { watchKey } from "../collect/dependabot-alerts.js";
-import type { StorePort } from "../store/port.js";
+import type { CurrentValue, RunOutcome, StorePort } from "../store/port.js";
 import {
   ageLabel,
   type Freshness,
@@ -51,9 +51,12 @@ export function buildRepoRows(
   // Deriving it from alert rows cannot work: a healthy repository has none,
   // and a newly-clean one stops having its rows updated the moment they are
   // tombstoned, so both would read as never collected.
-  const confirmations = new Map<string, (typeof rows)[number]>();
-  const rows = store.currentByType("repository");
-  for (const value of rows) confirmations.set(value.subject.key, value);
+  // Only `present` rows. A tombstoned confirmation is a retracted assertion,
+  // and rendering its payload would show a stale count as live data.
+  const confirmations = new Map<string, CurrentValue>();
+  for (const value of store.currentByType("repository")) {
+    if (value.state === "present") confirmations.set(value.subject.key, value);
+  }
 
   return watched.map((repo) => {
     const slug = watchKey(repo);
@@ -72,37 +75,62 @@ export function buildRepoRows(
   });
 }
 
+/**
+ * A run's displayed outcome.
+ *
+ * Wider than `RunOutcome` because the view distinguishes two states the store
+ * does not model. Spelled as a union rather than `string` so that adding a
+ * third cannot pass unnoticed.
+ */
+export type HealthOutcome = RunOutcome | "running" | "stalled";
+
 export interface CollectionHealth {
   lane: string;
   installation: string;
   scope: string;
-  outcome: string;
+  outcome: HealthOutcome;
   detail: string | null;
   age: string;
   freshness: Freshness;
 }
 
-/** The most recent run per (lane, installation, scope), newest first. */
+/**
+ * The most recent run per (lane, installation, scope).
+ *
+ * Ordered by lane, installation, scope, so the table does not reshuffle
+ * between refreshes.
+ */
 export function buildCollectionHealth(
   store: StorePort,
   now: Date,
   policy: FreshnessPolicy,
 ): CollectionHealth[] {
   return store.latestRunPerKey().map((run) => {
-    // beginRun writes `partial` as its placeholder, so a run still in flight
-    // is indistinguishable from one that finished incomplete unless we look at
-    // whether verified_at has moved past started_at. Showing a running lane in
-    // warning styling would train the reader to ignore the real thing.
+    // beginRun writes `partial` as its placeholder and leaves detail null, so a
+    // run still in flight is only distinguishable from one that finished
+    // incomplete by those two together. This is a heuristic on a heuristic; the
+    // real fix is a finished_at column, which is a schema change.
     const inFlight =
-      run.outcome === "partial" && run.verifiedAt === run.startedAt;
+      run.outcome === "partial" &&
+      run.verifiedAt === run.startedAt &&
+      run.detail === null;
+
+    // Judged against the clock, always. A collector killed mid-sweep (OOM,
+    // SIGKILL, eviction) leaves an in-flight row that nothing will ever
+    // finish; forcing it green would hide the dead lane this table exists to
+    // show. "running" is only a truthful reading while the run is still
+    // inside its freshness budget.
+    const seen = freshness(run.verifiedAt, now, policy);
+    const stalled = inFlight && seen !== "fresh";
+
     return {
       lane: run.lane,
       installation: run.installation,
       scope: run.scope,
-      outcome: inFlight ? "running" : run.outcome,
+      outcome: stalled ? "stalled" : inFlight ? "running" : run.outcome,
       detail: run.detail,
       age: ageLabel(run.verifiedAt, now),
-      freshness: inFlight ? "fresh" : freshness(run.verifiedAt, now, policy),
+      freshness: seen,
     };
   });
 }

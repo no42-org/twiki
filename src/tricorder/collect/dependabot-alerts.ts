@@ -108,13 +108,31 @@ export function summariseRepo(
   return { subject: repositorySubject(repo), payload };
 }
 
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
+/**
+ * GitHub's advisory vocabulary, worst first.
+ *
+ * `moderate`, not `medium`: this is the GHSA scale, and the adapter stores
+ * `security_advisory.severity` verbatim. Spelling it `medium` made every
+ * moderate alert unrecognised and fell through to whatever the page happened
+ * to list first.
+ */
+const SEVERITY_ORDER = ["critical", "high", "moderate", "low"];
 
+/**
+ * The worst severity present, or `unknown` when we cannot say.
+ *
+ * An unrecognised severity (the adapter's `unknown` for a missing advisory, or
+ * a value GitHub adds later) could be anything. Reporting it as the lowest
+ * severity we do recognise is the confident-zero mistake in miniature, so it
+ * yields `unknown` unless a `critical` is present, which nothing can outrank
+ * (AD-20: absent ranks as unknown, never as zero risk).
+ */
 function worstOf(severities: readonly string[]): string | null {
-  for (const level of SEVERITY_ORDER) {
-    if (severities.includes(level)) return level;
-  }
-  return severities[0] ?? null;
+  if (severities.length === 0) return null;
+  const known = SEVERITY_ORDER.find((l) => severities.includes(l)) ?? null;
+  const unrecognised = severities.some((s) => !SEVERITY_ORDER.includes(s));
+  if (unrecognised && known !== "critical") return "unknown";
+  return known;
 }
 
 export interface LaneDeps {
@@ -171,12 +189,35 @@ export async function collectOrgAlerts(
     const watched = page.alerts.filter((a) => deps.isWatched(a.repo));
     const observations = watched.map(normalise);
 
+    // Unreadable payloads mean the result is incomplete. Finishing `ok` here
+    // would report a confident zero if the endpoint's shape ever shifts.
+    const outcome = page.unreadable > 0 ? "partial" : "ok";
+    const detail =
+      page.unreadable > 0
+        ? `${page.unreadable} alert payloads could not be read`
+        : undefined;
+
     // One confirmation per watched repository in this installation, including
     // the ones with nothing to report. This is what makes a real zero
     // expressible and stops a newly-clean repository going stale.
-    const repoObservations = deps
-      .watchedIn(installation)
-      .map((repo) => summariseRepo(repo, watched));
+    //
+    // Written under the same two guards as the tombstone reconciliation below,
+    // for the same reason: a confirmation asserts "we looked, and this is the
+    // whole answer". A sweep that cannot back that assertion must stay silent
+    // and leave the prior value to go stale on its own.
+    //
+    //   scope must be full   a hot run queried a subset, so its count is an
+    //                        undercount, and writing it would overwrite a full
+    //                        sweep's real number with a smaller one
+    //   outcome must be ok   a partial run could not read some payloads, so its
+    //                        count publishes a confident zero for exactly the
+    //                        repository whose alerts failed to map
+    const repoObservations =
+      scope === "full" && outcome === "ok"
+        ? deps
+            .watchedIn(installation)
+            .map((repo) => summariseRepo(repo, watched))
+        : [];
 
     // One transaction: every observation and its projection advance land
     // together, or none do (AD-3).
@@ -185,13 +226,6 @@ export async function collectOrgAlerts(
       ...repoObservations,
     ]);
 
-    // Unreadable payloads mean the result is incomplete. Finishing `ok` here
-    // would report a confident zero if the endpoint's shape ever shifts.
-    const outcome = page.unreadable > 0 ? "partial" : "ok";
-    const detail =
-      page.unreadable > 0
-        ? `${page.unreadable} alert payloads could not be read`
-        : undefined;
     // Reconcile disappearance into explicit tombstones (AD-23), under three
     // guards, because a wrong tombstone silently wipes real state:
     //

@@ -30,6 +30,10 @@ export function createApp(deps: AppDeps): Hono {
     // Without the doctype browsers render in quirks mode, where the box model
     // and table metrics differ from what the styles were written against.
     const body = Page({ rows, health, generatedAt: now.toISOString() });
+    // Every freshness verdict on this page is computed against the render
+    // clock. A cached copy re-presents those verdicts later, still claiming
+    // "fresh", which is the one thing the page must never do.
+    c.header("Cache-Control", "no-store");
     return c.html(`<!DOCTYPE html>${body}`);
   });
 
