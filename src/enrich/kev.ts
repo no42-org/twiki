@@ -15,8 +15,11 @@ import type { EnrichmentPort, KevCatalogue } from "./port.js";
 export const KEV_URL =
   "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
 
-/** A CVE id, as CISA writes them. */
-const CVE = /^CVE-\d{4}-\d{4,}$/i;
+/** A CVE id, as CISA writes them. Exported: the lookup rejects anything else. */
+export const CVE_ID = /^CVE-\d{4}-\d{4,}$/i;
+
+/** Reject a body larger than this rather than buffering it. */
+const MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 export type KevFetchResult = KevCatalogue;
 
@@ -33,6 +36,7 @@ export function parseKev(body: unknown): KevFetchResult {
   const doc = body as {
     catalogVersion?: unknown;
     dateReleased?: unknown;
+    count?: unknown;
     vulnerabilities?: unknown;
   } | null;
 
@@ -47,7 +51,7 @@ export function parseKev(body: unknown): KevFetchResult {
   let unreadable = 0;
   for (const entry of doc.vulnerabilities) {
     const id = (entry as { cveID?: unknown } | null)?.cveID;
-    if (typeof id !== "string" || !CVE.test(id.trim())) {
+    if (typeof id !== "string" || !CVE_ID.test(id.trim())) {
       unreadable++;
       continue;
     }
@@ -58,9 +62,20 @@ export function parseKev(body: unknown): KevFetchResult {
     throw new Error("KEV catalogue yielded no readable CVE ids");
   }
 
+  const claimedCount = typeof doc.count === "number" ? doc.count : null;
+  // CISA's own count against what actually arrived. A body truncated in
+  // transit parses cleanly and reports zero unreadable, so without this it
+  // would look like a complete catalogue that happens to be smaller.
+  if (claimedCount !== null && doc.vulnerabilities.length < claimedCount) {
+    throw new Error(
+      `KEV payload is truncated: CISA declared ${claimedCount} entries, ${doc.vulnerabilities.length} arrived`,
+    );
+  }
+
   return {
     version: typeof doc.catalogVersion === "string" ? doc.catalogVersion : "",
     released: typeof doc.dateReleased === "string" ? doc.dateReleased : "",
+    claimedCount,
     cveIds: [...ids].sort(),
     unreadable,
   };
@@ -72,15 +87,34 @@ export class HttpEnrichment implements EnrichmentPort {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
+  /** The endpoint this instance will call. Exposed so a test can pin it. */
+  endpoint(): string {
+    return this.url;
+  }
+
   async fetchKev(): Promise<KevFetchResult> {
     // A timeout, because this is the one dependency outside GitHub and a hung
     // response would otherwise stall the whole collection cycle.
     const res = await this.fetchImpl(this.url, {
       signal: AbortSignal.timeout(60_000),
-      headers: { accept: "application/json" },
+      headers: {
+        accept: "application/json",
+        // Public CDNs commonly throttle or reject the default Node agent.
+        "user-agent": "gitricorder (+https://github.com/no42-org/twiki)",
+      },
     });
     if (!res.ok) {
       throw new Error(`KEV fetch failed: HTTP ${res.status}`);
+    }
+    // A captive portal or proxy answers 200 with HTML. Parsing that would
+    // throw somewhere less legible than here.
+    const type = res.headers?.get?.("content-type") ?? "";
+    if (type && !type.includes("json")) {
+      throw new Error(`KEV response is not JSON: ${type}`);
+    }
+    const declared = Number(res.headers?.get?.("content-length") ?? "0");
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      throw new Error(`KEV response too large: ${declared} bytes`);
     }
     return parseKev(await res.json());
   }

@@ -5,6 +5,7 @@
 
 import { NOT_APPLICABLE, type Signal } from "../core/rank.js";
 import { KEV_SUBJECT } from "../core/subject.js";
+import { CVE_ID } from "../enrich/kev.js";
 import type { KevObservation } from "./collect/kev.js";
 import type { StorePort } from "./store/port.js";
 import { type FreshnessPolicy, freshness } from "./web/freshness.js";
@@ -67,7 +68,11 @@ export function loadKevIndex(
   // Everything else in this module is built to answer "we do not know" when it
   // cannot answer; failing the request instead would be the one path that does
   // not.
+  // An empty list would be a fresh, confident-looking index that answers
+  // "not listed" for every CVE ever asked. parseKev refuses to produce one,
+  // but a different port implementation or a hand-repaired row could.
   if (!payload || !Array.isArray(payload.cveIds)) return unusable;
+  if (payload.cveIds.length === 0) return unusable;
 
   const ids = new Set(payload.cveIds.map((c) => String(c).toUpperCase()));
 
@@ -97,6 +102,11 @@ export function kevSignal(
   // advisory ABOVE the ones we checked and found absent, because unknown sits
   // higher than n/a. On a stale catalogue that inverted the whole queue.
   if (!cve || cve.trim() === "") return NOT_APPLICABLE;
+  // KEV is indexed by CVE alone. A GHSA id, or anything else GitHub attaches
+  // to an advisory, is not absent from the catalogue: it is unlookupable, and
+  // answering "not exploited" for it would be a confident negative on the
+  // chain's most significant term.
+  if (!CVE_ID.test(cve.trim())) return NOT_APPLICABLE;
 
   if (!index.usable) return null;
   if (index.has(cve)) return true;

@@ -19,6 +19,8 @@ export interface AppDeps {
   policy: FreshnessPolicy;
   /** The coverage lane's own cadence; it runs daily, not per sweep. */
   coveragePolicy?: FreshnessPolicy;
+  /** Cadence per lane name, for the collection-health table (AD-11). */
+  lanePolicies?: Readonly<Record<string, FreshnessPolicy>>;
   now: () => Date;
 }
 
@@ -34,7 +36,12 @@ export function createApp(deps: AppDeps): Hono {
       deps.policy,
       deps.coveragePolicy,
     );
-    const health = buildCollectionHealth(deps.store, now, deps.policy);
+    const health = buildCollectionHealth(
+      deps.store,
+      now,
+      deps.policy,
+      deps.lanePolicies,
+    );
     // Without the doctype browsers render in quirks mode, where the box model
     // and table metrics differ from what the styles were written against.
     const body = Page({ rows, health, generatedAt: now.toISOString() });

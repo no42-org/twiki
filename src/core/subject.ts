@@ -64,11 +64,22 @@ export function coverageSubject(repo: RepoRef): Subject {
   return { type: "repository_coverage", key: subjectSlug(repo) };
 }
 
+/**
+ * The one name CISA is known by.
+ *
+ * Shared so the subject key and the scheduler's pseudo-installation cannot
+ * drift apart: they were two unrelated string literals in unrelated modules,
+ * with nothing asserting the relationship they depend on.
+ */
+export const KEV_KEY = "cisa";
+
 /** The KEV catalogue. A single subject; the key is constant. */
-export const KEV_SUBJECT: Subject = {
-  type: "kev_catalogue",
-  key: "cisa",
-};
+export function kevSubject(): Subject {
+  return { type: "kev_catalogue", key: KEV_KEY };
+}
+
+/** Frozen, because every other subject in this file is produced fresh. */
+export const KEV_SUBJECT: Subject = Object.freeze(kevSubject());
 
 export function alertSubject(
   type: "dependabot_alert" | "code_scanning_alert" | "secret_scanning_alert",

@@ -20,8 +20,10 @@ import {
 } from "./tricorder/collect/dependabot-alerts.js";
 import {
   collectKev,
+  KEV_CADENCE_MS,
   KEV_INSTALLATION,
   LANE as KEV_LANE,
+  KEV_RETRY_MS,
 } from "./tricorder/collect/kev.js";
 import {
   formatLine,
@@ -29,6 +31,7 @@ import {
   loop,
 } from "./tricorder/collect/scheduler.js";
 import { diagnose, formatReport } from "./tricorder/doctor.js";
+import type { RunOutcome, RunScope } from "./tricorder/store/port.js";
 import { SqliteStore } from "./tricorder/store/sqlite-store.js";
 import { createApp } from "./tricorder/web/app.js";
 import { startServer } from "./tricorder/web/server.js";
@@ -103,6 +106,59 @@ export function parseTickSeconds(
   return n;
 }
 
+/**
+ * The real schedule table.
+ *
+ * Extracted so it can be asserted over. Every lane here was deletable with a
+ * green suite: removing the KEV block, or the `installations` restriction that
+ * keeps the GitHub lanes off the KEV pseudo-installation, passed lint,
+ * typecheck and every test.
+ */
+export function buildSchedules(deps: {
+  installations: readonly string[];
+  alerts: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  coverage: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  kev: (scope: RunScope) => Promise<{ outcome: RunOutcome }>;
+}): LaneSchedule[] {
+  return [
+    {
+      lane: KEV_LANE,
+      scope: "full",
+      cadenceMs: KEV_CADENCE_MS,
+      retryAfterMs: KEV_RETRY_MS,
+      installations: [KEV_INSTALLATION],
+      // Scope passed explicitly rather than relying on a default: if the two
+      // disagree the due-ness key never matches the run that was written, and
+      // the lane re-fetches on every tick.
+      run: () => deps.kev("full"),
+    },
+    {
+      lane: ALERT_LANE,
+      scope: "full",
+      cadenceMs: 15 * 60_000,
+      installations: deps.installations,
+      run: deps.alerts,
+    },
+    {
+      lane: COVERAGE_LANE,
+      scope: "full",
+      cadenceMs: 24 * 60 * 60_000,
+      installations: deps.installations,
+      run: deps.coverage,
+    },
+  ];
+}
+
+/**
+ * Every installation a cycle visits, KEV's pseudo-installation included.
+ *
+ * A Set, because an owner literally named `cisa` would otherwise appear twice
+ * and every GitHub lane would sweep it twice per cycle.
+ */
+export function cycleInstallations(installations: readonly string[]): string[] {
+  return [...new Set([...installations, KEV_INSTALLATION])];
+}
+
 function usage(): never {
   console.error("usage: tricorder <collect|web|doctor>");
   process.exit(2);
@@ -137,6 +193,13 @@ async function main(): Promise<void> {
       watched,
       // Matches the full-sweep cadence the architecture plans for.
       policy: { cadenceMs: 15 * 60_000 },
+      // Each lane judged on its own cadence. One global threshold applied to
+      // every lane is a defect AD-11 names explicitly, and it made both daily
+      // lanes read stale thirty minutes after succeeding.
+      lanePolicies: {
+        [KEV_LANE]: { cadenceMs: KEV_CADENCE_MS },
+        [COVERAGE_LANE]: { cadenceMs: 24 * 60 * 60_000 },
+      },
       // The coverage lane is daily (AD-15), so judging it on the sweep cadence
       // would report every attestation as stale within half an hour.
       coveragePolicy: { cadenceMs: 24 * 60 * 60_000 },
@@ -197,34 +260,30 @@ async function main(): Promise<void> {
       log,
     };
 
-    const enrichment = new HttpEnrichment();
+    const enrichment = new HttpEnrichment(
+      // Configurable so a mirror or an egress proxy can be used, and so an
+      // air-gapped deployment can point it somewhere reachable.
+      env.TRICORDER_KEV_URL?.trim() || undefined,
+    );
 
-    const schedules: LaneSchedule[] = [
-      {
-        // KEV is global rather than per installation, so it is scheduled
-        // against a constant "installation" and runs once per cycle, not once
-        // per organisation.
-        lane: KEV_LANE,
-        scope: "full",
-        cadenceMs: 24 * 60 * 60_000,
-        installations: [KEV_INSTALLATION],
-        run: () => collectKev({ enrichment, store, now: laneDeps.now, log }),
-      },
-      {
-        lane: ALERT_LANE,
-        scope: "full",
-        cadenceMs: 15 * 60_000,
-        installations,
-        run: (installation) => collectOrgAlerts(laneDeps, installation, "full"),
-      },
-      {
-        lane: COVERAGE_LANE,
-        scope: "full",
-        cadenceMs: 24 * 60 * 60_000,
-        installations,
-        run: (installation) => collectCoverage(laneDeps, installation, "full"),
-      },
-    ];
+    const schedules = buildSchedules({
+      installations,
+      alerts: (installation) =>
+        collectOrgAlerts(laneDeps, installation, "full"),
+      coverage: (installation) =>
+        collectCoverage(laneDeps, installation, "full"),
+      kev: (scope) =>
+        collectKev(
+          {
+            enrichment,
+            store,
+            now: laneDeps.now,
+            log,
+            freshFor: { cadenceMs: KEV_CADENCE_MS },
+          },
+          scope,
+        ),
+    });
 
     log(
       `collecting ${watched.length} repositories across ${installations.length} installations: ${installations.join(", ")}`,
@@ -253,11 +312,7 @@ async function main(): Promise<void> {
         log: (fields, msg) => log(formatLine(fields, msg)),
       },
       schedules,
-      // KEV rides the cycle as its own pseudo-installation (AD-15): it is one
-      // public document, not something each organisation has a copy of. Set,
-      // because an owner literally named `cisa` would otherwise appear twice
-      // and every GitHub lane would sweep it twice per cycle.
-      [...new Set([...installations, KEV_INSTALLATION])],
+      cycleInstallations(installations),
       {
         once,
         tickMs: parseTickSeconds(env.TRICORDER_TICK_SECONDS, log) * 1000,

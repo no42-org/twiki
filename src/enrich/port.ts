@@ -11,6 +11,14 @@
 // severe one, would quietly not hold.
 
 export interface KevCatalogue {
+  /**
+   * How many entries CISA said the catalogue holds.
+   *
+   * Kept as a free integrity cross-check: a body truncated in transit parses
+   * cleanly, reports zero unreadable, and would otherwise be accepted as a
+   * complete catalogue that happens to be smaller.
+   */
+  claimedCount: number | null;
   /** CISA's own version stamp, e.g. `2026.08.17`. */
   version: string;
   released: string;

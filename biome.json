@@ -154,7 +154,7 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/tricorder/**"],
+                    "group": ["**/tricorder/**", "**/enrich/**"],
                     "message": "AD-5: this directory may not import a feature directory. Move shared code down into a leaf."
                   },
                   {
@@ -225,7 +225,8 @@
                       "./tricorder.js",
                       "../tricorder.js",
                       "../../tricorder.js",
-                      "../../../tricorder.js"
+                      "../../../tricorder.js",
+                      "**/enrich/**"
                     ],
                     "message": "AD-5: an entrypoint wires exactly one side. src/index.ts is twiki's, src/tricorder.ts is gitricorder's."
                   }

@@ -32,6 +32,12 @@ export interface LaneSchedule {
    * with the run then reporting failure it had not really had.
    */
   installations?: readonly string[];
+  /**
+   * How long to wait after a FAILED run, when that should be shorter than the
+   * cadence. A daily lane that fails once would otherwise collect nothing for
+   * 24 hours, and twice in a row crosses the staleness budget entirely.
+   */
+  retryAfterMs?: number;
   /** Runs one installation. Must not throw; lanes contain their own failures. */
   run: (installation: string) => Promise<{ outcome: RunOutcome }>;
 }
@@ -69,12 +75,17 @@ export function isDue(
   last: RunRecord | undefined,
   cadenceMs: number,
   now: Date,
+  retryAfterMs?: number,
 ): boolean {
   if (!last) return true;
+  const wait =
+    last.outcome === "failed" && retryAfterMs !== undefined
+      ? Math.min(retryAfterMs, cadenceMs)
+      : cadenceMs;
   const since = now.getTime() - new Date(last.verifiedAt).getTime();
   if (Number.isNaN(since)) return true;
   if (since < 0) return true;
-  return since >= cadenceMs;
+  return since >= wait;
 }
 
 export interface CycleReport {
@@ -108,7 +119,14 @@ export async function runCycle(
 
   for (const installation of installations) {
     for (const s of schedules) {
-      if (s.installations && !s.installations.includes(installation)) continue;
+      if (s.installations) {
+        // An empty list means the lane runs nowhere and appears in no bucket
+        // of the report, which is indistinguishable from a healthy lane.
+        if (s.installations.length === 0) {
+          throw new Error(`lane ${s.lane} declares no installations`);
+        }
+        if (!s.installations.includes(installation)) continue;
+      }
       const key = `${s.lane}|${installation}|${s.scope}`;
       const fields = {
         lane: s.lane,
@@ -117,7 +135,7 @@ export async function runCycle(
       };
       const cadence = cadenceOverride ?? s.cadenceMs;
 
-      if (!isDue(latest.get(key), cadence, now)) {
+      if (!isDue(latest.get(key), cadence, now, s.retryAfterMs)) {
         report.skipped++;
         continue;
       }
@@ -203,8 +221,15 @@ export async function loop(
       opts.log(
         `cycle failed: ${redact(String(err instanceof Error ? err.message : err))}`,
       );
-      // The cycle itself falling over is worse than a lane failing, not better.
-      return Math.max(1, schedules.length * installations.length);
+      // The cycle itself falling over is worse than a lane failing, not
+      // better. Counted as the runs a cycle would actually have attempted,
+      // which per-lane `installations` made smaller than lanes x installations.
+      const attempts = schedules.reduce(
+        (n, s) =>
+          n + (s.installations ? s.installations.length : installations.length),
+        0,
+      );
+      return Math.max(1, attempts);
     }
   };
 

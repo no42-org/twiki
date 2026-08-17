@@ -75,6 +75,36 @@ describe("deciding what is due", () => {
     );
   });
 
+  it("retries a failed run sooner when the lane asks for it", () => {
+    // A daily lane that fails once would otherwise collect nothing for 24
+    // hours, and twice in a row crosses the staleness budget entirely, taking
+    // the ranking chain's top term with it.
+    const failed = record({
+      outcome: "failed",
+      verifiedAt: "2026-08-17T10:30:00.000Z",
+    });
+    const daily = 24 * 60 * 60_000;
+    const hourly = 60 * 60_000;
+
+    expect(isDue(failed, daily, NOW), "without a retry it waits a day").toBe(
+      false,
+    );
+    expect(isDue(failed, daily, NOW, hourly), "with one it retries").toBe(true);
+  });
+
+  it("does not shorten the wait for a run that succeeded", () => {
+    const ok = record({ verifiedAt: "2026-08-17T11:30:00.000Z" });
+    expect(isDue(ok, 24 * 60 * 60_000, NOW, 60 * 60_000)).toBe(false);
+  });
+
+  it("never lets the retry exceed the cadence", () => {
+    const failed = record({
+      outcome: "failed",
+      verifiedAt: "2026-08-17T11:59:00.000Z",
+    });
+    expect(isDue(failed, 60_000, NOW, 24 * 60 * 60_000)).toBe(true);
+  });
+
   it("does not treat a failed run as a reason to hammer", () => {
     // A failed run still resets the cadence. Retrying instantly against an
     // installation that just refused us is how a collector burns a rate-limit

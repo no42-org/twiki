@@ -9,11 +9,20 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NOT_APPLICABLE } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
-import { HttpEnrichment, parseKev } from "../src/enrich/kev.js";
+import { HttpEnrichment, KEV_URL, parseKev } from "../src/enrich/kev.js";
 import type { EnrichmentPort } from "../src/enrich/port.js";
-import { collectKev } from "../src/tricorder/collect/kev.js";
+import {
+  collectKev,
+  KEV_CADENCE_MS,
+  KEV_INSTALLATION,
+  MAX_UNREADABLE_RATIO,
+  MIN_RETAINED_RATIO,
+  usablePrior,
+} from "../src/tricorder/collect/kev.js";
 import { kevSignal, loadKevIndex } from "../src/tricorder/kev-lookup.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
+import { buildCollectionHealth } from "../src/tricorder/web/view.js";
+import { buildSchedules, cycleInstallations } from "../src/tricorder.js";
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 const DAILY = { cadenceMs: 24 * 60 * 60_000 };
@@ -149,6 +158,8 @@ describe("the KEV lane", () => {
   });
 
   it("keeps the previous catalogue rather than shrinking it", async () => {
+    // Superseded in intent by the freshness-aware cases above; retained
+    // because it pins the no-freshFor default, which keeps the prior.
     await collectKev(
       deps(
         fake(async () =>
@@ -180,38 +191,83 @@ describe("the KEV lane", () => {
     expect(stored()?.cveIds).toEqual(["CVE-2021-1110"]);
   });
 
-  it("accepts a fetch with one bad entry rather than freezing forever", async () => {
-    // The trap this replaced: rejecting on ANY unreadable entry meant one
-    // malformed record among 1666 discarded the fetch, the next day's fetch
-    // contained the same record, and the catalogue never updated again. Two
-    // cadences later the chain's top term went permanently unknown with no way
-    // back.
+  it("keeps the complete catalogue it holds while that one is still fresh", async () => {
+    // The policy: prefer a complete catalogue over a degraded one, but only
+    // while the complete one can still be vouched for.
     const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
     await collectKev(deps(fake(async () => parseKev(payload(many)))));
 
     const next = parseKev(payload([...many, "CVE-2026-9999"]));
-    const r = await collectKev(
-      deps(fake(async () => ({ ...next, unreadable: 1 }))),
-    );
+    const r = await collectKev({
+      ...deps(fake(async () => ({ ...next, unreadable: 1 }))),
+      freshFor: DAILY,
+    });
+
+    expect(r.outcome).toBe("partial");
+    expect(stored()?.cveIds).toHaveLength(200);
+    expect(r.listed).toBe(200);
+  });
+
+  it("takes the degraded catalogue once the one it holds is going stale", async () => {
+    // And this is why it cannot freeze. Holding a complete catalogue forever
+    // was the original trap: a feed that stays slightly broken would keep the
+    // old one, it would age past its budget, and the term would go unknown
+    // with no way back.
+    const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
+    await collectKev({
+      ...deps(fake(async () => parseKev(payload(many)))),
+      now: () => "2026-08-14T12:00:00.000Z",
+    });
+
+    const next = parseKev(payload([...many, "CVE-2026-9999"]));
+    const r = await collectKev({
+      ...deps(fake(async () => ({ ...next, unreadable: 1 }))),
+      freshFor: DAILY,
+    });
 
     expect(r.outcome).toBe("partial");
     expect(stored()?.cveIds).toContain("CVE-2026-9999");
   });
 
-  it("still refuses a fetch that lost a large share of the catalogue", async () => {
+  it("keeps a complete catalogue when a well-formed fetch has shrunk", async () => {
+    // Nothing in the unreadable count shows this. A truncated body parses
+    // cleanly, reports zero unreadable, and would otherwise be accepted as a
+    // complete catalogue that happens to be smaller, flipping every dropped
+    // CVE to a confident "not in KEV".
     const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
     await collectKev(deps(fake(async () => parseKev(payload(many)))));
 
-    const gutted = parseKev(payload(["CVE-2021-1000"]));
-    const r = await collectKev(
-      deps(fake(async () => ({ ...gutted, unreadable: 199 }))),
-    );
+    const truncated = parseKev(payload(many.slice(0, 5)));
+    const r = await collectKev({
+      ...deps(fake(async () => truncated)),
+      freshFor: DAILY,
+    });
 
     expect(r.outcome).toBe("partial");
     expect(stored()?.cveIds).toHaveLength(200);
-    // And says how many it kept, rather than reporting zero for a run that
-    // kept a full catalogue.
-    expect(r.listed).toBe(200);
+    expect(store.latestRuns(1)[0]?.detail).toContain("shrank");
+  });
+
+  it("keeps the kept catalogue fresh, so holding it does not age it out", async () => {
+    const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
+    await collectKev({
+      ...deps(fake(async () => parseKev(payload(many)))),
+      now: () => "2026-08-17T00:00:00.000Z",
+    });
+
+    await collectKev({
+      ...deps(
+        fake(async () => ({ ...parseKev(payload(many)), unreadable: 5 })),
+      ),
+      now: () => "2026-08-17T06:00:00.000Z",
+      freshFor: DAILY,
+    });
+
+    // Without this the kept catalogue silently ages into stale and the term
+    // goes unknown anyway, which is the freeze by another route.
+    expect(store.current(KEV_SUBJECT)?.verifiedAt).toBe(
+      "2026-08-17T06:00:00.000Z",
+    );
   });
 
   it("records how many entries it could not read", async () => {
@@ -338,5 +394,277 @@ describe("the chain's first term", () => {
     await seed(["CVE-2021-1111"]);
     const index = loadKevIndex(store, NOW, DAILY);
     expect(kevSignal(index, " cve-2021-1111 ")).toBe(true);
+  });
+});
+
+describe("the real schedule table", () => {
+  // Every lane here was deletable with a fully green suite. Removing the KEV
+  // block, or the `installations` restriction that keeps the GitHub lanes off
+  // the KEV pseudo-installation, passed lint, typecheck and all 378 tests.
+  // `biome check` exits 0 on the orphaned imports, so lint is no backstop.
+  const noop = async () => ({ outcome: "ok" as const });
+  const schedules = buildSchedules({
+    installations: ["no42-org", "other-org"],
+    alerts: noop,
+    coverage: noop,
+    kev: noop,
+  });
+
+  const lane = (name: string) => schedules.find((s) => s.lane === name);
+
+  it("schedules every lane the collector is supposed to run", () => {
+    expect(schedules.map((s) => s.lane).sort()).toEqual([
+      "coverage",
+      "kev",
+      "rest-org-dependabot",
+    ]);
+  });
+
+  it("runs KEV only on its own pseudo-installation", () => {
+    expect(lane("kev")?.installations).toEqual([KEV_INSTALLATION]);
+  });
+
+  it("keeps the GitHub lanes off that pseudo-installation", () => {
+    // The bug this restriction fixed: both lanes swept `cisa`, failed, and the
+    // run reported failure it had not really had.
+    for (const name of ["rest-org-dependabot", "coverage"]) {
+      const installations = lane(name)?.installations;
+      expect(installations, name).toBeDefined();
+      expect(installations, name).not.toContain(KEV_INSTALLATION);
+      expect(installations, name).toEqual(["no42-org", "other-org"]);
+    }
+  });
+
+  it("gives KEV a daily cadence and a shorter retry after failure", () => {
+    // One transient blip must not mean no KEV data for 24 hours, and two in a
+    // row would otherwise cross the staleness budget entirely.
+    expect(lane("kev")?.cadenceMs).toBe(KEV_CADENCE_MS);
+    expect(lane("kev")?.retryAfterMs).toBeLessThan(KEV_CADENCE_MS);
+  });
+
+  it("declares the scope it actually runs at", () => {
+    // If the declared scope and the executed scope disagree, the due-ness key
+    // never matches the run row and the lane re-fetches on every tick.
+    for (const s of schedules) expect(s.scope, s.lane).toBe("full");
+  });
+
+  it("visits KEV's pseudo-installation exactly once", () => {
+    expect(cycleInstallations(["no42-org"])).toEqual([
+      "no42-org",
+      KEV_INSTALLATION,
+    ]);
+  });
+
+  it("does not visit an org literally named cisa twice", () => {
+    expect(cycleInstallations([KEV_INSTALLATION, "no42-org"])).toEqual([
+      KEV_INSTALLATION,
+      "no42-org",
+    ]);
+  });
+});
+
+describe("the KEV subject and installation cannot drift apart", () => {
+  it("uses one constant for both", () => {
+    // They were two unrelated string literals in unrelated modules, with
+    // nothing asserting the relationship they depend on.
+    expect(KEV_SUBJECT.key).toBe(KEV_INSTALLATION);
+  });
+});
+
+describe("the constants that hold the guards in place", () => {
+  // Each of these was free to drift with a green suite. The threshold could be
+  // set to 0.4, the URL to a nonexistent file, and the timeout deleted, and all
+  // 378 tests still passed.
+  it("pins the unreadable threshold at its documented boundary", () => {
+    expect(MAX_UNREADABLE_RATIO).toBe(0.01);
+  });
+
+  it("treats exactly the threshold as acceptable, and just over it as not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kevt-"));
+    const store = SqliteStore.openForWrite(join(dir, "t.db"));
+    const seed = Array.from({ length: 100 }, (_, i) => `CVE-2021-${1000 + i}`);
+    const base = {
+      store,
+      now: () => NOW.toISOString(),
+      log: () => {},
+      freshFor: DAILY,
+    };
+    await collectKev({
+      ...base,
+      enrichment: { fetchKev: async () => parseKev(payload(seed)) },
+    });
+
+    // 1 unreadable in 100 is exactly 0.01; the guard is `>`, so it passes the
+    // ratio test and is refused only because it also lost an entry.
+    const r = await collectKev({
+      ...base,
+      enrichment: {
+        fetchKev: async () => ({
+          ...parseKev(payload(seed.slice(0, 99))),
+          unreadable: 1,
+        }),
+      },
+    });
+    expect(r.outcome).toBe("partial");
+
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("pins the endpoint and the shrink floor", () => {
+    expect(new HttpEnrichment().endpoint()).toBe(KEV_URL);
+    expect(KEV_URL).toContain("cisa.gov");
+    expect(KEV_URL).toContain("known_exploited_vulnerabilities.json");
+    expect(MIN_RETAINED_RATIO).toBeGreaterThan(0);
+    expect(MIN_RETAINED_RATIO).toBeLessThan(1);
+  });
+
+  it("sends a timeout, an accept header and a user agent", async () => {
+    // The timeout's stated purpose is stopping a hung CISA response from
+    // stalling the whole collection cycle. Deleting it was green.
+    let seen: RequestInit | undefined;
+    const port = new HttpEnrichment("http://x", async (_u, init) => {
+      seen = init;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => payload(["CVE-2021-1111"]),
+      } as Response;
+    });
+    await port.fetchKev();
+
+    expect(
+      seen?.signal,
+      "no timeout on the one external request",
+    ).toBeDefined();
+    const headers = seen?.headers as Record<string, string>;
+    expect(headers.accept).toContain("json");
+    expect(headers["user-agent"]).toContain("gitricorder");
+  });
+
+  it("refuses a 200 that is not JSON", async () => {
+    // A captive portal or proxy answers 200 with HTML.
+    const port = new HttpEnrichment(
+      "http://x",
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-type": "text/html" }),
+          json: async () => ({}),
+        }) as Response,
+    );
+    await expect(port.fetchKev()).rejects.toThrow(/not JSON/);
+  });
+
+  it("refuses a body CISA's own count says is truncated", async () => {
+    const doc = payload(["CVE-2021-1111", "CVE-2021-2222"]);
+    doc.count = 1666;
+    expect(() => parseKev(doc)).toThrow(/truncated/);
+  });
+});
+
+describe("guards on what the index will answer with", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const write = (payload: unknown) => {
+    const run = store.beginRun({
+      lane: "kev",
+      installation: KEV_INSTALLATION,
+      scope: "full",
+      startedAt: NOW.toISOString(),
+    });
+    store.recordObservations(run, NOW.toISOString(), [
+      { subject: KEV_SUBJECT, payload },
+    ]);
+    store.finishRun(run, "ok", NOW.toISOString());
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "kevg-"));
+    store = SqliteStore.openForWrite(join(dir, "g.db"));
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("refuses an empty catalogue rather than answering false for everything", () => {
+    // A fresh, confident-looking index that answers "not listed" for every CVE
+    // ever asked is the worst possible shape for the chain's top term.
+    write({ version: "v", released: "r", cveIds: [], unreadable: 0 });
+    const index = loadKevIndex(store, NOW, DAILY);
+    expect(index.usable).toBe(false);
+    expect(kevSignal(index, "CVE-2021-1111")).toBeNull();
+  });
+
+  it("does not answer for an identifier KEV is not indexed by", () => {
+    // GitHub attaches GHSA ids to advisories with no CVE. KEV knows nothing
+    // about them, and "not exploited" would be a confident negative.
+    write({
+      version: "v",
+      released: "r",
+      cveIds: ["CVE-2021-1111"],
+      unreadable: 0,
+    });
+    const index = loadKevIndex(store, NOW, DAILY);
+    for (const id of ["GHSA-xxxx-yyyy-zzzz", "not-an-id", "CVE-bad"]) {
+      expect(kevSignal(index, id), id).toBe(NOT_APPLICABLE);
+    }
+    expect(kevSignal(index, "CVE-2021-1111")).toBe(true);
+  });
+
+  it("ignores a tombstoned catalogue instead of keeping it", async () => {
+    // The lane and the lookup disagreed: the lookup rejected a resolved row
+    // while the lane counted it as "something better to keep".
+    write({
+      version: "v",
+      released: "r",
+      cveIds: ["CVE-2021-1111"],
+      unreadable: 0,
+    });
+    store.recordTombstones(
+      store.beginRun({
+        lane: "kev",
+        installation: KEV_INSTALLATION,
+        scope: "full",
+        startedAt: NOW.toISOString(),
+      }),
+      NOW.toISOString(),
+      [KEV_SUBJECT],
+    );
+
+    expect(usablePrior(store)).toBeNull();
+    expect(loadKevIndex(store, NOW, DAILY).usable).toBe(false);
+  });
+});
+
+describe("the collection-health table judges each lane on its own cadence", () => {
+  it("does not call a daily lane stale thirty minutes after it succeeded", () => {
+    // AD-11 names this exact defect: one global cadence applied to every lane.
+    // Both daily lanes had it, and the KEV lane would have been the second.
+    const dir = mkdtempSync(join(tmpdir(), "kevh-"));
+    const store = SqliteStore.openForWrite(join(dir, "h.db"));
+    const r = store.beginRun({
+      lane: "kev",
+      installation: KEV_INSTALLATION,
+      scope: "full",
+      startedAt: "2026-08-17T06:00:00.000Z",
+    });
+    store.finishRun(r, "ok", "2026-08-17T06:00:00.000Z");
+
+    const sweep = { cadenceMs: 15 * 60_000 };
+    const withoutPolicy = buildCollectionHealth(store, NOW, sweep);
+    const withPolicy = buildCollectionHealth(store, NOW, sweep, {
+      kev: { cadenceMs: KEV_CADENCE_MS },
+    });
+
+    expect(withoutPolicy[0]?.freshness).toBe("stale");
+    expect(withPolicy[0]?.freshness).toBe("fresh");
+
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 });

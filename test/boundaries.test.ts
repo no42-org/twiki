@@ -226,7 +226,13 @@ const BOUNDARIES: Record<
     allowed: ["../core/types.js", "../github/port.js"],
   },
   "src/twiki": {
-    forbidden: ["../tricorder/store/port.js"],
+    forbidden: [
+      "../tricorder/store/port.js",
+      // The write side that merges pull requests has no business reaching the
+      // network fetcher. Declaring src/enrich's own boundary did not close
+      // this reverse edge, and nothing asserted it.
+      "../enrich/kev.js",
+    ],
     allowed: [
       "../core/types.js",
       "../github/port.js",
