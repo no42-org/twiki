@@ -22,6 +22,7 @@ import type {
   DependabotAccess,
   GitHubAppPort,
   GitHubPort,
+  GitHubReadPort,
   InstallationRef,
   OrgAlertPage,
   RawDependabotAlert,
@@ -593,5 +594,90 @@ export function createTricorderAppFromEnv(env = process.env): GitHubAppPort {
   return new OctokitGitHubApp(
     new Octokit({ authStrategy: createAppAuth, auth }),
     auth,
+  );
+}
+
+/**
+ * Build gitricorder's read port over its read-only App (AD-21).
+ *
+ * Installation clients are resolved once and cached: minting one re-reads the
+ * private key and issues a token request, and a cycle touches every
+ * installation.
+ *
+ * Octokit's own request logging is silenced by default. The coverage lane
+ * EXPECTS 403s, one per repository with Dependabot switched off, and printing
+ * each as a raw warning would put fourteen alarming lines in front of an
+ * operator on a healthy run. Nothing is lost: every lane records its outcome
+ * and detail in the store and logs it with lane, installation and scope
+ * attached (AD-16), which is strictly more than the raw line carried. Set
+ * TRICORDER_VERBOSE to get them back while debugging.
+ */
+export async function createTricorderReadPort(
+  appPort: GitHubAppPort,
+  /** repos.yaml is the entire universe (AD-10); the adapter enforces it too. */
+  isAllowed: (repo: RepoRef) => boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<GitHubReadPort> {
+  const auth = loadAppAuthFromEnv(env, "TRICORDER");
+  const verbose = (env.TRICORDER_VERBOSE ?? "").trim() !== "";
+  const quiet = {
+    debug: () => {},
+    info: () => {},
+    warn: verbose ? console.error : () => {},
+    error: verbose ? console.error : () => {},
+  };
+
+  const byAccount = new Map<string, number>();
+  for (const i of await appPort.listInstallations()) {
+    if (i.account) byAccount.set(i.account.toLowerCase(), i.id);
+  }
+
+  const clients = new Map<number, Octokit>();
+  const clientFor = (id: number): Octokit => {
+    let c = clients.get(id);
+    if (!c) {
+      c = new Octokit({
+        authStrategy: createAppAuth,
+        auth: { ...auth, installationId: id },
+        log: quiet,
+      });
+      clients.set(id, c);
+    }
+    return c;
+  };
+
+  let resolved = false;
+  const forAccount = async (account: string): Promise<Octokit> => {
+    let id = byAccount.get(account.toLowerCase());
+    if (id === undefined && !resolved) {
+      // Re-resolve once per miss. Installation ids change when an App is
+      // uninstalled and reinstalled, which is exactly what an operator does
+      // after `doctor` reports a problem, and a cache fixed at startup would
+      // fail that organisation every cycle until somebody restarted the
+      // container, with nothing in the log suggesting that.
+      resolved = true;
+      for (const i of await appPort.listInstallations()) {
+        if (i.account) byAccount.set(i.account.toLowerCase(), i.id);
+      }
+      clients.clear();
+      id = byAccount.get(account.toLowerCase());
+    }
+    if (id === undefined) {
+      // Named rather than guessed. The doctor reports this case up front, and
+      // a lane that hit it should say which account, not "not accessible".
+      throw new Error(
+        `the gitricorder App is not installed on ${account}; run "tricorder doctor"`,
+      );
+    }
+    return clientFor(id);
+  };
+
+  // The guard is kept, not passed as `() => true`. Both current lanes filter
+  // by their own watched set, so it is redundant today; the next lane to call a
+  // per-repository method would otherwise get no guard at all, silently.
+  return new OctokitGitHub(
+    async (repo) => forAccount(repo.owner),
+    isAllowed,
+    forAccount,
   );
 }

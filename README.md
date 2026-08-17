@@ -165,9 +165,10 @@ renames should read as a name mismatch rather than as "you did not grant
 something you did grant", so `doctor` prints what GitHub actually reported
 alongside what it expected.
 
-`collect` currently prepares the schema and then **exits 2**: lane wiring and
-scheduling are not in this build. It exits non-zero deliberately, so a
-restarting orchestrator cannot report success forever.
+`collect` migrates the schema, then runs each lane on its own cadence: Dependabot
+alerts every 15 minutes, coverage daily.
+Due-ness is read from the store rather than from memory, so a restart neither re-sweeps everything nor waits a full cadence before doing anything.
+Set `TRICORDER_ONCE` to run a single cycle and exit, for cron.
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
@@ -177,6 +178,9 @@ restarting orchestrator cannot report success forever.
 | `TWIKI_CONFIG` | Watched repositories. gitricorder shares twiki's `repos.yaml`: it is the entire universe for both. | `repos.yaml` |
 | `TRICORDER_RETENTION_DAYS` | Days of observation history to keep. Unset keeps everything. | unset |
 | `TRICORDER_RUN_RETENTION_DAYS` | Days of collection-run history to keep. Unset keeps everything. | unset |
+| `TRICORDER_ONCE` | Run one collection cycle and exit, instead of looping. | unset (loops) |
+| `TRICORDER_TICK_SECONDS` | How often `collect` wakes to look for due lanes. | `60` |
+| `TRICORDER_VERBOSE` | Print Octokit's own request logging. Off by default because the coverage lane expects a 403 per repository with Dependabot switched off, and those would otherwise look like errors on a healthy run. | unset |
 
 Both retention windows are off by default and a malformed value refuses to start rather than falling back to a default, because silently ignoring a typo in the one setting that deletes data is not a recoverable mistake.
 

@@ -167,6 +167,42 @@ describe("deciding coverage from cheap facts plus the probe", () => {
   });
 });
 
+describe("credentials never reach a log line or the store", () => {
+  it("redacts the detail a failing lane records", async () => {
+    // AD-16. The realistic carrier is a GitHub auth failure quoting the
+    // credential it rejected, and that detail goes to BOTH the log and
+    // collection_run.detail, so redacting at the formatter alone missed it.
+    const dir = mkdtempSync(join(tmpdir(), "redact-"));
+    const store = SqliteStore.openForWrite(join(dir, "r.db"));
+    const github = new FakeGitHubReadPort(new Map());
+    const logs: string[] = [];
+    github.listOrgRepos = async () => {
+      throw new Error("Bad credentials: ghs_AAAAAAAAAAAAAAAAAAAAAAAA");
+    };
+
+    await collectCoverage(
+      {
+        github,
+        store,
+        watchedIn: () => [REPO],
+        now: () => new Date().toISOString(),
+        log: (m: string) => logs.push(m),
+      },
+      "no42-org",
+    );
+
+    expect(logs.join("\n")).not.toMatch(/ghs_[A-Za-z0-9]{8,}/);
+    expect(store.latestRuns(1)[0]?.detail ?? "").not.toMatch(
+      /ghs_[A-Za-z0-9]{8,}/,
+    );
+    // Still says what went wrong.
+    expect(store.latestRuns(1)[0]?.detail).toContain("Bad credentials");
+
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
 describe("the coverage lane", () => {
   let dir: string;
   let store: SqliteStore;
