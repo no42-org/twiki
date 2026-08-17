@@ -8,6 +8,7 @@ import {
   assertRankPolicy,
   compareRankings,
   DEFAULT_RANK_POLICY,
+  NOT_APPLICABLE,
   type RankInput,
   rank,
 } from "../src/core/rank.js";
@@ -187,6 +188,76 @@ describe("the ranking chain (AD-20)", () => {
     });
   });
 
+  describe("nothing to know is not the same as not knowing", () => {
+    it("does not float a CVE-less bump above a checked security alert", () => {
+      // KEV is the top term, so this one conflation decides the whole queue.
+      // Most update pull requests have no CVE at all; if "nothing to look up"
+      // read as "unknown", every one of them would outrank every advisory we
+      // successfully checked and found absent from the catalogue.
+      const noCve = item({
+        kev: NOT_APPLICABLE,
+        epss: NOT_APPLICABLE,
+        severity: NOT_APPLICABLE,
+        bump: "patch",
+      });
+      const checkedAdvisory = item({
+        kev: false,
+        epss: 0.02,
+        severity: "critical",
+      });
+      expect(moreUrgent(checkedAdvisory, noCve)).toBe(true);
+    });
+
+    it("still ranks a genuinely unchecked catalogue above a checked one", () => {
+      expect(moreUrgent(item({ kev: null }), item({ kev: false }))).toBe(true);
+      expect(
+        moreUrgent(item({ kev: null }), item({ kev: NOT_APPLICABLE })),
+      ).toBe(true);
+    });
+
+    it("ranks an unscoreable item below a measured one, not above it", () => {
+      // Isolated to EPSS: with no CVE there is no score to be had, and that is
+      // a fact, not a gap. Treating it as unknown would lift every CVE-less
+      // update above everything we measured and found low.
+      const noCve = item({ epss: NOT_APPLICABLE });
+      const measuredLow = item({ epss: 0.02 });
+      const unchecked = item({ epss: null });
+      expect(moreUrgent(measuredLow, noCve)).toBe(true);
+      expect(moreUrgent(unchecked, noCve)).toBe(true);
+    });
+
+    it("ties n/a with a confirmed absence, because both are facts", () => {
+      expect(
+        compareRankings(
+          rank(item({ kev: NOT_APPLICABLE }), P),
+          rank(item({ kev: false }), P),
+        ),
+      ).toBe(0);
+    });
+
+    it("does not let a non-update tie-break above a real one", () => {
+      const alert = item({ bump: NOT_APPLICABLE, stuck: NOT_APPLICABLE });
+      const update = item({ bump: "patch", stuck: false });
+      expect(compareRankings(rank(alert, P), rank(update, P))).toBe(0);
+    });
+
+    it("says which kind of absence it means", () => {
+      const r = rank(
+        item({
+          kev: NOT_APPLICABLE,
+          epss: NOT_APPLICABLE,
+          severity: NOT_APPLICABLE,
+          bump: NOT_APPLICABLE,
+          stuck: NOT_APPLICABLE,
+        }),
+        P,
+      );
+      expect(r.explanation).toContain("no CVE to check against KEV");
+      expect(r.explanation).toContain("not an update");
+      expect(r.explanation).not.toContain("unknown");
+    });
+  });
+
   describe("a stuck update needs the maintainer more, not less", () => {
     it("outranks an otherwise identical prepared update", () => {
       expect(moreUrgent(item({ stuck: true }), item({ stuck: false }))).toBe(
@@ -247,6 +318,11 @@ describe("the ranking chain (AD-20)", () => {
       );
       expect(() => assertRankPolicy({ epssBands: [0.5, 0.5] })).toThrow(
         /descending/,
+      );
+      // A band of zero is satisfied by every probability, so the term stops
+      // discriminating entirely and severity quietly becomes the second term.
+      expect(() => assertRankPolicy({ epssBands: [0.5, 0] })).toThrow(
+        /above zero/,
       );
     });
   });
@@ -317,6 +393,20 @@ describe("the ranking chain (AD-20)", () => {
     });
   });
 
+  describe("comparison", () => {
+    it("treats a missing term as unknown, not as measured-harmless", () => {
+      // Unreachable while every key is the same shape. It becomes reachable the
+      // day a term joins the chain, and a key built by the older shape must not
+      // sort as though the new signal had been measured and found safe.
+      const short = { key: [2, 2], terms: [], explanation: "older shape" };
+      const longSafe = { key: [2, 2, 0], terms: [], explanation: "measured" };
+      const longUnknown = { key: [2, 2, 1], terms: [], explanation: "unknown" };
+
+      expect(compareRankings(short, longSafe)).toBeLessThan(0);
+      expect(compareRankings(short, longUnknown)).toBe(0);
+    });
+  });
+
   describe("purity", () => {
     it("returns the same result for the same input", () => {
       const i = item({ kev: true, epss: 0.3 });
@@ -334,6 +424,20 @@ describe("the ranking chain (AD-20)", () => {
       expect(rank(item({ epss: Number.NaN }), P).explanation).toContain(
         "EPSS unknown",
       );
+    });
+
+    it("treats an impossible EPSS as unknown, not as measured-harmless", () => {
+      // The adapter passes security_advisory.epss.percentage through from an
+      // untyped payload. A negative sentinel falling through every band would
+      // sink the item with the reason "EPSS -100.0%, below 1.0%".
+      for (const epss of [-1, -0.5, 1.5, 42]) {
+        expect(rank(item({ epss }), P).explanation, `${epss}`).toContain(
+          "EPSS unknown",
+        );
+        expect(moreUrgent(item({ epss }), item({ epss: 0 })), `${epss}`).toBe(
+          true,
+        );
+      }
     });
   });
 });
