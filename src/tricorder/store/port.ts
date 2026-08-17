@@ -116,6 +116,23 @@ export interface StorePort {
   /** Trim observations older than the cutoff. Never touches the projection (AD-4). */
   trimObservations(olderThan: string): number;
 
+  /**
+   * Delete collection runs older than `olderThan`, returning the count.
+   *
+   * Two subjects are never deleted, whatever their age:
+   *
+   *   the latest run per (lane, installation, scope)  losing it removes the
+   *     lane from the collection-health view entirely, and a lane missing from
+   *     that table is indistinguishable from a lane that is fine
+   *   any run an observation still references  the log points at the run that
+   *     produced it, and severing that is a worse loss than the disk it saves
+   *
+   * Unlike observations, run rows accumulate with time rather than with change:
+   * roughly 1.9M a year at the planned cadences, whether or not anything
+   * happens. That asymmetry is why the trim exists.
+   */
+  trimRuns(olderThan: string): number;
+
   // --- read side: both processes ---
 
   currentByType(type: SubjectType): CurrentValue[];
