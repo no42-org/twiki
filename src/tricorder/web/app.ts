@@ -17,6 +17,8 @@ export interface AppDeps {
   store: StorePort;
   watched: readonly RepoRef[];
   policy: FreshnessPolicy;
+  /** The coverage lane's own cadence; it runs daily, not per sweep. */
+  coveragePolicy?: FreshnessPolicy;
   now: () => Date;
 }
 
@@ -25,7 +27,13 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/", (c) => {
     const now = deps.now();
-    const rows = buildRepoRows(deps.store, deps.watched, now, deps.policy);
+    const rows = buildRepoRows(
+      deps.store,
+      deps.watched,
+      now,
+      deps.policy,
+      deps.coveragePolicy,
+    );
     const health = buildCollectionHealth(deps.store, now, deps.policy);
     // Without the doctype browsers render in quirks mode, where the box model
     // and table metrics differ from what the styles were written against.

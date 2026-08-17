@@ -12,6 +12,10 @@ import { type RepoRef, repoSlug } from "./types.js";
 
 export const SUBJECT_TYPES = [
   "repository",
+  // Whether GitHub is watching the repository at all, kept as its own subject
+  // because it has its own freshness: a coverage lane that stops running must
+  // not leave every repository reading as permanently covered (AD-28).
+  "repository_coverage",
   "dependabot_alert",
   "code_scanning_alert",
   "secret_scanning_alert",
@@ -51,6 +55,11 @@ export function repositorySubject(repo: RepoRef): Subject {
  * Dependabot alert 7 and code-scanning alert 7 in one repository are distinct
  * subjects rather than one contested row.
  */
+/** Coverage of one repository (AD-28). Same key space as repositorySubject. */
+export function coverageSubject(repo: RepoRef): Subject {
+  return { type: "repository_coverage", key: subjectSlug(repo) };
+}
+
 export function alertSubject(
   type: "dependabot_alert" | "code_scanning_alert" | "secret_scanning_alert",
   repo: RepoRef,

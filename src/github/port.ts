@@ -71,6 +71,11 @@ export interface OrgAlertPage {
  * fail independently.
  */
 export interface GitHubReadPort {
+  /** Every repository in the organisation, with the states the listing carries. */
+  listOrgRepos(org: string): Promise<RawRepoMeta[]>;
+  /** Is Dependabot actually watching this repository? One call. */
+  probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess>;
+
   listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]>;
   prChecks(repo: RepoRef, headSha: string): Promise<CheckStatus>;
   branchChecks(repo: RepoRef, branch: string): Promise<CheckStatus>;
@@ -145,3 +150,26 @@ export interface GitHubAppPort {
   /** Every repository this installation can actually see. */
   listInstallationRepos(installationId: number): Promise<RepoRef[]>;
 }
+
+/** Repository metadata the coverage lane needs, one call per 100 repos. */
+export interface RawRepoMeta {
+  repo: RepoRef;
+  archived: boolean;
+  disabled: boolean;
+}
+
+/**
+ * What a per-repository Dependabot probe told us.
+ *
+ * Measured 2026-08-17: `200` when the feature is on, with or without open
+ * alerts; `403 "Dependabot alerts are disabled for this repository."` when it
+ * is off; `403 "Resource not accessible by integration"` when the repository
+ * is outside the installation. The two failures SHARE A STATUS CODE and differ
+ * only in the message, so translation reads the message, and anything
+ * unrecognised is `unknown` rather than a guess between them.
+ */
+export type DependabotAccess =
+  | "covered"
+  | "alerts_disabled"
+  | "unreachable"
+  | "unknown";

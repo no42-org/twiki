@@ -19,12 +19,14 @@ import {
 } from "./auth.js";
 import type {
   AppIdentity,
+  DependabotAccess,
   GitHubAppPort,
   GitHubPort,
   InstallationRef,
   OrgAlertPage,
   RawDependabotAlert,
   RawPullRequest,
+  RawRepoMeta,
 } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
@@ -66,6 +68,55 @@ export class OctokitGitHub implements GitHubPort {
       );
     }
     return this.octokitFor(repo);
+  }
+
+  async listOrgRepos(org: string): Promise<RawRepoMeta[]> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listOrgRepos needs an org resolver; this client was built without one",
+      );
+    }
+    const client = await this.orgOctokitFor(org);
+    const repos = await client.paginate(client.repos.listForOrg, {
+      org,
+      per_page: 100,
+    });
+    return repos.map(
+      (r: {
+        owner: { login: string };
+        name: string;
+        archived?: boolean;
+        disabled?: boolean;
+      }) => ({
+        repo: { owner: r.owner.login, name: r.name },
+        archived: r.archived === true,
+        disabled: r.disabled === true,
+      }),
+    );
+  }
+
+  async probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess> {
+    let client: Octokit;
+    try {
+      client = await this.client(repo);
+    } catch {
+      // NOT "unreachable". This catch also sees the allowlist guard and any
+      // transient token-mint failure, and reporting either as "the App is not
+      // installed" is the confident guess translateDependabotProbe refuses to
+      // make a few lines below. A token-mint outage would otherwise mark every
+      // repository in the organisation as uncovered at once.
+      return "unknown";
+    }
+    try {
+      await client.request("GET /repos/{owner}/{repo}/dependabot/alerts", {
+        owner: repo.owner,
+        repo: repo.name,
+        per_page: 1,
+      });
+      return "covered";
+    } catch (err) {
+      return translateDependabotProbe(err);
+    }
   }
 
   async listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]> {
@@ -352,6 +403,33 @@ export class OctokitGitHub implements GitHubPort {
 }
 
 /** Parse "Bump <name> from <a> to <b>" (and common variants) from a PR title. */
+/**
+ * Translate a failed probe on OBSERVED behaviour, never on documented codes.
+ *
+ * Both failures are 403 and differ only in the message, so status alone cannot
+ * tell "you switched this off" from "I cannot reach this". Anything not
+ * recognised is `unknown`: guessing between the two would produce either a
+ * false accusation about the operator's settings or a false claim of
+ * inaccessibility, and both read as confident.
+ */
+export function translateDependabotProbe(err: unknown): DependabotAccess {
+  // Aborted requests can surface a null rejection. Dereferencing it would throw
+  // inside a catch block, escape the probe, and fail the whole installation
+  // run, turning one repository's odd rejection into zero coverage rows.
+  if (typeof err !== "object" || err === null) return "unknown";
+  const e = err as { status?: number; message?: string };
+  const message = (e.message ?? "").toLowerCase();
+  if (e.status === 403 && message.includes("disabled for this repository")) {
+    return "alerts_disabled";
+  }
+  if (e.status === 403 && message.includes("not accessible by integration")) {
+    return "unreachable";
+  }
+  // 404 is how GitHub hides a repository the caller may not see at all.
+  if (e.status === 404) return "unreachable";
+  return "unknown";
+}
+
 export function parseDependency(
   title: string,
 ): { name?: string; from?: string; to?: string } | undefined {

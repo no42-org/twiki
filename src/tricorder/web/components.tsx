@@ -28,6 +28,8 @@ const STYLE = `
   .crit  { color: #cf222e; }
   .high  { color: #bc4c00; }
   .never { color: #57606a; font-style: italic; }
+  .uncovered { color: #9a6700; font-style: italic; text-decoration: underline dotted; }
+  .why { color: #666; font-size: .85em; }
   .failed { color: #cf222e; font-weight: 600; }
   .partial { color: #9a6700; font-weight: 600; }
   .stalled { color: #cf222e; font-weight: 600; }
@@ -51,6 +53,15 @@ export const FreshnessBadge: FC<{ freshness: Freshness; age: string }> = ({
  * and neither can be mistaken for the other.
  */
 export const AlertCount: FC<{ row: RepoRow }> = ({ row }) => {
+  // Coverage first: a repository nobody is watching has no count, and saying
+  // "not collected" would blame the collector for GitHub's setting (AD-28).
+  if (row.coverage !== null && row.coverage !== "covered") {
+    return (
+      <span class="uncovered" title={row.coverageReason ?? undefined}>
+        not covered
+      </span>
+    );
+  }
   if (row.openAlerts === null) {
     return <span class="never">not collected</span>;
   }
@@ -108,7 +119,12 @@ export const Page: FC<{
         <tbody>
           {rows.map((row) => (
             <tr key={row.slug}>
-              <td>{row.slug}</td>
+              <td>
+                {row.slug}
+                {row.coverageReason ? (
+                  <div class="why">{row.coverageReason}</div>
+                ) : null}
+              </td>
               <td class="num">
                 <AlertCount row={row} />
               </td>
