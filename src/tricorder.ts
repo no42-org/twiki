@@ -125,9 +125,11 @@ async function main(): Promise<void> {
     const config = loadConfig(configPath);
     const report = await diagnose(createTricorderAppFromEnv(env), config.repos);
     console.log(formatReport(report));
-    // Non-zero on a bad setup, so this is usable as a gate rather than
-    // something whose output somebody has to remember to read.
-    process.exit(report.ok ? 0 : 1);
+    // exitCode, not exit(). When stdout is a pipe Node writes it
+    // asynchronously, and exiting here truncates the tail of the report, which
+    // is exactly the part naming the unreachable repositories.
+    process.exitCode = report.ok ? 0 : 1;
+    return;
   }
 
   usage();

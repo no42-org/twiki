@@ -132,15 +132,15 @@ ability to write.
 
 Create a new GitHub App and grant **read-only** on exactly these, nothing more:
 
-| Permission | Why |
-| --- | --- |
-| Metadata | mandatory for any App |
-| Dependabot alerts | the security lane, and the only endpoint carrying EPSS |
-| Code scanning alerts | security sweep |
-| Secret scanning alerts | security sweep |
-| Actions | workflow run status |
-| Pull requests | dependency-update PRs and the review queue |
-| Issues | untriaged issues |
+| Permission (UI) | API name | Why |
+| --- | --- | --- |
+| Metadata | `metadata` | mandatory for any App |
+| Dependabot alerts | `vulnerability_alerts` | the security lane, and the only endpoint carrying EPSS |
+| Code scanning alerts | `security_events` | security sweep |
+| Secret scanning alerts | `secret_scanning_alerts` | security sweep |
+| Actions | `actions` | workflow run status |
+| Pull requests | `pull_requests` | dependency-update PRs and the review queue |
+| Issues | `issues` | untriaged issues |
 
 Grant no write permission at all, and subscribe to no webhook events: nothing
 in gitricorder listens.
@@ -155,10 +155,15 @@ it and run `tricorder doctor`:
 | `TRICORDER_GITHUB_APP_PRIVATE_KEY_PATH` | or a path to it |
 
 `doctor` exits non-zero and says why if the App holds any write permission, if
-a watched repository is not visible to its installation, or if a watched
-repository has no installation at all. That last case matters more than it
-looks: such a repository collects nothing forever, and nothing that collects
-nothing may render as a healthy zero.
+it is **missing** any read above, if a watched repository is not visible to its
+installation, or if a watched repository has no installation at all.
+
+The missing-read check matters as much as the write check: an App scoped to
+metadata alone holds no write permission, passes every other test, and then
+collects nothing forever. The API names are listed because a permission GitHub
+renames should read as a name mismatch rather than as "you did not grant
+something you did grant", so `doctor` prints what GitHub actually reported
+alongside what it expected.
 
 `collect` currently prepares the schema and then **exits 2**: lane wiring and
 scheduling are not in this build. It exits non-zero deliberately, so a
