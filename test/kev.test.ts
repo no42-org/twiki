@@ -526,6 +526,28 @@ describe("guards on what the index will answer with", () => {
     expect(kevSignal(index, "CVE-2021-1111")).toBeNull();
   });
 
+  it("refuses a stored list that is not made of CVE ids", () => {
+    // A fresh, confident-looking index built from junk would answer false for
+    // every real CVE asked, which is the worst shape for the chain's top term.
+    write({
+      version: "v",
+      released: "r",
+      cveIds: ["GHSA-xxxx-yyyy-zzzz", "not-an-id"],
+    });
+    const index = loadKevIndex(store, NOW, DAILY);
+    expect(index.usable).toBe(false);
+    expect(kevSignal(index, "CVE-2021-1111")).toBeNull();
+  });
+
+  it("refuses a list where only some entries are CVE ids", () => {
+    write({
+      version: "v",
+      released: "r",
+      cveIds: ["CVE-2021-1111", "garbage"],
+    });
+    expect(loadKevIndex(store, NOW, DAILY).usable).toBe(false);
+  });
+
   it("does not answer for an identifier KEV is not indexed by", () => {
     // GitHub attaches GHSA ids to advisories with no CVE. KEV knows nothing
     // about them, and "not exploited" would be a confident negative.
