@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 // AD-5's module boundaries, asserted by running the real linter against real
 // files. Nothing here parses biome.json: a config-shape assertion passes when
@@ -37,12 +37,36 @@ const isProbe = (name: string) => name.startsWith(PROBE);
 const created: string[] = [];
 const modified = new Map<string, string>();
 
-afterEach(() => {
-  for (const [path, original] of modified) writeFileSync(path, original);
-  for (const path of created) rmSync(path, { force: true });
+/**
+ * Put everything back.
+ *
+ * Each restore is isolated: one failure (read-only file, full disk) must not
+ * abandon the rest half-written, and the collections are cleared whatever
+ * happens so the next test does not inherit stale state.
+ */
+function restoreAll(): void {
+  for (const [path, original] of modified) {
+    try {
+      writeFileSync(path, original);
+    } catch {
+      // Nothing useful to do here; the assertion below reports the damage.
+    }
+  }
+  for (const path of created) {
+    try {
+      rmSync(path, { force: true });
+    } catch {}
+  }
   modified.clear();
   created.length = 0;
-});
+}
+
+afterEach(restoreAll);
+
+// probeFile rewrites real source files. Ctrl-C during a run, a worker crash or
+// an OOM kill would otherwise leave src/index.ts corrupted on disk, which is
+// easy to commit without noticing.
+process.on("exit", restoreAll);
 
 /**
  * How many boundary violations Biome reported for one file, at error severity.
@@ -66,19 +90,30 @@ function violations(file: string): number {
     file,
   ];
   let stdout: string;
+  let stderr = "";
   try {
     stdout = execFileSync(BIOME, args, {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (err) {
     // Biome exits non-zero whenever it reported anything. The report is still
     // on stdout, and it is the report we want, not the exit code.
-    stdout = (err as { stdout?: string }).stdout ?? "";
+    const e = err as { stdout?: string; stderr?: string; message?: string };
+    stdout = e.stdout ?? "";
+    stderr = e.stderr || e.message || "";
   }
-  const report = JSON.parse(stdout) as {
-    diagnostics: { category: string; severity: string }[];
-  };
+
+  let report: { diagnostics: { category: string; severity: string }[] };
+  try {
+    report = JSON.parse(stdout);
+  } catch {
+    // A missing binary or an unparseable biome.json produces empty stdout, and
+    // a bare "Unexpected end of JSON input" from every test hides the cause.
+    throw new Error(
+      `biome produced no JSON report for ${file}.\n${stderr.trim()}`,
+    );
+  }
   return report.diagnostics.filter(
     (d) =>
       d.category === "lint/style/noRestrictedImports" && d.severity === "error",
@@ -154,14 +189,25 @@ const BOUNDARIES: Record<
       "../github/port.js",
       "../twiki/executor.js",
       "../tricorder/store/port.js",
+      // src/enrich arrives with story 18. Biome matches specifiers without
+      // resolving them, so its rule is testable before the directory exists,
+      // and an untested rule is how a dead pattern survives.
+      "../enrich/kev.js",
     ],
-    allowed: ["./types.js"],
+    allowed: ["./types.js", "node:path"],
   },
 
   // github and enrich are peers of each other and may use core.
   "src/github": {
-    forbidden: ["../twiki/executor.js", "../tricorder/store/port.js"],
-    allowed: ["../core/types.js", "./port.js"],
+    forbidden: [
+      "../twiki/executor.js",
+      "../tricorder/store/port.js",
+      "../enrich/kev.js",
+    ],
+    // A bare package specifier must stay legal: the entrypoint patterns are
+    // anchored to relative forms precisely so hono/dist/index.js is not read
+    // as an AD-5 violation.
+    allowed: ["../core/types.js", "./port.js", "octokit", "hono/dist/index.js"],
   },
 
   // The two feature directories may use the leaves, never each other.
@@ -169,7 +215,11 @@ const BOUNDARIES: Record<
   // there makes it a code directory and this table must then name it.
   "src/twiki": {
     forbidden: ["../tricorder/store/port.js"],
-    allowed: ["../core/types.js", "../github/port.js"],
+    allowed: [
+      "../core/types.js",
+      "../github/port.js",
+      "@hono/node-server/dist/index.js",
+    ],
   },
   "src/tricorder/collect": {
     forbidden: ["../../twiki/executor.js"],
@@ -181,7 +231,7 @@ const BOUNDARIES: Record<
   },
   "src/tricorder/web": {
     forbidden: ["../../twiki/executor.js"],
-    allowed: ["../../core/types.js", "../store/port.js"],
+    allowed: ["../../core/types.js", "../store/port.js", "hono", "hono/jsx"],
   },
 };
 
@@ -201,6 +251,15 @@ const ENTRYPOINTS: Record<
 };
 
 describe.sequential("module boundaries (AD-5)", () => {
+  const gitStatus = () =>
+    execFileSync("git", ["status", "--porcelain", SRC], { encoding: "utf8" });
+
+  /** The tree before any probe ran, including the developer's own changes. */
+  let baseline: string;
+  beforeAll(() => {
+    baseline = gitStatus();
+  });
+
   describe("coverage", () => {
     it("every code directory declares its boundary", () => {
       // Compared as sets against the real tree. Adding src/enrich for story 18
@@ -285,9 +344,10 @@ describe.sequential("module boundaries (AD-5)", () => {
   it("no probe leaves the tree modified", () => {
     // The entrypoint probes edit real source files. If a restore ever fails,
     // this is the assertion that says so rather than a confusing diff later.
-    const dirty = execFileSync("git", ["status", "--porcelain", SRC], {
-      encoding: "utf8",
-    });
-    expect(dirty).toBe("");
+    //
+    // Compared against the baseline, not against clean: work in progress under
+    // src/ is the normal state while implementing, and failing on it would
+    // make this suite something people learn to ignore.
+    expect(gitStatus()).toBe(baseline);
   });
 });

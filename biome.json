@@ -59,7 +59,16 @@
                     "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
                   },
                   {
-                    "group": ["**/index.js", "**/tricorder.js"],
+                    "group": [
+                      "./index.js",
+                      "../index.js",
+                      "../../index.js",
+                      "../../../index.js",
+                      "./tricorder.js",
+                      "../tricorder.js",
+                      "../../tricorder.js",
+                      "../../../tricorder.js"
+                    ],
                     "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
@@ -83,7 +92,16 @@
                     "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
                   },
                   {
-                    "group": ["**/index.js", "**/tricorder.js"],
+                    "group": [
+                      "./index.js",
+                      "../index.js",
+                      "../../index.js",
+                      "../../../index.js",
+                      "./tricorder.js",
+                      "../tricorder.js",
+                      "../../tricorder.js",
+                      "../../../tricorder.js"
+                    ],
                     "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
@@ -107,7 +125,16 @@
                     "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
                   },
                   {
-                    "group": ["**/index.js", "**/tricorder.js"],
+                    "group": [
+                      "./index.js",
+                      "../index.js",
+                      "../../index.js",
+                      "../../../index.js",
+                      "./tricorder.js",
+                      "../tricorder.js",
+                      "../../tricorder.js",
+                      "../../../tricorder.js"
+                    ],
                     "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
@@ -131,7 +158,16 @@
                     "message": "AD-5: this directory may not import a feature directory. Move shared code down into a leaf."
                   },
                   {
-                    "group": ["**/index.js", "**/tricorder.js"],
+                    "group": [
+                      "./index.js",
+                      "../index.js",
+                      "../../index.js",
+                      "../../../index.js",
+                      "./tricorder.js",
+                      "../tricorder.js",
+                      "../../tricorder.js",
+                      "../../../tricorder.js"
+                    ],
                     "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
@@ -155,7 +191,16 @@
                     "message": "AD-5: this directory may not import a feature directory. Move shared code down into a leaf."
                   },
                   {
-                    "group": ["**/index.js", "**/tricorder.js"],
+                    "group": [
+                      "./index.js",
+                      "../index.js",
+                      "../../index.js",
+                      "../../../index.js",
+                      "./tricorder.js",
+                      "../tricorder.js",
+                      "../../tricorder.js",
+                      "../../../tricorder.js"
+                    ],
                     "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
                   }
                 ]
@@ -175,7 +220,13 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/tricorder/**", "**/tricorder.js"],
+                    "group": [
+                      "**/tricorder/**",
+                      "./tricorder.js",
+                      "../tricorder.js",
+                      "../../tricorder.js",
+                      "../../../tricorder.js"
+                    ],
                     "message": "AD-5: an entrypoint wires exactly one side. src/index.ts is twiki's, src/tricorder.ts is gitricorder's."
                   }
                 ]
@@ -195,7 +246,13 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/twiki/**", "**/index.js"],
+                    "group": [
+                      "**/twiki/**",
+                      "./index.js",
+                      "../index.js",
+                      "../../index.js",
+                      "../../../index.js"
+                    ],
                     "message": "AD-5: an entrypoint wires exactly one side. src/index.ts is twiki's, src/tricorder.ts is gitricorder's."
                   }
                 ]
