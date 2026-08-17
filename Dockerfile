@@ -42,10 +42,11 @@ COPY --from=build /app/package.json ./
 # The flag suppresses node:sqlite's one-per-process ExperimentalWarning by
 # name. Never --no-warnings, which would hide a genuine one.
 #
-# Both roles share one SQLite file on a local bind mount. Mount it WRITABLE for
-# both, including web: WAL keeps its shared memory in a -shm file beside the
-# database, so a read-only mount fails with SQLITE_CANTOPEN even though web's
-# connection is readOnly. Start collect first on a cold start, because a
-# read-only handle cannot recover a hot WAL whose -shm is missing. See the
-# README's "Sharing the database between the two roles".
+# The collect and web roles share one SQLite file on a local bind mount; the
+# default twiki role uses no database and needs no such mount. Mount the volume
+# WRITABLE for both, including web: WAL keeps its shared memory in a -shm file
+# beside the database, so a read-only mount fails with SQLITE_CANTOPEN even
+# though web's connection is readOnly. Start collect first on a cold start, and
+# never copy the database while collect is running. See the README's "Sharing
+# the database between the two roles".
 CMD ["dist/index.js"]
