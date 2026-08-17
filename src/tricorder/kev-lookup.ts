@@ -24,8 +24,17 @@ import { type FreshnessPolicy, freshness } from "./web/freshness.js";
 
 export interface KevIndex {
   has: (cve: string) => boolean;
-  /** Null when there is no catalogue we can vouch for. */
+  /** Whether there is a catalogue current enough to answer with at all. */
   usable: boolean;
+  /**
+   * Whether a MISS can be trusted.
+   *
+   * A catalogue missing entries still proves a positive: an id we can see is
+   * genuinely listed. It cannot prove a negative, because the CVE being asked
+   * about may be one of the entries we failed to read. So a partial catalogue
+   * answers `true` confidently and `unknown` for everything else.
+   */
+  negativesTrustworthy: boolean;
   version: string | null;
   verifiedAt: string | null;
 }
@@ -42,18 +51,30 @@ export function loadKevIndex(
   now: Date,
   policy: FreshnessPolicy,
 ): KevIndex {
-  const row = store.current(KEV_SUBJECT);
-  if (!row || row.state !== "present") {
-    return { has: () => false, usable: false, version: null, verifiedAt: null };
-  }
+  const unusable: KevIndex = {
+    has: () => false,
+    usable: false,
+    negativesTrustworthy: false,
+    version: null,
+    verifiedAt: null,
+  };
 
-  const current = freshness(row.verifiedAt, now, policy) === "fresh";
-  const payload = row.payload as KevObservation;
-  const ids = new Set(payload.cveIds.map((c) => c.toUpperCase()));
+  const row = store.current(KEV_SUBJECT);
+  if (!row || row.state !== "present") return unusable;
+
+  const payload = row.payload as KevObservation | undefined;
+  // A row of an unexpected shape degrades to unknown rather than throwing.
+  // Everything else in this module is built to answer "we do not know" when it
+  // cannot answer; failing the request instead would be the one path that does
+  // not.
+  if (!payload || !Array.isArray(payload.cveIds)) return unusable;
+
+  const ids = new Set(payload.cveIds.map((c) => String(c).toUpperCase()));
 
   return {
     has: (cve) => ids.has(cve.trim().toUpperCase()),
-    usable: current,
+    usable: freshness(row.verifiedAt, now, policy) === "fresh",
+    negativesTrustworthy: (payload.unreadable ?? 0) === 0,
     version: payload.version || null,
     verifiedAt: row.verifiedAt,
   };
@@ -71,7 +92,14 @@ export function kevSignal(
   index: KevIndex,
   cve: string | null,
 ): Signal<boolean> {
-  if (!index.usable) return null;
+  // Before the usability check, deliberately. "There is nothing to look up"
+  // needs no catalogue, and answering `unknown` here would rank every CVE-less
+  // advisory ABOVE the ones we checked and found absent, because unknown sits
+  // higher than n/a. On a stale catalogue that inverted the whole queue.
   if (!cve || cve.trim() === "") return NOT_APPLICABLE;
-  return index.has(cve);
+
+  if (!index.usable) return null;
+  if (index.has(cve)) return true;
+  // A miss on a catalogue with unreadable entries might BE one of them.
+  return index.negativesTrustworthy ? false : null;
 }

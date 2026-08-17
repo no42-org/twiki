@@ -179,6 +179,49 @@ describe("the KEV lane", () => {
     expect(r.outcome).toBe("partial");
     expect(stored()?.cveIds).toEqual(["CVE-2021-1110"]);
   });
+
+  it("accepts a fetch with one bad entry rather than freezing forever", async () => {
+    // The trap this replaced: rejecting on ANY unreadable entry meant one
+    // malformed record among 1666 discarded the fetch, the next day's fetch
+    // contained the same record, and the catalogue never updated again. Two
+    // cadences later the chain's top term went permanently unknown with no way
+    // back.
+    const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
+    await collectKev(deps(fake(async () => parseKev(payload(many)))));
+
+    const next = parseKev(payload([...many, "CVE-2026-9999"]));
+    const r = await collectKev(
+      deps(fake(async () => ({ ...next, unreadable: 1 }))),
+    );
+
+    expect(r.outcome).toBe("partial");
+    expect(stored()?.cveIds).toContain("CVE-2026-9999");
+  });
+
+  it("still refuses a fetch that lost a large share of the catalogue", async () => {
+    const many = Array.from({ length: 200 }, (_, i) => `CVE-2021-${1000 + i}`);
+    await collectKev(deps(fake(async () => parseKev(payload(many)))));
+
+    const gutted = parseKev(payload(["CVE-2021-1000"]));
+    const r = await collectKev(
+      deps(fake(async () => ({ ...gutted, unreadable: 199 }))),
+    );
+
+    expect(r.outcome).toBe("partial");
+    expect(stored()?.cveIds).toHaveLength(200);
+    // And says how many it kept, rather than reporting zero for a run that
+    // kept a full catalogue.
+    expect(r.listed).toBe(200);
+  });
+
+  it("records how many entries it could not read", async () => {
+    const degraded = parseKev(payload(["CVE-2021-1110"]));
+    await collectKev(deps(fake(async () => ({ ...degraded, unreadable: 2 }))));
+    const row = store.current(KEV_SUBJECT)?.payload as
+      | { unreadable: number }
+      | undefined;
+    expect(row?.unreadable).toBe(2);
+  });
 });
 
 describe("the chain's first term", () => {
@@ -228,6 +271,57 @@ describe("the chain's first term", () => {
     const index = loadKevIndex(store, NOW, DAILY);
     expect(index.usable).toBe(false);
     expect(kevSignal(index, "CVE-2099-9999")).toBeNull();
+    expect(kevSignal(index, "CVE-2021-1111")).toBeNull();
+  });
+
+  it("answers n/a for a CVE-less advisory even with no catalogue at all", () => {
+    // Guard order matters. "Nothing to look up" needs no catalogue, and
+    // answering unknown here ranks every CVE-less advisory ABOVE the ones we
+    // checked and found absent, because unknown sits higher than n/a. On a
+    // stale catalogue that inverted the whole queue.
+    const index = loadKevIndex(store, NOW, DAILY);
+    expect(index.usable).toBe(false);
+    expect(kevSignal(index, null)).toBe(NOT_APPLICABLE);
+  });
+
+  it("trusts a hit but not a miss when entries were unreadable", async () => {
+    // A catalogue missing entries still proves a positive: an id we can see is
+    // listed. It cannot prove a negative, because the CVE being asked about may
+    // be one of the entries we failed to read.
+    await collectKev({
+      enrichment: {
+        fetchKev: async () => ({
+          ...parseKev(payload(["CVE-2021-1111"])),
+          unreadable: 1,
+        }),
+      },
+      store,
+      now: () => NOW.toISOString(),
+      log: () => {},
+    });
+
+    const index = loadKevIndex(store, NOW, DAILY);
+    expect(index.negativesTrustworthy).toBe(false);
+    expect(kevSignal(index, "CVE-2021-1111")).toBe(true);
+    expect(kevSignal(index, "CVE-2099-9999")).toBeNull();
+  });
+
+  it("degrades to unknown on a payload of the wrong shape", async () => {
+    await seed(["CVE-2021-1111"]);
+    const run = store.beginRun({
+      lane: "x",
+      installation: "cisa",
+      scope: "full",
+      startedAt: NOW.toISOString(),
+    });
+    store.recordObservations(run, NOW.toISOString(), [
+      { subject: KEV_SUBJECT, payload: { nonsense: true } },
+    ]);
+
+    // Everything else here answers "we do not know" when it cannot answer;
+    // throwing would be the one path that fails the request instead.
+    const index = loadKevIndex(store, NOW, DAILY);
+    expect(index.usable).toBe(false);
     expect(kevSignal(index, "CVE-2021-1111")).toBeNull();
   });
 

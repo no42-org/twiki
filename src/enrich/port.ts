@@ -16,6 +16,14 @@ export interface KevCatalogue {
   released: string;
   /** Every listed CVE id, upper-cased and sorted. Membership is all the chain needs. */
   cveIds: readonly string[];
+  /**
+   * Entries whose id could not be read.
+   *
+   * Part of the contract, not an implementation detail: a consumer that cannot
+   * see this cannot tell a complete catalogue from one missing entries, and a
+   * missing entry answers "not listed" for a CVE that is.
+   */
+  unreadable: number;
 }
 
 export interface EnrichmentPort {

@@ -18,10 +18,7 @@ export const KEV_URL =
 /** A CVE id, as CISA writes them. */
 const CVE = /^CVE-\d{4}-\d{4,}$/i;
 
-export interface KevFetchResult extends KevCatalogue {
-  /** Entries whose id could not be read. Non-zero must degrade the run. */
-  unreadable: number;
-}
+export type KevFetchResult = KevCatalogue;
 
 /**
  * Turn CISA's payload into a catalogue, or refuse.

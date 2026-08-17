@@ -16,7 +16,27 @@ export interface KevObservation {
   version: string;
   released: string;
   cveIds: readonly string[];
+  /**
+   * Entries CISA sent that we could not read.
+   *
+   * Persisted because the lookup needs it. A catalogue missing entries can
+   * still prove a POSITIVE (an id present is present) but cannot prove a
+   * negative, and only this field lets the reader downgrade the misses.
+   */
+  unreadable: number;
 }
+
+/**
+ * How much of the catalogue may be unreadable before we distrust the fetch.
+ *
+ * A ratio, not a count, and not zero. Zero was the first version and it was a
+ * trap: one malformed entry among 1666 discarded the whole fetch, and because
+ * the next day's fetch would contain the same bad entry, the catalogue would
+ * never update again. After two cadences the chain's top term went permanently
+ * unknown with no way back. A fetch that is 99% readable is worth having;
+ * one that is half missing is not.
+ */
+export const MAX_UNREADABLE_RATIO = 0.01;
 
 export interface KevDeps {
   enrichment: EnrichmentPort;
@@ -49,29 +69,40 @@ export async function collectKev(
     });
 
     const catalogue = await deps.enrichment.fetchKev();
-    const unreadable = (catalogue as { unreadable?: number }).unreadable ?? 0;
+    const { unreadable } = catalogue;
+    const total = catalogue.cveIds.length + unreadable;
+    const ratio = total === 0 ? 1 : unreadable / total;
 
-    // A catalogue we could only partly read would answer "not listed" for
-    // every CVE it dropped, and that is a false negative on the chain's most
-    // significant term. Keep what we already had rather than replace it with a
-    // smaller list, exactly as the coverage lane refuses to overwrite
-    // knowledge with a failure.
+    // Badly degraded, and we already hold something better: keep what we had
+    // rather than replace it with a materially smaller list, exactly as the
+    // coverage lane refuses to overwrite knowledge with a failure.
+    //
+    // Judged on a RATIO, not on "any unreadable at all". That was the first
+    // version and it was a trap: one malformed entry among 1666 discarded the
+    // fetch, the next day's fetch carried the same entry, and the catalogue
+    // never updated again.
     const prior = deps.store.current(KEV_SUBJECT);
-    if (unreadable > 0 && prior !== null) {
+    if (ratio > MAX_UNREADABLE_RATIO && prior !== null) {
+      const kept = (prior.payload as KevObservation).cveIds.length;
       deps.store.finishRun(
         run,
         "partial",
         deps.now(),
-        `${unreadable} entries unreadable; kept the previous catalogue`,
+        `${unreadable} of ${total} entries unreadable; kept the previous catalogue`,
       );
-      deps.log(`${LANE}: ${unreadable} unreadable, previous catalogue kept`);
-      return { outcome: "partial", listed: 0, unreadable };
+      deps.log(
+        `${LANE}: ${unreadable}/${total} unreadable, kept the previous ${kept} CVEs`,
+      );
+      // The count reports what is actually in the store, not zero for a run
+      // that kept a full catalogue.
+      return { outcome: "partial", listed: kept, unreadable };
     }
 
     const payload: KevObservation = {
       version: catalogue.version,
       released: catalogue.released,
       cveIds: catalogue.cveIds,
+      unreadable,
     };
     deps.store.recordObservations(run, deps.now(), [
       { subject: KEV_SUBJECT, payload },

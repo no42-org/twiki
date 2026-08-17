@@ -254,8 +254,10 @@ async function main(): Promise<void> {
       },
       schedules,
       // KEV rides the cycle as its own pseudo-installation (AD-15): it is one
-      // public document, not something each organisation has a copy of.
-      [...installations, KEV_INSTALLATION],
+      // public document, not something each organisation has a copy of. Set,
+      // because an owner literally named `cisa` would otherwise appear twice
+      // and every GitHub lane would sweep it twice per cycle.
+      [...new Set([...installations, KEV_INSTALLATION])],
       {
         once,
         tickMs: parseTickSeconds(env.TRICORDER_TICK_SECONDS, log) * 1000,
