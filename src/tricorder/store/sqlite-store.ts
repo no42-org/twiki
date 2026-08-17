@@ -251,27 +251,42 @@ export class SqliteStore implements StorePort {
         ? verifiedAt
         : (prior?.observedAt ?? verifiedAt);
 
-    this.db
-      .prepare(
-        `INSERT INTO observation
-           (subject_type, subject_key, run_id, payload, state, observed_at, verified_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        o.subject.type,
-        o.subject.key,
-        run.id,
-        payload,
-        state,
-        observedAt,
-        verifiedAt,
-      );
+    // The log records CHANGE, not attendance. AD-3 already says a 304 produces
+    // no observation row but does advance verified_at; an unchanged 200 is the
+    // same fact arriving by a different route and behaves identically.
+    //
+    // This is not an optimisation. Appending on every sweep would write one row
+    // per watched repository per cycle: at 718 repositories and a 15-minute
+    // full sweep that is roughly 69,000 rows a day, essentially all of them
+    // byte-identical to the row before. It would also make the log useless for
+    // the one question it exists to answer, "when did this actually change",
+    // because every real change would sit under a drift of duplicates.
+    if (changed) {
+      this.db
+        .prepare(
+          `INSERT INTO observation
+             (subject_type, subject_key, run_id, payload, state, observed_at, verified_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          o.subject.type,
+          o.subject.key,
+          run.id,
+          payload,
+          state,
+          observedAt,
+          verifiedAt,
+        );
+    }
 
-    // The projection is monotonic in verified_at. Lanes and scopes overlap, so
-    // a slow full run can land after a fast hot run that already wrote a newer
-    // value; without this guard it would clobber the fresher payload and move
-    // freshness backwards. The observation row above is still appended, so
-    // nothing observed is lost.
+    // The projection advances on EVERY observation, changed or not: that is
+    // what makes a quiet, healthy repository render fresh rather than rotting
+    // (AD-11). Only the log above is conditional.
+    //
+    // Monotonic in verified_at. Lanes and scopes overlap, so a slow full run
+    // can land after a fast hot run that already wrote a newer value; without
+    // this guard it would clobber the fresher payload and move freshness
+    // backwards.
     this.db
       .prepare(
         `INSERT INTO current_state
@@ -346,6 +361,26 @@ export class SqliteStore implements StorePort {
     // expected to grow would be the expensive way to learn the same number.
     const result = this.db
       .prepare("DELETE FROM observation WHERE verified_at < ?")
+      .run(stamp(olderThan));
+    return Number(result.changes);
+  }
+
+  trimRuns(olderThan: string): number {
+    this.assertWritable("trimRuns");
+    // The two exclusions are correctness, not caution. Foreign keys are ON, so
+    // deleting a referenced run would throw mid-trim; and deleting the newest
+    // run for a key would silently retire a lane from the health view, which is
+    // the "a missing row means healthy" failure this whole build exists to
+    // avoid.
+    const result = this.db
+      .prepare(
+        `DELETE FROM collection_run
+          WHERE verified_at < ?
+            AND id NOT IN (
+              SELECT MAX(id) FROM collection_run GROUP BY lane, installation, scope
+            )
+            AND id NOT IN (SELECT run_id FROM observation)`,
+      )
       .run(stamp(olderThan));
     return Number(result.changes);
   }

@@ -132,6 +132,12 @@ restarting orchestrator cannot report success forever.
 | `TRICORDER_HOST` | Bind address for `web`. | `127.0.0.1` |
 | `TRICORDER_PORT` | Port for `web`. Decimal, 1-65535; `0` is rejected. | `8787` |
 | `TWIKI_CONFIG` | Watched repositories. gitricorder shares twiki's `repos.yaml`: it is the entire universe for both. | `repos.yaml` |
+| `TRICORDER_RETENTION_DAYS` | Days of observation history to keep. Unset keeps everything. | unset |
+| `TRICORDER_RUN_RETENTION_DAYS` | Days of collection-run history to keep. Unset keeps everything. | unset |
+
+Both retention windows are off by default and a malformed value refuses to start rather than falling back to a default, because silently ignoring a typo in the one setting that deletes data is not a recoverable mistake.
+
+Keeping observation history is cheap: the log appends only when a value actually **changes**, so a quiet estate adds very little. Run history is the asymmetric case, since `collection_run` gains a row per lane per installation per cycle whether or not anything happened. Nothing reads it beyond the latest run per key, and that row is never trimmed, so a lane that stopped months ago still appears on the collection-health view.
 
 The default bind is loopback, and there is no code path that defaults to
 `0.0.0.0`. There is **no authentication in front of the dashboard**, so binding

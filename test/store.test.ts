@@ -6,6 +6,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { alertSubject, repositorySubject } from "../src/core/subject.js";
 import type { RunRef } from "../src/tricorder/store/port.js";
@@ -375,6 +376,240 @@ describe("SqliteStore", () => {
       raw.close();
 
       expect(() => SqliteStore.openForRead(path)).toThrow(/version 99/);
+    });
+  });
+
+  // The observation log records CHANGE, not attendance. Before this was
+  // enforced, ten identical sweeps of one unchanged subject wrote ten rows with
+  // one distinct payload, and nothing in the suite noticed.
+  describe("the log appends on change, not on every sweep", () => {
+    /**
+     * Count rows directly.
+     *
+     * StorePort exposes no window onto the log's shape, and it should not: no
+     * capability reads raw observations. AD-27 governs src/, and this is the
+     * assertion that the log is not quietly filling with duplicates.
+     */
+    const observationRows = (): { payload: string; verified_at: string }[] => {
+      const raw = new DatabaseSync(path, { readOnly: true });
+      const rows = raw
+        .prepare("SELECT payload, verified_at FROM observation ORDER BY id")
+        .all() as { payload: string; verified_at: string }[];
+      raw.close();
+      return rows;
+    };
+
+    const sweep = (at: string, payload: unknown) => {
+      const r = store.beginRun({
+        lane: "rest-org",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: at,
+      });
+      store.recordObservations(r, at, [
+        { subject: repositorySubject(REPO), payload },
+      ]);
+      store.finishRun(r, "ok", at);
+    };
+
+    it("writes one row for a subject confirmed unchanged many times", () => {
+      const payload = { openAlerts: 0, worstSeverity: null };
+      for (let i = 0; i < 10; i++) {
+        sweep(`2026-08-16T1${i}:00:00.000Z`, payload);
+      }
+      expect(observationRows()).toHaveLength(1);
+    });
+
+    it("still advances freshness on every one of those sweeps", () => {
+      const payload = { openAlerts: 0, worstSeverity: null };
+      sweep(T1, payload);
+      sweep(T2, payload);
+      sweep(T3, payload);
+
+      const current = store.current(repositorySubject(REPO));
+      // The projection is what makes a quiet healthy repository read fresh.
+      // Suppressing the log row must not suppress that.
+      expect(current?.verifiedAt).toBe(T3);
+      expect(current?.observedAt).toBe(T1);
+    });
+
+    it("appends a row the moment the value actually changes", () => {
+      sweep(T1, { openAlerts: 0 });
+      sweep(T2, { openAlerts: 0 });
+      sweep(T3, { openAlerts: 2 });
+
+      const rows = observationRows();
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.verified_at)).toEqual([T1, T3]);
+      // The log answers "when did this change", and it can only answer that if
+      // a real change is not buried under a drift of duplicates.
+    });
+
+    it("appends when a value changes back to a payload it held before", () => {
+      sweep(T1, { openAlerts: 2 });
+      sweep(T2, { openAlerts: 0 });
+      sweep(T3, { openAlerts: 2 });
+      expect(observationRows()).toHaveLength(3);
+    });
+
+    it("appends a tombstone, because a state change is a change", () => {
+      const subject = repositorySubject(REPO);
+      sweep(T1, { openAlerts: 2 });
+      store.recordTombstones(run, T2, [subject]);
+
+      const rows = observationRows();
+      expect(rows).toHaveLength(2);
+      expect(store.current(subject)?.state).toBe("resolved");
+    });
+
+    it("does not append a second tombstone for an already resolved subject", () => {
+      const subject = repositorySubject(REPO);
+      sweep(T1, { openAlerts: 2 });
+      store.recordTombstones(run, T2, [subject]);
+      store.recordTombstones(run, T3, [subject]);
+
+      expect(observationRows()).toHaveLength(2);
+      // Re-confirmed rather than re-tombstoned, or its freshness would freeze
+      // and every staleness view would report it as rotting.
+      expect(store.current(subject)?.verifiedAt).toBe(T3);
+    });
+  });
+
+  describe("trimming collection runs", () => {
+    const runAt = (at: string, installation = "no42-org") => {
+      const r = store.beginRun({
+        lane: "rest-org",
+        installation,
+        scope: "full",
+        startedAt: at,
+      });
+      store.finishRun(r, "ok", at);
+      return r;
+    };
+    const runCount = () => {
+      const raw = new DatabaseSync(path, { readOnly: true });
+      const n = Number(
+        (
+          raw.prepare("SELECT COUNT(*) AS c FROM collection_run").get() as {
+            c: number;
+          }
+        ).c,
+      );
+      raw.close();
+      return n;
+    };
+
+    it("deletes runs older than the cutoff", () => {
+      runAt("2026-08-01T00:00:00.000Z");
+      runAt("2026-08-02T00:00:00.000Z");
+      runAt(T3);
+      // The beforeEach run plus three here.
+      expect(runCount()).toBe(4);
+
+      expect(store.trimRuns("2026-08-10T00:00:00.000Z")).toBe(2);
+      expect(runCount()).toBe(2);
+    });
+
+    it("never deletes the newest run for a key, however old", () => {
+      // A lane that stopped months ago is exactly the one the health view must
+      // keep showing. Deleting it removes the lane from the page, and a lane
+      // missing from that table is indistinguishable from a lane that is fine.
+      runAt("2026-01-01T00:00:00.000Z", "abandoned");
+
+      store.trimRuns("2026-08-16T23:00:00.000Z");
+
+      const keys = store.latestRunPerKey().map((r) => r.installation);
+      expect(keys).toContain("abandoned");
+    });
+
+    it("never deletes a run an observation still points at", () => {
+      const old = store.beginRun({
+        lane: "rest-org",
+        installation: "old-org",
+        scope: "full",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      });
+      store.recordObservations(old, "2026-01-01T00:00:00.000Z", [
+        { subject: repositorySubject(REPO), payload: { openAlerts: 1 } },
+      ]);
+      store.finishRun(old, "ok", "2026-01-01T00:00:00.000Z");
+      // Make it non-newest for its key so only the reference protects it.
+      runAt("2026-01-02T00:00:00.000Z", "old-org");
+      runAt("2026-01-03T00:00:00.000Z", "old-org");
+
+      const before = runCount();
+      store.trimRuns("2026-08-16T23:00:00.000Z");
+
+      // Foreign keys are ON, so a naive trim would throw here rather than
+      // quietly skip. Either way the log must keep pointing at what produced it.
+      const raw = new DatabaseSync(path, { readOnly: true });
+      const orphans = Number(
+        (
+          raw
+            .prepare(
+              "SELECT COUNT(*) AS c FROM observation o LEFT JOIN collection_run r ON r.id = o.run_id WHERE r.id IS NULL",
+            )
+            .get() as { c: number }
+        ).c,
+      );
+      raw.close();
+      expect(orphans).toBe(0);
+      expect(runCount()).toBeLessThan(before);
+    });
+
+    it("is refused on a read-only handle", () => {
+      store.close();
+      const reader = SqliteStore.openForRead(path);
+      expect(() => reader.trimRuns(T3)).toThrow(/writable/);
+      reader.close();
+      store = SqliteStore.openForWrite(path);
+    });
+  });
+
+  describe("the retention cutoff is exclusive", () => {
+    // Retention is destructive and irreversible, so the boundary is worth
+    // pinning rather than inferring. `olderThan` means strictly older: a row
+    // stamped exactly at the cutoff is inside the window and survives.
+    const rowsAt = (): string[] => {
+      const raw = new DatabaseSync(path, { readOnly: true });
+      const rows = (
+        raw
+          .prepare("SELECT verified_at FROM observation ORDER BY id")
+          .all() as {
+          verified_at: string;
+        }[]
+      ).map((r) => r.verified_at);
+      raw.close();
+      return rows;
+    };
+
+    it("keeps a row stamped exactly at the cutoff and drops the one before it", () => {
+      store.recordObservations(run, T1, [
+        {
+          subject: alertSubject("dependabot_alert", REPO, 1),
+          payload: { v: 1 },
+        },
+      ]);
+      store.recordObservations(run, T2, [
+        {
+          subject: alertSubject("dependabot_alert", REPO, 2),
+          payload: { v: 2 },
+        },
+      ]);
+
+      expect(store.trimObservations(T2)).toBe(1);
+      expect(rowsAt()).toEqual([T2]);
+    });
+
+    it("deletes nothing when the cutoff predates every row", () => {
+      store.recordObservations(run, T2, [
+        {
+          subject: alertSubject("dependabot_alert", REPO, 1),
+          payload: { v: 1 },
+        },
+      ]);
+      expect(store.trimObservations(T1)).toBe(0);
+      expect(rowsAt()).toEqual([T2]);
     });
   });
 });
