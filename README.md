@@ -142,6 +142,32 @@ The `web` process opens the database read-only and refuses to start if the
 schema is a version it was not built against, rather than serving misread rows.
 Upgrading means restarting both roles, not just the collector.
 
+### Sharing the database between the two roles
+
+Both roles open one SQLite file in WAL mode.
+Measured across two containers on one host bind mount: no corruption, no lock contention, and snapshot isolation holds.
+
+Three constraints follow from how WAL works, and each is easy to get wrong:
+
+- **Do not mount the data volume read-only, not even for `web`.**
+  WAL keeps its shared memory in a `-shm` file beside the database, so SQLite must be able to write the *directory* even when the connection is `readOnly`.
+  A `:ro` mount fails with `SQLITE_CANTOPEN`.
+  The read-only guarantee comes from the handle, which SQLite enforces, not from the filesystem.
+- **Never copy the database file while the collector is running.**
+  A copy taken mid-write carries an uncheckpointed WAL, and on its own that file cannot be opened by a read-only handle at all: `web` fails with `SQLITE_CANTOPEN` until some write open repairs it.
+  Restoring `<db>` and `<db>-wal` without `-shm` fails the same way.
+  A cleanly stopped collector checkpoints on close, and the single file it leaves behind restores fine on its own.
+  Stop the collector or use `VACUUM INTO` before taking a backup.
+- **Start the collector before the web process on a cold start.**
+  Any write open repairs a database left in the state above, and the collector's startup migration is that write open.
+
+An ordinary crash needs no special handling.
+A collector killed mid-transaction leaves `-wal` and `-shm` on disk, and with those present `web` opens the database and reads it without the collector running at all.
+
+The database must be on a **local** filesystem.
+WAL requires processes to share memory through that `-shm` file and mmap, which NFS and SMB do not provide reliably.
+This was not tested here, and a network volume should be treated as unsupported.
+
 ## Layout
 
 ```
