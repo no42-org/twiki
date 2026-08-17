@@ -14,6 +14,7 @@ import {
 } from "../src/core/rank.js";
 import {
   isSeverity,
+  normaliseSeverity,
   UNKNOWN_SEVERITY,
   worstSeverity,
 } from "../src/core/severity.js";
@@ -42,19 +43,41 @@ const moreUrgent = (a: RankInput, b: RankInput) =>
   compareRankings(rank(a, P), rank(b, P)) < 0;
 
 describe("severity scale", () => {
-  it("uses GitHub's vocabulary, not CVSS's", () => {
-    expect(isSeverity("moderate")).toBe(true);
-    expect(isSeverity("medium")).toBe(false);
+  it("uses the vocabulary the Dependabot payload actually sends", () => {
+    // Measured 2026-08-17 against a live installation: 67 open alerts spelled
+    // critical, high, medium and low. Not `moderate`, which is what the GHSA
+    // advisory database says and what this scale was once "corrected" to.
+    expect(isSeverity("medium")).toBe(true);
+    expect(isSeverity("moderate")).toBe(false);
+  });
+
+  it("folds GraphQL's MODERATE onto the same value as REST's medium", () => {
+    // Two lanes, two spellings, one fact. A scale that knows only one reports
+    // a third of the other lane's alerts as unknown.
+    expect(normaliseSeverity("MODERATE")).toBe("medium");
+    expect(normaliseSeverity("moderate")).toBe("medium");
+    expect(normaliseSeverity("Medium")).toBe("medium");
+    expect(normaliseSeverity("CRITICAL")).toBe("critical");
+  });
+
+  it("still refuses a value that is not a severity at all", () => {
+    expect(normaliseSeverity("catastrophic")).toBeNull();
+    expect(normaliseSeverity("")).toBeNull();
+  });
+
+  it("treats both spellings as equal when picking the worst", () => {
+    expect(worstSeverity(["low", "MODERATE"])).toBe("medium");
+    expect(worstSeverity(["medium", "moderate"])).toBe("medium");
   });
 
   it("reports the worst present", () => {
-    expect(worstSeverity(["low", "critical", "moderate"])).toBe("critical");
-    expect(worstSeverity(["low", "moderate"])).toBe("moderate");
+    expect(worstSeverity(["low", "critical", "medium"])).toBe("critical");
+    expect(worstSeverity(["low", "medium"])).toBe("medium");
   });
 
   it("does not depend on the order they arrived in", () => {
-    expect(worstSeverity(["moderate", "low"])).toBe(
-      worstSeverity(["low", "moderate"]),
+    expect(worstSeverity(["medium", "low"])).toBe(
+      worstSeverity(["low", "medium"]),
     );
   });
 
@@ -146,7 +169,7 @@ describe("the ranking chain (AD-20)", () => {
 
     it("ranks unknown severity below moderate", () => {
       expect(
-        moreUrgent(item({ severity: "moderate" }), item({ severity: null })),
+        moreUrgent(item({ severity: "medium" }), item({ severity: null })),
       ).toBe(true);
     });
 
@@ -163,7 +186,7 @@ describe("the ranking chain (AD-20)", () => {
       // safe end would hide the one item nobody has a rule for yet.
       const alien = item({ severity: "catastrophic" as never });
       expect(moreUrgent(alien, item({ severity: "low" }))).toBe(true);
-      expect(moreUrgent(item({ severity: "moderate" }), alien)).toBe(true);
+      expect(moreUrgent(item({ severity: "medium" }), alien)).toBe(true);
 
       const alienBump = item({ bump: "epoch" as never });
       expect(moreUrgent(alienBump, item({ bump: "patch" }))).toBe(true);
