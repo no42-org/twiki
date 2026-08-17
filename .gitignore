@@ -23,3 +23,9 @@ openspec/
 # IDE
 .idea/
 .vscode/
+
+# Branding images, kept out of git deliberately: 3.6MB of binaries would sit in
+# every clone forever, and git has no way to forget them later without a history
+# rewrite. Resize and commit a small one if the README needs it, or move them to
+# LFS. Removing this line is a decision, not a formality.
+assets/
