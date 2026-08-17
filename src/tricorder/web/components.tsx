@@ -83,7 +83,8 @@ export const Page: FC<{
     <body>
       <h1>gitricorder</h1>
       <p class="sub">
-        {rows.length} watched {rows.length === 1 ? "repository" : "repositories"}
+        {rows.length} watched{" "}
+        {rows.length === 1 ? "repository" : "repositories"}
         {" · rendered "}
         {generatedAt}
       </p>

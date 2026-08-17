@@ -6,7 +6,13 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
+    "includes": [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "test/**/*.ts",
+      "test/**/*.tsx",
+      "scripts/**/*.ts"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -35,7 +41,7 @@
   },
   "overrides": [
     {
-      "includes": ["src/core/**/*.ts"],
+      "includes": ["src/core/**/*.ts", "src/core/**/*sx"],
       "linter": {
         "rules": {
           "style": {
@@ -61,7 +67,7 @@
       }
     },
     {
-      "includes": ["src/github/**/*.ts"],
+      "includes": ["src/github/**/*.ts", "src/github/**/*sx"],
       "linter": {
         "rules": {
           "style": {
@@ -86,7 +92,7 @@
       }
     },
     {
-      "includes": ["src/enrich/**/*.ts"],
+      "includes": ["src/enrich/**/*.ts", "src/enrich/**/*sx"],
       "linter": {
         "rules": {
           "style": {
@@ -111,7 +117,7 @@
       }
     },
     {
-      "includes": ["src/twiki/**/*.ts"],
+      "includes": ["src/twiki/**/*.ts", "src/twiki/**/*sx"],
       "linter": {
         "rules": {
           "style": {
@@ -131,7 +137,7 @@
       }
     },
     {
-      "includes": ["src/tricorder/**/*.ts"],
+      "includes": ["src/tricorder/**/*.ts", "src/tricorder/**/*sx"],
       "linter": {
         "rules": {
           "style": {
@@ -151,7 +157,7 @@
       }
     },
     {
-      "includes": ["src/index.ts"],
+      "includes": ["src/index.ts", "src/index.tsx"],
       "linter": {
         "rules": {
           "style": {
@@ -171,7 +177,7 @@
       }
     },
     {
-      "includes": ["src/tricorder.ts"],
+      "includes": ["src/tricorder.ts", "src/tricorder.tsx"],
       "linter": {
         "rules": {
           "style": {
@@ -191,7 +197,7 @@
       }
     },
     {
-      "includes": ["test/**/*.ts"],
+      "includes": ["test/**/*.ts", "test/**/*sx"],
       "linter": {
         "rules": {
           "style": {

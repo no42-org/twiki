@@ -4,7 +4,7 @@
  */
 
 import type { RepoRef } from "../../core/types.js";
-import type { AlertObservation } from "../collect/dependabot-alerts.js";
+import type { RepoObservation } from "../collect/dependabot-alerts.js";
 import { watchKey } from "../collect/dependabot-alerts.js";
 import type { StorePort } from "../store/port.js";
 import {
@@ -34,15 +34,6 @@ export interface RepoRow {
   verifiedAt: string | null;
 }
 
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
-
-function worst(severities: readonly string[]): string | null {
-  for (const level of SEVERITY_ORDER) {
-    if (severities.includes(level)) return level;
-  }
-  return severities[0] ?? null;
-}
-
 /**
  * Build one row per watched repository.
  *
@@ -56,36 +47,24 @@ export function buildRepoRows(
   now: Date,
   policy: FreshnessPolicy,
 ): RepoRow[] {
-  const alerts = store.currentByType("dependabot_alert");
-
-  // Group live alerts by repository, and track the newest confirmation we have
-  // for each, whether or not it carried an alert.
-  const byRepo = new Map<
-    string,
-    { open: AlertObservation[]; verifiedAt: string | null }
-  >();
-
-  for (const value of alerts) {
-    const payload = value.payload as AlertObservation;
-    const slug = payload.repo.toLowerCase();
-    const entry = byRepo.get(slug) ?? { open: [], verifiedAt: null };
-    // A resolved subject still tells us the repository was confirmed, it just
-    // does not count towards the open total.
-    if (value.state === "present") entry.open.push(payload);
-    if (!entry.verifiedAt || value.verifiedAt > entry.verifiedAt) {
-      entry.verifiedAt = value.verifiedAt;
-    }
-    byRepo.set(slug, entry);
-  }
+  // The repository confirmation is the source of truth for "did we look".
+  // Deriving it from alert rows cannot work: a healthy repository has none,
+  // and a newly-clean one stops having its rows updated the moment they are
+  // tombstoned, so both would read as never collected.
+  const confirmations = new Map<string, (typeof rows)[number]>();
+  const rows = store.currentByType("repository");
+  for (const value of rows) confirmations.set(value.subject.key, value);
 
   return watched.map((repo) => {
     const slug = watchKey(repo);
-    const entry = byRepo.get(slug);
-    const verifiedAt = entry?.verifiedAt ?? null;
+    const confirmed = confirmations.get(slug);
+    const summary = confirmed?.payload as RepoObservation | undefined;
+    const verifiedAt = confirmed?.verifiedAt ?? null;
+
     return {
       slug,
-      openAlerts: entry ? entry.open.length : null,
-      worstSeverity: entry ? worst(entry.open.map((a) => a.severity)) : null,
+      openAlerts: summary ? summary.openAlerts : null,
+      worstSeverity: summary?.worstSeverity ?? null,
       freshness: freshness(verifiedAt, now, policy),
       age: ageLabel(verifiedAt, now),
       verifiedAt,
@@ -109,22 +88,21 @@ export function buildCollectionHealth(
   now: Date,
   policy: FreshnessPolicy,
 ): CollectionHealth[] {
-  const seen = new Set<string>();
-  const out: CollectionHealth[] = [];
-
-  for (const run of store.latestRuns(200)) {
-    const key = `${run.lane}|${run.installation}|${run.scope}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
+  return store.latestRunPerKey().map((run) => {
+    // beginRun writes `partial` as its placeholder, so a run still in flight
+    // is indistinguishable from one that finished incomplete unless we look at
+    // whether verified_at has moved past started_at. Showing a running lane in
+    // warning styling would train the reader to ignore the real thing.
+    const inFlight =
+      run.outcome === "partial" && run.verifiedAt === run.startedAt;
+    return {
       lane: run.lane,
       installation: run.installation,
       scope: run.scope,
-      outcome: run.outcome,
+      outcome: inFlight ? "running" : run.outcome,
       detail: run.detail,
       age: ageLabel(run.verifiedAt, now),
-      freshness: freshness(run.verifiedAt, now, policy),
-    });
-  }
-  return out;
+      freshness: inFlight ? "fresh" : freshness(run.verifiedAt, now, policy),
+    };
+  });
 }

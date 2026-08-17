@@ -127,6 +127,14 @@ export interface StorePort {
   currentByTypeForOwner(type: SubjectType, owner: string): CurrentValue[];
   current(subject: Subject): CurrentValue | null;
   latestRuns(limit: number): RunRecord[];
+  /**
+   * The newest run for each (lane, installation, scope).
+   *
+   * Not a slice of recent history: a lane that stopped running is exactly the
+   * one that a fixed window pushes out, so it would vanish from the health
+   * view rather than showing stale, which is backwards (AD-16).
+   */
+  latestRunPerKey(): RunRecord[];
   loadValidator(installation: string, requestUrl: string): Validator | null;
 
   close(): void;

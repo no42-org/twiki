@@ -13,6 +13,9 @@ import type { Hono } from "hono";
 // variable was unset.
 
 export const DEFAULT_HOST = "127.0.0.1";
+
+/** Spellings that are genuinely loopback. A false warning trains people to ignore the real one. */
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 export const DEFAULT_PORT = 8787;
 
 export interface ServeOptions {
@@ -26,7 +29,7 @@ export function startServer(app: Hono, opts: ServeOptions = {}) {
   const port = opts.port ?? DEFAULT_PORT;
   const log = opts.log ?? (() => {});
 
-  if (hostname !== DEFAULT_HOST && hostname !== "localhost") {
+  if (!LOOPBACK.has(hostname)) {
     // Not a refusal: someone may genuinely be putting this behind their own
     // authenticated proxy. But it must never be quiet, because there is no UI
     // auth in front of ~718 repositories' security posture.

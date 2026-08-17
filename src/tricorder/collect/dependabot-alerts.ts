@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { alertSubject } from "../../core/subject.js";
+import { alertSubject, repositorySubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import type { GitHubReadPort, RawDependabotAlert } from "../../github/port.js";
 import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
@@ -19,6 +19,22 @@ import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
 // captures EPSS at ingest so the ranking has something honest to read (AD-18).
 
 /** What we store about an alert. Keep it flat: the ranking chain reads it. */
+/**
+ * Per-repository confirmation. Written for every watched repository on every
+ * successful sweep, whether or not it had an alert.
+ *
+ * Without it, "we looked and there are none" is inexpressible: a healthy
+ * repository has no alert rows, and absence of rows is indistinguishable from
+ * absence of collection. It also keeps a repository that just became clean
+ * from going permanently stale, because its alert rows stop being updated the
+ * moment they are tombstoned.
+ */
+export interface RepoObservation {
+  repo: string;
+  openAlerts: number;
+  worstSeverity: string | null;
+}
+
 export interface AlertObservation {
   number: number;
   repo: string;
@@ -77,9 +93,35 @@ export function watchKey(repo: RepoRef): string {
   return `${repo.owner}/${repo.name}`.toLowerCase();
 }
 
+/** Summarise one repository's alerts into its confirmation row. */
+export function summariseRepo(
+  repo: RepoRef,
+  alerts: readonly RawDependabotAlert[],
+): ObservationInput {
+  const slug = watchKey(repo);
+  const mine = alerts.filter((a) => watchKey(a.repo) === slug);
+  const payload: RepoObservation = {
+    repo: slug,
+    openAlerts: mine.length,
+    worstSeverity: worstOf(mine.map((a) => a.severity)),
+  };
+  return { subject: repositorySubject(repo), payload };
+}
+
+const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
+
+function worstOf(severities: readonly string[]): string | null {
+  for (const level of SEVERITY_ORDER) {
+    if (severities.includes(level)) return level;
+  }
+  return severities[0] ?? null;
+}
+
 export interface LaneDeps {
   github: GitHubReadPort;
   store: StorePort;
+  /** Watched repositories belonging to this installation. */
+  watchedIn: (installation: string) => readonly RepoRef[];
   /**
    * The watched set, as case-folded `owner/name`. This is AD-10's rule and it
    * lives here rather than in the adapter: twiki's allowlist guard is
@@ -129,9 +171,19 @@ export async function collectOrgAlerts(
     const watched = page.alerts.filter((a) => deps.isWatched(a.repo));
     const observations = watched.map(normalise);
 
+    // One confirmation per watched repository in this installation, including
+    // the ones with nothing to report. This is what makes a real zero
+    // expressible and stops a newly-clean repository going stale.
+    const repoObservations = deps
+      .watchedIn(installation)
+      .map((repo) => summariseRepo(repo, watched));
+
     // One transaction: every observation and its projection advance land
     // together, or none do (AD-3).
-    deps.store.recordObservations(run, deps.now(), observations);
+    deps.store.recordObservations(run, deps.now(), [
+      ...observations,
+      ...repoObservations,
+    ]);
 
     // Unreadable payloads mean the result is incomplete. Finishing `ok` here
     // would report a confident zero if the endpoint's shape ever shifts.

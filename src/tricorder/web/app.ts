@@ -27,9 +27,10 @@ export function createApp(deps: AppDeps): Hono {
     const now = deps.now();
     const rows = buildRepoRows(deps.store, deps.watched, now, deps.policy);
     const health = buildCollectionHealth(deps.store, now, deps.policy);
-    return c.html(
-      Page({ rows, health, generatedAt: now.toISOString() }) as string,
-    );
+    // Without the doctype browsers render in quirks mode, where the box model
+    // and table metrics differ from what the styles were written against.
+    const body = Page({ rows, health, generatedAt: now.toISOString() });
+    return c.html(`<!DOCTYPE html>${body}`);
   });
 
   /** Liveness only. It deliberately says nothing about collection health. */
