@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 
+import type { CoverageState } from "../../core/coverage.js";
+import { coverageReason, isCovered } from "../../core/coverage.js";
 import type { RepoRef } from "../../core/types.js";
+import type { CoverageObservation } from "../collect/coverage.js";
 import type { RepoObservation } from "../collect/dependabot-alerts.js";
 import { watchKey } from "../collect/dependabot-alerts.js";
 import type { CurrentValue, RunOutcome, StorePort } from "../store/port.js";
@@ -29,6 +32,16 @@ export interface RepoRow {
   openAlerts: number | null;
   /** Highest severity among the open alerts, if any. */
   worstSeverity: string | null;
+  /**
+   * Whether GitHub is watching this repository at all (AD-28).
+   *
+   * A different axis from freshness. When this is anything but `covered` the
+   * count is meaningless and is not rendered: the repository has nothing to be
+   * fresh or stale about. `null` means the coverage lane has not run yet.
+   */
+  coverage: CoverageState | null;
+  /** Why it is not covered, for the reader. Null when it is. */
+  coverageReason: string | null;
   freshness: Freshness;
   age: string;
   verifiedAt: string | null;
@@ -58,16 +71,33 @@ export function buildRepoRows(
     if (value.state === "present") confirmations.set(value.subject.key, value);
   }
 
+  const coverage = new Map<string, CoverageState>();
+  for (const value of store.currentByType("repository_coverage")) {
+    if (value.state !== "present") continue;
+    coverage.set(
+      value.subject.key,
+      (value.payload as CoverageObservation).state,
+    );
+  }
+
   return watched.map((repo) => {
     const slug = watchKey(repo);
     const confirmed = confirmations.get(slug);
     const summary = confirmed?.payload as RepoObservation | undefined;
     const verifiedAt = confirmed?.verifiedAt ?? null;
 
+    const covered = coverage.get(slug) ?? null;
+    // Suppressed rather than rendered alongside a warning. A number next to
+    // "not covered" invites the reader to believe the number, and the whole
+    // point is that we are not entitled to one (AD-28).
+    const known = covered === null || isCovered(covered);
+
     return {
       slug,
-      openAlerts: summary ? summary.openAlerts : null,
-      worstSeverity: summary?.worstSeverity ?? null,
+      openAlerts: known && summary ? summary.openAlerts : null,
+      worstSeverity: known ? (summary?.worstSeverity ?? null) : null,
+      coverage: covered,
+      coverageReason: covered === null ? null : coverageReason(covered),
       freshness: freshness(verifiedAt, now, policy),
       age: ageLabel(verifiedAt, now),
       verifiedAt,

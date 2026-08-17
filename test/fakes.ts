@@ -14,11 +14,13 @@ import {
   type WorkflowRunRef,
 } from "../src/core/types.js";
 import type {
+  DependabotAccess,
   GitHubPort,
   GitHubReadPort,
   OrgAlertPage,
   RawDependabotAlert,
   RawPullRequest,
+  RawRepoMeta,
 } from "../src/github/port.js";
 import type { Advisor, AdvisorRepoInput } from "../src/twiki/advisor.js";
 import type { Notifier } from "../src/twiki/notify.js";
@@ -149,6 +151,19 @@ export class FakeGitHubReadPort implements GitHubReadPort {
 
   /** Payloads the mapper would have dropped, per org. */
   unreadableByOrg = new Map<string, number>();
+
+  /** Repository metadata per org, for the coverage lane. */
+  orgRepos = new Map<string, RawRepoMeta[]>();
+  /** Probe answers per `owner/name`; anything unset reads as covered. */
+  access = new Map<string, DependabotAccess>();
+
+  async listOrgRepos(org: string): Promise<RawRepoMeta[]> {
+    return this.orgRepos.get(org) ?? [];
+  }
+
+  async probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess> {
+    return this.access.get(repoSlug(repo).toLowerCase()) ?? "covered";
+  }
 
   async listOrgDependabotAlerts(org: string): Promise<OrgAlertPage> {
     if (this.failingOrgs.has(org)) {

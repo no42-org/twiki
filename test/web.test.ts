@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { alertSubject } from "../src/core/subject.js";
+import { alertSubject, coverageSubject } from "../src/core/subject.js";
 import {
   normalise,
   summariseRepo,
@@ -686,6 +686,91 @@ describe("issues found in review (round 2)", () => {
       expect(parsePort("8787")).toBe(8787);
       expect(parsePort(undefined)).toBeUndefined();
       expect(parsePort("  ")).toBeUndefined();
+    });
+  });
+
+  describe("coverage is a separate axis from freshness (AD-28)", () => {
+    const cov = (repo: { owner: string; name: string }, state: string) => ({
+      subject: coverageSubject(repo),
+      payload: {
+        repo: `${repo.owner}/${repo.name}`.toLowerCase(),
+        state,
+        archived: false,
+      },
+    });
+
+    it("does not render a count for a repository nobody is watching", () => {
+      // The defect the whole decision exists to remove. Measured on one real
+      // organisation, 14 of 36 repositories were in exactly this state, and
+      // every one of them would otherwise show a confident green zero.
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, []),
+        cov(REPO, "alerts_disabled"),
+      ]);
+
+      const rows = buildRepoRows(store, [REPO], NOW, POLICY);
+
+      expect(rows[0]?.coverage).toBe("alerts_disabled");
+      expect(
+        rows[0]?.openAlerts,
+        "a count here invites belief in it",
+      ).toBeNull();
+      expect(rows[0]?.coverageReason).toContain("switched off");
+    });
+
+    it("still renders a real zero for a repository that is watched", () => {
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, []),
+        cov(REPO, "covered"),
+      ]);
+      const rows = buildRepoRows(store, [REPO], NOW, POLICY);
+      expect(rows[0]?.openAlerts).toBe(0);
+      expect(rows[0]?.coverageReason).toBeNull();
+    });
+
+    it("leaves the count alone until the coverage lane has ever run", () => {
+      // Absent coverage is not "not covered". Suppressing counts before the
+      // lane exists would blank a page that was working.
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, []),
+      ]);
+      const rows = buildRepoRows(store, [REPO], NOW, POLICY);
+      expect(rows[0]?.coverage).toBeNull();
+      expect(rows[0]?.openAlerts).toBe(0);
+    });
+
+    it("says not covered on the page, not not collected", async () => {
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, []),
+        cov(REPO, "archived"),
+      ]);
+
+      const html = await (
+        await createApp({
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      // "not collected" would blame the collector for GitHub's setting.
+      expect(html).toContain("not covered");
+      expect(html).toContain("archived");
+      expect(html).not.toContain("not collected");
+    });
+
+    it("ignores a tombstoned coverage row rather than trusting it", () => {
+      store.recordObservations(run, "2026-08-16T11:50:00.000Z", [
+        summariseRepo(REPO, []),
+        cov(REPO, "alerts_disabled"),
+      ]);
+      store.recordTombstones(run, "2026-08-16T11:55:00.000Z", [
+        coverageSubject(REPO),
+      ]);
+
+      const rows = buildRepoRows(store, [REPO], NOW, POLICY);
+      expect(rows[0]?.coverage).toBeNull();
     });
   });
 });
