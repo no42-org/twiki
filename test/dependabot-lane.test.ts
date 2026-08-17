@@ -140,7 +140,7 @@ describe("Dependabot alerts lane", () => {
 
     it("notices when an alert's severity changes", async () => {
       github.orgAlerts.set("no42-org", [
-        makeAlert({ number: 1, severity: "moderate" }),
+        makeAlert({ number: 1, severity: "medium" }),
       ]);
       await collectOrgAlerts(deps(), "no42-org", "full");
       const before = store.currentByType("dependabot_alert")[0];
@@ -398,7 +398,7 @@ describe("Dependabot alerts lane", () => {
     it("carries the count and worst severity", async () => {
       github.orgAlerts.set("no42-org", [
         makeAlert({ number: 1, severity: "low" }),
-        makeAlert({ number: 2, severity: "moderate" }),
+        makeAlert({ number: 2, severity: "medium" }),
       ]);
 
       await collectOrgAlerts(deps(), "no42-org", "full");
@@ -407,7 +407,7 @@ describe("Dependabot alerts lane", () => {
       expect(row?.payload).toMatchObject({
         repo: "no42-org/twiki",
         openAlerts: 2,
-        worstSeverity: "moderate",
+        worstSeverity: "medium",
       });
     });
 
@@ -472,22 +472,37 @@ describe("Dependabot alerts lane", () => {
     it("ranks moderate above low", async () => {
       github.orgAlerts.set("no42-org", [
         makeAlert({ number: 1, severity: "low" }),
-        makeAlert({ number: 2, severity: "moderate" }),
+        makeAlert({ number: 2, severity: "medium" }),
       ]);
       await collectOrgAlerts(deps(), "no42-org", "full");
       expect(store.currentByType("repository")[0]?.payload).toMatchObject({
-        worstSeverity: "moderate",
+        worstSeverity: "medium",
       });
     });
 
     it("does not depend on the order the page happened to list them", async () => {
       github.orgAlerts.set("no42-org", [
-        makeAlert({ number: 1, severity: "moderate" }),
+        makeAlert({ number: 1, severity: "medium" }),
         makeAlert({ number: 2, severity: "low" }),
       ]);
       await collectOrgAlerts(deps(), "no42-org", "full");
       expect(store.currentByType("repository")[0]?.payload).toMatchObject({
-        worstSeverity: "moderate",
+        worstSeverity: "medium",
+      });
+    });
+
+    it("accepts GraphQL's MODERATE as the same fact as REST's medium", async () => {
+      // Measured 2026-08-17: the Dependabot REST payload says `medium`, and
+      // GraphQL's SecurityAdvisory.severity says `MODERATE`. Both lanes feed
+      // the same store, so a scale that knows only one spelling reports a
+      // third of the other lane's alerts as unknown.
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1, severity: "low" }),
+        makeAlert({ number: 2, severity: "MODERATE" }),
+      ]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(store.currentByType("repository")[0]?.payload).toMatchObject({
+        worstSeverity: "medium",
       });
     });
 

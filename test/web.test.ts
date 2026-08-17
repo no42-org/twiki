@@ -180,7 +180,7 @@ describe("repository rows", () => {
 
   it("reports the worst severity present", () => {
     const alerts = [
-      makeAlert({ number: 1, repo: REPO, severity: "moderate" }),
+      makeAlert({ number: 1, repo: REPO, severity: "medium" }),
       makeAlert({ number: 2, repo: REPO, severity: "critical" }),
       makeAlert({ number: 3, repo: REPO, severity: "low" }),
     ];
