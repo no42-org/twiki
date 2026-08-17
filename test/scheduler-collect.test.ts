@@ -178,6 +178,50 @@ describe("the cycle", () => {
     expect(seen).toEqual(["a:org-1", "b:org-1", "a:org-2", "b:org-2"]);
   });
 
+  it("runs a lane only on the installations it declares", async () => {
+    // Not every lane is per-installation. KEV is one public document that no
+    // organisation has its own copy of; giving it a pseudo-installation to ride
+    // made the GitHub lanes try to collect from it and fail twice a cycle, with
+    // the run then reporting failure it had not really had.
+    const seen: string[] = [];
+    const schedules = [
+      {
+        ...lane("github", async (i) => {
+          seen.push(`github:${i}`);
+          return { outcome: "ok" as const };
+        }),
+        installations: ["org-1"],
+      },
+      {
+        ...lane("global", async (i) => {
+          seen.push(`global:${i}`);
+          return { outcome: "ok" as const };
+        }),
+        installations: ["elsewhere"],
+      },
+    ];
+
+    const report = await runCycle(deps(), schedules, ["org-1", "elsewhere"]);
+
+    expect(seen).toEqual(["github:org-1", "global:elsewhere"]);
+    expect(report.failed).toBe(0);
+  });
+
+  it("runs a lane everywhere when it declares nothing", async () => {
+    const seen: string[] = [];
+    await runCycle(
+      deps(),
+      [
+        lane("a", async (i) => {
+          seen.push(i);
+          return { outcome: "ok" as const };
+        }),
+      ],
+      ["org-1", "org-2"],
+    );
+    expect(seen).toEqual(["org-1", "org-2"]);
+  });
+
   it("skips a lane whose cadence has not elapsed", async () => {
     const r = store.beginRun({
       lane: "a",

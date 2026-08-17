@@ -5,6 +5,7 @@
 
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./core/config.js";
+import { HttpEnrichment } from "./enrich/kev.js";
 import {
   createTricorderAppFromEnv,
   createTricorderReadPort,
@@ -17,6 +18,11 @@ import {
   LANE as ALERT_LANE,
   collectOrgAlerts,
 } from "./tricorder/collect/dependabot-alerts.js";
+import {
+  collectKev,
+  KEV_INSTALLATION,
+  LANE as KEV_LANE,
+} from "./tricorder/collect/kev.js";
 import {
   formatLine,
   type LaneSchedule,
@@ -191,17 +197,31 @@ async function main(): Promise<void> {
       log,
     };
 
+    const enrichment = new HttpEnrichment();
+
     const schedules: LaneSchedule[] = [
+      {
+        // KEV is global rather than per installation, so it is scheduled
+        // against a constant "installation" and runs once per cycle, not once
+        // per organisation.
+        lane: KEV_LANE,
+        scope: "full",
+        cadenceMs: 24 * 60 * 60_000,
+        installations: [KEV_INSTALLATION],
+        run: () => collectKev({ enrichment, store, now: laneDeps.now, log }),
+      },
       {
         lane: ALERT_LANE,
         scope: "full",
         cadenceMs: 15 * 60_000,
+        installations,
         run: (installation) => collectOrgAlerts(laneDeps, installation, "full"),
       },
       {
         lane: COVERAGE_LANE,
         scope: "full",
         cadenceMs: 24 * 60 * 60_000,
+        installations,
         run: (installation) => collectCoverage(laneDeps, installation, "full"),
       },
     ];
@@ -233,7 +253,9 @@ async function main(): Promise<void> {
         log: (fields, msg) => log(formatLine(fields, msg)),
       },
       schedules,
-      installations,
+      // KEV rides the cycle as its own pseudo-installation (AD-15): it is one
+      // public document, not something each organisation has a copy of.
+      [...installations, KEV_INSTALLATION],
       {
         once,
         tickMs: parseTickSeconds(env.TRICORDER_TICK_SECONDS, log) * 1000,

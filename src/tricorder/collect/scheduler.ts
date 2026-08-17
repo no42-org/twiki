@@ -23,6 +23,15 @@ export interface LaneSchedule {
   lane: string;
   scope: RunScope;
   cadenceMs: number;
+  /**
+   * Which installations this lane applies to. Omitted means all of them.
+   *
+   * Not every lane is per-installation. KEV is one public document that no
+   * organisation has its own copy of, and giving it a pseudo-installation to
+   * ride made the GitHub lanes try to collect from it and fail twice a cycle,
+   * with the run then reporting failure it had not really had.
+   */
+  installations?: readonly string[];
   /** Runs one installation. Must not throw; lanes contain their own failures. */
   run: (installation: string) => Promise<{ outcome: RunOutcome }>;
 }
@@ -99,6 +108,7 @@ export async function runCycle(
 
   for (const installation of installations) {
     for (const s of schedules) {
+      if (s.installations && !s.installations.includes(installation)) continue;
       const key = `${s.lane}|${installation}|${s.scope}`;
       const fields = {
         lane: s.lane,

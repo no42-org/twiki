@@ -197,7 +197,17 @@ const BOUNDARIES: Record<
     allowed: ["./types.js", "node:path"],
   },
 
-  // github and enrich are peers of each other and may use core.
+  // github and enrich are peers of each other and may use core. enrich is the
+  // only directory that performs non-GitHub HTTP (AD-15), which is why it is a
+  // leaf of its own rather than a corner of github.
+  "src/enrich": {
+    forbidden: [
+      "../github/port.js",
+      "../twiki/executor.js",
+      "../tricorder/store/port.js",
+    ],
+    allowed: ["../core/types.js", "./port.js"],
+  },
   "src/github": {
     forbidden: [
       "../twiki/executor.js",

@@ -1,0 +1,90 @@
+/*
+ * Copyright 2026 Ronny Trommer <ronny@no42.org>
+ * SPDX-License-Identifier: MIT
+ */
+
+import type { EnrichmentPort, KevCatalogue } from "./port.js";
+
+// CISA's Known Exploited Vulnerabilities catalogue.
+//
+// Measured 2026-08-17: 1.5MB, 1666 entries, every `cveID` well-formed and
+// unique. Only the ids are kept, 27KB of them, because membership is the only
+// question the ranking chain asks. Re-fetched daily, so the detail is a fetch
+// away if a later story wants it.
+
+export const KEV_URL =
+  "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
+
+/** A CVE id, as CISA writes them. */
+const CVE = /^CVE-\d{4}-\d{4,}$/i;
+
+export interface KevFetchResult extends KevCatalogue {
+  /** Entries whose id could not be read. Non-zero must degrade the run. */
+  unreadable: number;
+}
+
+/**
+ * Turn CISA's payload into a catalogue, or refuse.
+ *
+ * The refusal is the point. An empty or unrecognisable catalogue mapped to an
+ * empty set would make EVERY lookup answer "not in KEV", which is a confident
+ * negative on the chain's most significant term: exactly the failure this
+ * dashboard exists to prevent, and it would look like good news on every row.
+ * A real KEV catalogue is never empty.
+ */
+export function parseKev(body: unknown): KevFetchResult {
+  const doc = body as {
+    catalogVersion?: unknown;
+    dateReleased?: unknown;
+    vulnerabilities?: unknown;
+  } | null;
+
+  if (!doc || typeof doc !== "object" || !Array.isArray(doc.vulnerabilities)) {
+    throw new Error("KEV payload has no vulnerabilities array");
+  }
+  if (doc.vulnerabilities.length === 0) {
+    throw new Error("KEV catalogue is empty, which it never legitimately is");
+  }
+
+  const ids = new Set<string>();
+  let unreadable = 0;
+  for (const entry of doc.vulnerabilities) {
+    const id = (entry as { cveID?: unknown } | null)?.cveID;
+    if (typeof id !== "string" || !CVE.test(id.trim())) {
+      unreadable++;
+      continue;
+    }
+    ids.add(id.trim().toUpperCase());
+  }
+
+  if (ids.size === 0) {
+    throw new Error("KEV catalogue yielded no readable CVE ids");
+  }
+
+  return {
+    version: typeof doc.catalogVersion === "string" ? doc.catalogVersion : "",
+    released: typeof doc.dateReleased === "string" ? doc.dateReleased : "",
+    cveIds: [...ids].sort(),
+    unreadable,
+  };
+}
+
+export class HttpEnrichment implements EnrichmentPort {
+  constructor(
+    private readonly url: string = KEV_URL,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {}
+
+  async fetchKev(): Promise<KevFetchResult> {
+    // A timeout, because this is the one dependency outside GitHub and a hung
+    // response would otherwise stall the whole collection cycle.
+    const res = await this.fetchImpl(this.url, {
+      signal: AbortSignal.timeout(60_000),
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) {
+      throw new Error(`KEV fetch failed: HTTP ${res.status}`);
+    }
+    return parseKev(await res.json());
+  }
+}

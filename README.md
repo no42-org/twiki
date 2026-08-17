@@ -166,7 +166,8 @@ something you did grant", so `doctor` prints what GitHub actually reported
 alongside what it expected.
 
 `collect` migrates the schema, then runs each lane on its own cadence: Dependabot
-alerts every 15 minutes, coverage daily.
+alerts every 15 minutes, coverage daily, and the CISA KEV catalogue daily.
+KEV is the one non-GitHub request the system makes, and without it the ranking chain's first term can never evaluate.
 Due-ness is read from the store rather than from memory, so a restart neither re-sweeps everything nor waits a full cadence before doing anything.
 Set `TRICORDER_ONCE` to run a single cycle and exit, for cron.
 
