@@ -114,3 +114,34 @@ export interface GitHubWritePort {
 
 /** What the write side needs: both halves. The adapter implements this. */
 export interface GitHubPort extends GitHubReadPort, GitHubWritePort {}
+
+// App-level reads: what this App is, and where it is installed. These are
+// distinct from GitHubReadPort because they authenticate as the APP, not as an
+// installation, and no installation token can make them.
+
+export interface AppIdentity {
+  slug: string | null;
+  name: string | null;
+  /**
+   * Permission name to access level, exactly as GitHub reports it, or null
+   * when the field was absent. Null is not an empty object: an empty object
+   * reads as "this App holds no permissions", which a caller checking for
+   * write access would treat as proof of safety.
+   */
+  permissions: Record<string, string> | null;
+}
+
+export interface InstallationRef {
+  id: number;
+  /** The org or user login, or an enterprise slug. Null when neither is present. */
+  account: string | null;
+  /** `all` or `selected`, as GitHub reports it. */
+  repositorySelection: string;
+}
+
+export interface GitHubAppPort {
+  identity(): Promise<AppIdentity>;
+  listInstallations(): Promise<InstallationRef[]>;
+  /** Every repository this installation can actually see. */
+  listInstallationRepos(installationId: number): Promise<RepoRef[]>;
+}

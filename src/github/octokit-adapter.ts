@@ -18,7 +18,10 @@ import {
   loadAppAuthFromEnv,
 } from "./auth.js";
 import type {
+  AppIdentity,
+  GitHubAppPort,
   GitHubPort,
+  InstallationRef,
   OrgAlertPage,
   RawDependabotAlert,
   RawPullRequest,
@@ -441,4 +444,76 @@ function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
     // instead of being visibly absent here.
     createdAt: a.created_at ?? null,
   };
+}
+
+/** App-level reads, authenticated as the App rather than an installation. */
+export class OctokitGitHubApp implements GitHubAppPort {
+  private readonly clients = new Map<number, Octokit>();
+
+  /**
+   * Takes its credentials rather than reading the environment, so it stays
+   * usable by either App and by a caller that loaded its key from somewhere
+   * other than `process.env`.
+   */
+  constructor(
+    private readonly app: Octokit,
+    private readonly auth: AppAuthConfig,
+  ) {}
+
+  async identity(): Promise<AppIdentity> {
+    const { data } = await this.app.apps.getAuthenticated();
+    const permissions = data?.permissions as Record<string, string> | undefined;
+    return {
+      slug: data?.slug ?? null,
+      name: data?.name ?? null,
+      // null, not {}. An empty object is indistinguishable from "this App holds
+      // no permissions", which a caller checking for write access would read as
+      // proof of safety. Absent means we could not tell.
+      permissions: permissions ?? null,
+    };
+  }
+
+  async listInstallations(): Promise<InstallationRef[]> {
+    const data = await this.app.paginate(this.app.apps.listInstallations, {
+      per_page: 100,
+    });
+    return data.map((i) => {
+      // Enterprise installations carry a slug rather than a login. A synthetic
+      // fallback that can never match a real owner is worse than saying so: it
+      // would silently orphan every repository under that account.
+      const account = i.account as
+        | { login?: string; slug?: string }
+        | null
+        | undefined;
+      return {
+        id: i.id,
+        account: account?.login ?? account?.slug ?? null,
+        repositorySelection: i.repository_selection ?? "unknown",
+      };
+    });
+  }
+
+  async listInstallationRepos(installationId: number): Promise<RepoRef[]> {
+    let client = this.clients.get(installationId);
+    if (!client) {
+      // Cached: building one re-reads the private key from disk and mints a
+      // fresh installation token, and a diagnosis walks every installation.
+      client = installationOctokit(this.auth, installationId);
+      this.clients.set(installationId, client);
+    }
+    const repos = await client.paginate(
+      client.apps.listReposAccessibleToInstallation,
+      { per_page: 100 },
+    );
+    return repos.map((r) => ({ owner: r.owner.login, name: r.name }));
+  }
+}
+
+/** Build the App-level client for gitricorder's read-only App (AD-21). */
+export function createTricorderAppFromEnv(env = process.env): GitHubAppPort {
+  const auth = loadAppAuthFromEnv(env, "TRICORDER");
+  return new OctokitGitHubApp(
+    new Octokit({ authStrategy: createAppAuth, auth }),
+    auth,
+  );
 }

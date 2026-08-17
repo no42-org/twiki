@@ -5,6 +5,8 @@
 
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./core/config.js";
+import { createTricorderAppFromEnv } from "./github/octokit-adapter.js";
+import { diagnose, formatReport } from "./tricorder/doctor.js";
 import { SqliteStore } from "./tricorder/store/sqlite-store.js";
 import { createApp } from "./tricorder/web/app.js";
 import { startServer } from "./tricorder/web/server.js";
@@ -40,7 +42,7 @@ export function parsePort(raw: string | undefined): number | undefined {
 }
 
 function usage(): never {
-  console.error("usage: tricorder <collect|web>");
+  console.error("usage: tricorder <collect|web|doctor>");
   process.exit(2);
 }
 
@@ -115,6 +117,19 @@ async function main(): Promise<void> {
       "collection is not implemented in this build: schema prepared, exiting",
     );
     process.exit(2);
+  }
+
+  if (role === "doctor") {
+    // Setup diagnostics. Reads GitHub, writes nothing, touches no store, so it
+    // is safe to run against a live installation before anything is wired up.
+    const config = loadConfig(configPath);
+    const report = await diagnose(createTricorderAppFromEnv(env), config.repos);
+    console.log(formatReport(report));
+    // exitCode, not exit(). When stdout is a pipe Node writes it
+    // asynchronously, and exiting here truncates the tail of the report, which
+    // is exactly the part naming the unreachable repositories.
+    process.exitCode = report.ok ? 0 : 1;
+    return;
   }
 
   usage();

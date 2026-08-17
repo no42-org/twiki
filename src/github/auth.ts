@@ -16,16 +16,28 @@ export interface AppAuthConfig {
   privateKey: string;
 }
 
-export function loadAppAuthFromEnv(env = process.env): AppAuthConfig {
-  const appId = env.TWIKI_GITHUB_APP_ID;
-  const keyPath = env.TWIKI_GITHUB_APP_PRIVATE_KEY_PATH;
-  const keyInline = env.TWIKI_GITHUB_APP_PRIVATE_KEY;
-  if (!appId) throw new Error("TWIKI_GITHUB_APP_ID is required");
+/**
+ * Credentials for one App, chosen by environment-variable prefix.
+ *
+ * The prefix is a parameter because twiki and gitricorder are deliberately
+ * DIFFERENT Apps with different permissions (AD-21): twiki can merge and tag,
+ * gitricorder can only read. Sharing one credential would give the dashboard
+ * the ability to write, which is the single thing its design rules out, so the
+ * two must not be able to reach each other's variables by accident.
+ */
+export function loadAppAuthFromEnv(
+  env = process.env,
+  prefix: "TWIKI" | "TRICORDER" = "TWIKI",
+): AppAuthConfig {
+  const appId = env[`${prefix}_GITHUB_APP_ID`];
+  const keyPath = env[`${prefix}_GITHUB_APP_PRIVATE_KEY_PATH`];
+  const keyInline = env[`${prefix}_GITHUB_APP_PRIVATE_KEY`];
+  if (!appId) throw new Error(`${prefix}_GITHUB_APP_ID is required`);
   const privateKey =
     keyInline ?? (keyPath ? readFileSync(keyPath, "utf8") : undefined);
   if (!privateKey) {
     throw new Error(
-      "Provide TWIKI_GITHUB_APP_PRIVATE_KEY or TWIKI_GITHUB_APP_PRIVATE_KEY_PATH",
+      `Provide ${prefix}_GITHUB_APP_PRIVATE_KEY or ${prefix}_GITHUB_APP_PRIVATE_KEY_PATH`,
     );
   }
   return { appId, privateKey };

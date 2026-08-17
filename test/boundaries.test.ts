@@ -211,8 +211,10 @@ const BOUNDARIES: Record<
   },
 
   // The two feature directories may use the leaves, never each other.
-  // src/tricorder holds no files of its own, only the three below; adding one
-  // there makes it a code directory and this table must then name it.
+  "src/tricorder": {
+    forbidden: ["../twiki/executor.js"],
+    allowed: ["../core/types.js", "../github/port.js"],
+  },
   "src/twiki": {
     forbidden: ["../tricorder/store/port.js"],
     allowed: [
