@@ -18,7 +18,10 @@ import {
   loadAppAuthFromEnv,
 } from "./auth.js";
 import type {
+  AppIdentity,
+  GitHubAppPort,
   GitHubPort,
+  InstallationRef,
   OrgAlertPage,
   RawDependabotAlert,
   RawPullRequest,
@@ -441,4 +444,51 @@ function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
     // instead of being visibly absent here.
     createdAt: a.created_at ?? null,
   };
+}
+
+/** App-level reads, authenticated as the App rather than an installation. */
+export class OctokitGitHubApp implements GitHubAppPort {
+  constructor(private readonly app: Octokit) {}
+
+  async identity(): Promise<AppIdentity> {
+    const { data } = await this.app.apps.getAuthenticated();
+    return {
+      slug: data?.slug ?? null,
+      name: data?.name ?? null,
+      permissions: (data?.permissions ?? {}) as Record<string, string>,
+    };
+  }
+
+  async listInstallations(): Promise<InstallationRef[]> {
+    const data = await this.app.paginate(this.app.apps.listInstallations, {
+      per_page: 100,
+    });
+    return data.map((i) => ({
+      id: i.id,
+      account:
+        (i.account as { login?: string } | null)?.login ??
+        `installation-${i.id}`,
+      repositorySelection: i.repository_selection ?? "unknown",
+    }));
+  }
+
+  async listInstallationRepos(installationId: number): Promise<RepoRef[]> {
+    const client = installationOctokit(
+      loadAppAuthFromEnv(process.env, "TRICORDER"),
+      installationId,
+    );
+    const repos = await client.paginate(
+      client.apps.listReposAccessibleToInstallation,
+      { per_page: 100 },
+    );
+    return repos.map((r) => ({ owner: r.owner.login, name: r.name }));
+  }
+}
+
+/** Build the App-level client for gitricorder's read-only App (AD-21). */
+export function createTricorderAppFromEnv(env = process.env): GitHubAppPort {
+  const auth = loadAppAuthFromEnv(env, "TRICORDER");
+  return new OctokitGitHubApp(
+    new Octokit({ authStrategy: createAppAuth, auth }),
+  );
 }

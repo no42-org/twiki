@@ -120,7 +120,45 @@ separate entrypoint (`dist/tricorder.js`) with two roles from one image.
 ```sh
 tricorder collect   # writes: migrates the schema, then collects (see below)
 tricorder web       # reads: serves the dashboard, read-only, never migrates
+tricorder doctor    # checks the App setup; reads GitHub, writes nothing
 ```
+
+### The read-only GitHub App
+
+gitricorder uses **its own App**, separate from twiki's. This is the point, not
+an inconvenience: twiki's App can merge, tag and re-run, and the dashboard must
+hold no such capability. Sharing one credential would hand the read side the
+ability to write.
+
+Create a new GitHub App and grant **read-only** on exactly these, nothing more:
+
+| Permission | Why |
+| --- | --- |
+| Metadata | mandatory for any App |
+| Dependabot alerts | the security lane, and the only endpoint carrying EPSS |
+| Code scanning alerts | security sweep |
+| Secret scanning alerts | security sweep |
+| Actions | workflow run status |
+| Pull requests | dependency-update PRs and the review queue |
+| Issues | untriaged issues |
+
+Grant no write permission at all, and subscribe to no webhook events: nothing
+in gitricorder listens.
+
+Install it on every account holding a watched repository, then point these at
+it and run `tricorder doctor`:
+
+| Variable | Meaning |
+| --- | --- |
+| `TRICORDER_GITHUB_APP_ID` | App ID |
+| `TRICORDER_GITHUB_APP_PRIVATE_KEY` | private key (PEM, inline) |
+| `TRICORDER_GITHUB_APP_PRIVATE_KEY_PATH` | or a path to it |
+
+`doctor` exits non-zero and says why if the App holds any write permission, if
+a watched repository is not visible to its installation, or if a watched
+repository has no installation at all. That last case matters more than it
+looks: such a repository collects nothing forever, and nothing that collects
+nothing may render as a healthy zero.
 
 `collect` currently prepares the schema and then **exits 2**: lane wiring and
 scheduling are not in this build. It exits non-zero deliberately, so a
