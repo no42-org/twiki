@@ -875,7 +875,11 @@ describe("issues found in review (round 2)", () => {
         }).request("/")
       ).text();
 
+      // The reason is the discriminating assertion: a stale attestation also
+      // renders "not covered", but as unknown, with a different explanation.
+      // Judged on the daily cadence it is still the real, specific state.
       expect(html).toContain("not covered");
+      expect(html).toContain("switched off");
     });
 
     it("falls back to the sweep policy for a lane with no entry", async () => {
