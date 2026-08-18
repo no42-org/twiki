@@ -548,6 +548,7 @@ describe("the real schedule table", () => {
     updatePrs: noop,
     issues: noop,
     updateStatuses: noop,
+    actionsRuns: { installation: "no42-org", run: noop },
   });
 
   const lane = (name: string) => schedules.find((s) => s.lane === name);
@@ -559,6 +560,7 @@ describe("the real schedule table", () => {
       "graphql-update-prs",
       "graphql-update-status",
       "kev",
+      "rest-actions-runs",
       "rest-org-dependabot",
     ]);
   });
@@ -575,12 +577,22 @@ describe("the real schedule table", () => {
       updatePrs: null,
       issues: noop,
       updateStatuses: noop,
+      actionsRuns: null,
     });
     expect(without.map((s) => s.lane)).not.toContain("graphql-update-prs");
+    // Same rule for the Actions lane: unset means absent, and the
+    // entrypoint says so, rather than a lane silently running on a guess.
+    expect(without.map((s) => s.lane)).not.toContain("rest-actions-runs");
   });
 
   it("runs KEV only on its own pseudo-installation", () => {
     expect(lane("kev")?.installations).toEqual([KEV_INSTALLATION]);
+  });
+
+  it("runs the Actions lane only on its opted-in installation", () => {
+    // Story 15: one installation, measured, before story 16 commits the
+    // whole allowlist to the lane with the hard per-repo floor.
+    expect(lane("rest-actions-runs")?.installations).toEqual(["no42-org"]);
   });
 
   it("keeps the GitHub lanes off that pseudo-installation", () => {

@@ -34,8 +34,10 @@ import type {
   RawRepoMeta,
   RawUpdatePr,
   RawUpdateStatus,
+  RawWorkflowRun,
   RequestValidator,
   UpdatePrPage,
+  WorkflowRunPage,
 } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
@@ -765,6 +767,133 @@ export class OctokitGitHub implements GitHubPort {
           ? { etag: firstEtag, lastModified: firstLastModified, tokenGen }
           : null,
     };
+  }
+
+  async listRepoWorkflowRuns(
+    repo: RepoRef,
+    cached: RequestValidator | null = null,
+  ): Promise<WorkflowRunPage> {
+    const gh = await this.client(repo);
+
+    // Same conditional posture as the alert listing: a validator from a
+    // different (or unknowable) token generation is cold, an all-null one is
+    // no validator, and both headers go when both exist (AD-25). Page one
+    // only, so the single-page caching restriction never bites here.
+    const tokenGen = await installationTokenGen(gh);
+    const send =
+      cached &&
+      tokenGen !== null &&
+      cached.tokenGen === tokenGen &&
+      (cached.etag || cached.lastModified)
+        ? cached
+        : null;
+    const headers: Record<string, string> = {};
+    if (send?.etag) headers["if-none-match"] = send.etag;
+    if (send?.lastModified) headers["if-modified-since"] = send.lastModified;
+
+    let res: {
+      data: unknown;
+      headers: Record<string, string | number | undefined>;
+    };
+    try {
+      res = await gh.request("GET /repos/{owner}/{repo}/actions/runs", {
+        owner: repo.owner,
+        repo: repo.name,
+        per_page: 100,
+        headers,
+      });
+    } catch (err) {
+      if ((err as { status?: number }).status === 304) {
+        if (send) {
+          return {
+            runs: [],
+            unreadable: 0,
+            notModified: true,
+            validator: send,
+          };
+        }
+        throw new Error(
+          `run listing for ${repoSlug(repo)} answered 304 to an unconditional request`,
+        );
+      }
+      throw err;
+    }
+
+    const body = res.data as { workflow_runs?: unknown } | null;
+    if (!body || !Array.isArray(body.workflow_runs)) {
+      throw new Error(
+        `run listing for ${repoSlug(repo)} returned no workflow_runs array`,
+      );
+    }
+
+    const runs: RawWorkflowRun[] = [];
+    let unreadable = 0;
+    for (const item of body.workflow_runs) {
+      const r = item as {
+        node_id?: string;
+        workflow_id?: number;
+        name?: string | null;
+        run_number?: number;
+        status?: string | null;
+        conclusion?: string | null;
+        head_branch?: string | null;
+        event?: string;
+        html_url?: string;
+        created_at?: string;
+      } | null;
+      if (
+        !r?.node_id ||
+        typeof r.workflow_id !== "number" ||
+        typeof r.run_number !== "number" ||
+        typeof r.status !== "string" ||
+        typeof r.event !== "string"
+      ) {
+        unreadable++;
+        continue;
+      }
+      runs.push({
+        nodeId: r.node_id,
+        repo,
+        workflowId: r.workflow_id,
+        workflowName: r.name ?? `workflow ${r.workflow_id}`,
+        runNumber: r.run_number,
+        status: r.status,
+        conclusion: r.conclusion ?? null,
+        headBranch: r.head_branch ?? null,
+        event: r.event,
+        htmlUrl: r.html_url ?? "",
+        createdAt: r.created_at ?? "",
+      });
+    }
+
+    const etag = typeof res.headers.etag === "string" ? res.headers.etag : null;
+    const lastModified =
+      typeof res.headers["last-modified"] === "string"
+        ? res.headers["last-modified"]
+        : null;
+    return {
+      runs,
+      unreadable,
+      notModified: false,
+      validator:
+        (etag || lastModified) && tokenGen !== null
+          ? { etag, lastModified, tokenGen }
+          : null,
+    };
+  }
+
+  async rateLimit(org: string): Promise<{ limit: number; remaining: number }> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "rateLimit needs an org resolver; this client was built without one",
+      );
+    }
+    const gh = await this.orgOctokitFor(org);
+    const { data } = await gh.request("GET /rate_limit");
+    const core = (
+      data as { resources?: { core?: { limit?: number; remaining?: number } } }
+    ).resources?.core;
+    return { limit: core?.limit ?? 0, remaining: core?.remaining ?? 0 };
   }
 
   async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
