@@ -111,12 +111,18 @@ export class HttpEnrichment implements EnrichmentPort {
     if (cached?.etag) headers["if-none-match"] = cached.etag;
     if (cached?.lastModified)
       headers["if-modified-since"] = cached.lastModified;
+    // Whether a validator actually went on the wire. NOT `cached !== null`:
+    // an all-null validator is truthy but adds no header, and accepting a
+    // 304 for it would confirm a catalogue against nothing, forever - the
+    // self-sustaining freeze this lane's history warns about.
+    const conditional =
+      "if-none-match" in headers || "if-modified-since" in headers;
     const res = await this.fetchImpl(this.url, {
       signal: AbortSignal.timeout(60_000),
       headers,
     });
     if (res.status === 304) {
-      if (!cached) {
+      if (!conditional || !cached) {
         // A 304 answers a conditional request. We did not make one, so the
         // origin (or a broken proxy) is confirming a validator we never sent.
         throw new Error("KEV fetch answered 304 to an unconditional request");

@@ -169,9 +169,24 @@ export async function collectOrgAlerts(
     });
 
     const url = orgAlertsUrl(installation);
+    // Conditional only while every watched repository has a confirmation row
+    // (AD-25 meets AD-10). A repository newly added to repos.yaml has none,
+    // and its alerts sat in the very listing the cached ETag describes,
+    // filtered out by the old allowlist - so a 304 would keep it invisible
+    // for as long as the rest of the org stayed quiet. One unconditional
+    // sweep writes its rows, then the cache resumes.
+    const confirmedRepos = new Set(
+      deps.store
+        .currentByTypeForOwner("repository", installation)
+        .filter((c) => c.state === "present")
+        .map((c) => c.subject.key),
+    );
+    const allConfirmed = deps
+      .watchedIn(installation)
+      .every((repo) => confirmedRepos.has(watchKey(repo)));
     const page = await deps.github.listOrgDependabotAlerts(
       installation,
-      deps.store.loadValidator(installation, url),
+      allConfirmed ? deps.store.loadValidator(installation, url) : null,
     );
 
     if (page.notModified) {

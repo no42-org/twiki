@@ -146,13 +146,18 @@ export async function collectKev(
       },
     ]);
     // Saved with the catalogue it validates, in the same sweep: a validator
-    // for a body we refused to store would confirm 304s about nothing.
-    deps.store.saveValidator(
-      KEV_INSTALLATION,
-      url,
-      { ...outcome.validator, tokenGen: "none" },
-      deps.now(),
-    );
+    // for a body we refused to store would confirm 304s about nothing. An
+    // all-null validator is never saved: it cannot make a request
+    // conditional, and a stored one would count as "cached" while sending no
+    // header, the state in which a broken proxy's 304 freezes the catalogue.
+    if (outcome.validator.etag || outcome.validator.lastModified) {
+      deps.store.saveValidator(
+        KEV_INSTALLATION,
+        url,
+        { ...outcome.validator, tokenGen: "none" },
+        deps.now(),
+      );
+    }
     deps.store.finishRun(run, "ok", deps.now());
 
     log(

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   backoffDecision,
   installationTokenGen,
+  LIMIT_EPISODE_COOLDOWN_MS,
   MAX_RETRY_AFTER_S,
   withRequestDiscipline,
 } from "../src/github/discipline.js";
@@ -111,6 +112,42 @@ describe("the discipline hook on a real Octokit", () => {
     expect(res.status).toBe(200);
     expect(calls).toBe(2);
     expect(slept).toEqual([1000]);
+  });
+
+  it("sleeps once per episode, not once per request", async () => {
+    // The coverage lane probes every watched repository serially through one
+    // client. Without the cooldown, a sustained secondary-limit episode
+    // charges each probe its own sleep: 36 repos at 120s is a 72-minute
+    // stalled collector.
+    const slept: number[] = [];
+    let clock = 0;
+    const gh = withRequestDiscipline(
+      new Octokit({
+        request: {
+          fetch: async () =>
+            new Response("slow down", {
+              status: 403,
+              headers: { "retry-after": "1" },
+            }),
+        },
+      }),
+      async (ms) => {
+        slept.push(ms);
+      },
+      () => clock,
+    );
+
+    // First request: sleeps once, retries, still limited, fails.
+    await expect(gh.request("GET /rate_limit")).rejects.toThrow();
+    // Second request inside the cooldown: fails fast, no sleep.
+    clock += 1000;
+    await expect(gh.request("GET /rate_limit")).rejects.toThrow();
+    expect(slept).toEqual([1000]);
+
+    // A new episode after the cooldown gets its sleep back.
+    clock += LIMIT_EPISODE_COOLDOWN_MS + 2000;
+    await expect(gh.request("GET /rate_limit")).rejects.toThrow();
+    expect(slept).toEqual([1000, 1000]);
   });
 
   it("translates primary exhaustion into the legible error", async () => {
@@ -302,6 +339,77 @@ describe("the conditional alert listing", () => {
     const two = await adapter2.listOrgDependabotAlerts("no42-org");
     expect(two.alerts.length + two.unreadable).toBeGreaterThan(0);
     expect(two.validator).toBeNull();
+  });
+
+  it("sends if-modified-since alongside the etag, and alone", async () => {
+    const { gh, seen } = stubGh(() => ({ data: [alertItem], headers: {} }));
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    await adapter.listOrgDependabotAlerts("no42-org", {
+      etag: 'W/"a"',
+      lastModified: "Tue, 22 Jul 2025 05:46:32 GMT",
+      tokenGen: EXPIRES,
+    });
+    // A validator with only Last-Modified still conditions the request:
+    // discarding it wastes a cached 304 for no reason.
+    await adapter.listOrgDependabotAlerts("no42-org", {
+      etag: null,
+      lastModified: "Tue, 22 Jul 2025 05:46:32 GMT",
+      tokenGen: EXPIRES,
+    });
+
+    const headersOf = (i: number) =>
+      (seen[i] as { headers?: Record<string, string> }).headers ?? {};
+    expect(headersOf(0)["if-none-match"]).toBe('W/"a"');
+    expect(headersOf(0)["if-modified-since"]).toBe(
+      "Tue, 22 Jul 2025 05:46:32 GMT",
+    );
+    expect(headersOf(1)["if-none-match"]).toBeUndefined();
+    expect(headersOf(1)["if-modified-since"]).toBe(
+      "Tue, 22 Jul 2025 05:46:32 GMT",
+    );
+  });
+
+  it("does not treat an all-null validator as conditional", async () => {
+    const { gh } = stubGh(() => {
+      throw Object.assign(new Error("Not modified"), { status: 304 });
+    });
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+    // No header went on the wire, so the 304 is unsolicited and must not be
+    // honoured as notModified.
+    await expect(
+      adapter.listOrgDependabotAlerts("no42-org", {
+        etag: null,
+        lastModified: null,
+        tokenGen: EXPIRES,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("refuses a non-array listing body legibly", async () => {
+    // A proxy error page: spreading it would throw an illegible TypeError,
+    // and a string body would spread character by character into a nonsense
+    // unreadable count.
+    const { gh } = stubGh(() => ({
+      data: { message: "upstream error" } as unknown as unknown[],
+      headers: {},
+    }));
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+    await expect(adapter.listOrgDependabotAlerts("no42-org")).rejects.toThrow(
+      /non-array body/,
+    );
   });
 
   it("a 304 without a sent validator is an error, not an empty page", async () => {

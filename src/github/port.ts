@@ -76,8 +76,12 @@ export interface RequestValidator {
 
 /**
  * The validator-cache key for one organisation's alert listing (AD-25: keyed
- * by installation and request URL). One derivation, used by the lane to load
- * and save and by nothing else, so the two sides cannot drift.
+ * by installation and request URL). A naming convention, not the literal
+ * request: the adapter hard-codes the same parameters independently, so a
+ * parameter change there leaves this key describing the old query. That
+ * drift self-heals at runtime (the old ETag misses and the next sweep is a
+ * 200), which is why the two are not forced together the way the KEV lane's
+ * endpoint() is.
  */
 export function orgAlertsUrl(org: string): string {
   return `/orgs/${org.toLowerCase()}/dependabot/alerts?state=open&per_page=100`;

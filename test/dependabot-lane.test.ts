@@ -648,6 +648,25 @@ describe("Dependabot alerts lane", () => {
       expect(github.orgAlertCachedSeen[1]).toBeNull();
     });
 
+    it("fetches unconditionally until a newly-watched repo is confirmed", async () => {
+      // The repo's alerts sat in the very listing the cached ETag describes,
+      // filtered out by the old allowlist. A 304 confirms only stored rows,
+      // so the new repo would stay invisible for as long as the rest of the
+      // org stayed quiet.
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      watched.add("no42-org/fresh-repo");
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      // Cold sweep: the validator was not sent.
+      expect(github.orgAlertCachedSeen[1]).toBeNull();
+
+      // That sweep confirmed the new repo, so the cache resumes.
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(github.orgAlertCachedSeen[2]).toEqual(VALIDATOR);
+    });
+
     it("fetches unconditionally when the listing spanned pages", async () => {
       // No validator came back (multi-page listing), so nothing is cached
       // and the next sweep pays full price rather than guessing.

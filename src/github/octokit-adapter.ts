@@ -606,10 +606,24 @@ export class OctokitGitHub implements GitHubPort {
     const gh = await this.orgOctokitFor(org);
 
     // A validator from a previous token generation is a guaranteed miss:
-    // GitHub's ETags vary with the Authorization header. Cold, not sent.
+    // GitHub's ETags vary with the Authorization header. Cold, not sent. An
+    // all-null validator is not a validator: sending nothing while treating
+    // the request as conditional is how an unsolicited 304 gets honoured.
     const tokenGen = await installationTokenGen(gh);
     const send =
-      cached && cached.tokenGen === tokenGen && cached.etag ? cached : null;
+      cached &&
+      cached.tokenGen === tokenGen &&
+      (cached.etag || cached.lastModified)
+        ? cached
+        : null;
+    // Both headers when both exist, same rationale as the KEV path: RFC 9110
+    // prefers If-None-Match, and a proxy honouring only Last-Modified still
+    // gets its chance to answer 304 (AD-25).
+    const conditionalHeaders: Record<string, string> = {};
+    if (send?.etag) conditionalHeaders["if-none-match"] = send.etag;
+    if (send?.lastModified) {
+      conditionalHeaders["if-modified-since"] = send.lastModified;
+    }
 
     // Paginated by link header rather than gh.paginate: the conditional
     // request needs the first page's response headers (etag, 304), which
@@ -632,7 +646,7 @@ export class OctokitGitHub implements GitHubPort {
               org,
               state: "open",
               per_page: 100,
-              headers: send?.etag ? { "if-none-match": send.etag } : {},
+              headers: conditionalHeaders,
             });
       } catch (err) {
         if (
@@ -659,6 +673,14 @@ export class OctokitGitHub implements GitHubPort {
             ? res.headers["last-modified"]
             : null;
       }
+      if (!Array.isArray(res.data)) {
+        // A proxy error page or unexpected object: spreading it would either
+        // throw an illegible TypeError or spread a string character by
+        // character into a nonsense unreadable count.
+        throw new Error(
+          `alert listing for ${org} returned a non-array body (page ${pages})`,
+        );
+      }
       raw.push(...(res.data as unknown[]));
       const link = typeof res.headers.link === "string" ? res.headers.link : "";
       next = link.match(/<([^>]+)>;\s*rel="next"/)?.[1] ?? null;
@@ -684,8 +706,11 @@ export class OctokitGitHub implements GitHubPort {
       // Only a listing that fit in one page gets a validator: each page
       // carries its own ETag, and a 304 on page one says nothing about the
       // pages behind it.
+      // A validator earns caching only when it can make a request
+      // conditional: an all-null one would count as "cached" while sending
+      // no header, the unsolicited-304 state guarded against above.
       validator:
-        pages === 1 && firstEtag
+        pages === 1 && (firstEtag || firstLastModified)
           ? { etag: firstEtag, lastModified: firstLastModified, tokenGen }
           : null,
     };

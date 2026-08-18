@@ -165,6 +165,20 @@ describe("fetching", () => {
     );
     await expect(port.fetchKev(null)).rejects.toThrow(/unconditional/);
   });
+
+  it("an all-null validator does not make the request conditional", async () => {
+    // Truthy but empty: no header goes on the wire, so a 304 back is just as
+    // unsolicited as with no validator at all. Accepting it would confirm
+    // the catalogue against nothing, sweep after sweep - the self-sustaining
+    // freeze this lane was rebuilt to kill.
+    const port = new HttpEnrichment(
+      "http://x",
+      async () => ({ ok: false, status: 304 }) as Response,
+    );
+    await expect(
+      port.fetchKev({ etag: null, lastModified: null }),
+    ).rejects.toThrow(/unconditional/);
+  });
 });
 
 describe("the KEV lane stores only what it can vouch for", () => {
@@ -350,6 +364,22 @@ describe("the KEV conditional re-fetch (AD-25)", () => {
 
     expect(p.cachedSeen[0]).toBeNull();
     expect(r).toMatchObject({ outcome: "ok", listed: 1 });
+  });
+
+  it("never saves a validator that cannot condition a request", async () => {
+    // A 200 with neither ETag nor Last-Modified (some mirrors send none).
+    // Storing the all-null pair would make the next sweep count as "cached"
+    // while sending no header, the state a broken proxy's 304 exploits.
+    const p = new FakeEnrichmentPort();
+    p.cveIds = ["CVE-2021-44228"];
+    p.validator = { etag: null, lastModified: null };
+
+    const r = await collectKev(depsFor(p, "2026-08-18T06:00:00.000Z"));
+
+    expect(r.outcome).toBe("ok");
+    expect(
+      store.loadValidator(KEV_INSTALLATION, "https://fake.test/kev.json"),
+    ).toBeNull();
   });
 
   it("a degraded fetch leaves the validator alone with the catalogue", async () => {
