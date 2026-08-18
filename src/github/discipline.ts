@@ -25,6 +25,14 @@ export type BackoffDecision =
   | { kind: "rethrow" };
 
 /**
+ * A secondary limit sometimes arrives with NO retry-after at all; GitHub's
+ * docs say to wait at least a minute in that case. The message is the only
+ * signal that distinguishes it from a permissions 403.
+ */
+export const SECONDARY_LIMIT_FALLBACK_MS = 60_000;
+const SECONDARY_LIMIT_MESSAGE = /secondary rate limit/i;
+
+/**
  * Decide what to do with a failed request. Pure, so the whole table is
  * testable without an Octokit or a clock.
  *
@@ -35,14 +43,6 @@ export type BackoffDecision =
  * sleeping out a primary window (up to an hour) inside a lane would stall
  * the whole cycle, and the scheduler retries next tick anyway (AD-16).
  */
-/**
- * A secondary limit sometimes arrives with NO retry-after at all; GitHub's
- * docs say to wait at least a minute in that case. The message is the only
- * signal that distinguishes it from a permissions 403.
- */
-export const SECONDARY_LIMIT_FALLBACK_MS = 60_000;
-const SECONDARY_LIMIT_MESSAGE = /secondary rate limit/i;
-
 export function backoffDecision(
   status: number | undefined,
   headers: Record<string, string | undefined>,
@@ -72,13 +72,16 @@ export function backoffDecision(
     return { kind: "retry", afterMs: SECONDARY_LIMIT_FALLBACK_MS };
   }
   if (headers["x-ratelimit-remaining"] === "0") {
-    const reset = Number(headers["x-ratelimit-reset"]);
-    const at = Number.isFinite(reset)
-      ? new Date(reset * 1000).toISOString()
-      : "unknown";
+    // toISOString throws on a date outside its representable range, and a
+    // garbage reset header from a proxy must not replace the legible
+    // exhaustion message with the crash it was built to avoid.
+    const reset = new Date(Number(headers["x-ratelimit-reset"]) * 1000);
+    const at = Number.isNaN(reset.getTime()) ? "unknown" : reset.toISOString();
     return {
       kind: "exhausted",
-      detail: `rate limit exhausted, resets at ${at}; run recorded and retried next cycle`,
+      // No promise about what the caller does next: this table also serves
+      // the App-level client, where no run is recorded and nothing retries.
+      detail: `rate limit exhausted, resets at ${at}; failing fast rather than sleeping out the window`,
     };
   }
   return { kind: "rethrow" };

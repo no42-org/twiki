@@ -181,12 +181,25 @@ export async function collectOrgAlerts(
         .filter((c) => c.state === "present")
         .map((c) => c.subject.key),
     );
-    const allConfirmed = deps
+    const unconfirmed = deps
       .watchedIn(installation)
-      .every((repo) => confirmedRepos.has(watchKey(repo)));
+      .map(watchKey)
+      .filter((slug) => !confirmedRepos.has(slug));
+    if (unconfirmed.length > 0) {
+      // Normally one sweep long: the confirmation pass below writes a row
+      // for every watched repository on the next full ok sweep. Logged
+      // anyway, because if this ever persists (full sweeps failing, scope
+      // never full) the cache is silently off for the whole organisation,
+      // and the line names exactly which repositories are holding it off.
+      log(
+        `${LANE} ${installation}: conditional sweep off, unconfirmed: ${unconfirmed.join(", ")}`,
+      );
+    }
     const page = await deps.github.listOrgDependabotAlerts(
       installation,
-      allConfirmed ? deps.store.loadValidator(installation, url) : null,
+      unconfirmed.length === 0
+        ? deps.store.loadValidator(installation, url)
+        : null,
     );
 
     if (page.notModified) {

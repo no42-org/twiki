@@ -714,5 +714,40 @@ describe("Dependabot alerts lane", () => {
         store.loadValidator("no42-org", orgAlertsUrl("no42-org")),
       ).toBeNull();
     });
+
+    it("a hot 200 purges the stored validator too", async () => {
+      // A hot sweep stores rows like any other 200, so the stored validator
+      // stops describing stored state the moment it runs. Folding the purge
+      // into the full-only reconciliation block would leave it behind.
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(
+        store.loadValidator("no42-org", orgAlertsUrl("no42-org")),
+      ).not.toBeNull();
+
+      github.orgAlertNotModified.clear();
+      await collectOrgAlerts(deps(), "no42-org", "hot");
+
+      expect(
+        store.loadValidator("no42-org", orgAlertsUrl("no42-org")),
+      ).toBeNull();
+    });
+
+    it("says which repositories disabled the conditional sweep", async () => {
+      // Normally a one-sweep window (the confirmation pass writes a row for
+      // every watched repository), but if it ever persists the cache is
+      // silently off for the whole org, and this line names the holdouts.
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      watched.add("no42-org/ghost");
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(
+        logs.some(
+          (l) =>
+            l.includes("conditional sweep off") && l.includes("no42-org/ghost"),
+        ),
+      ).toBe(true);
+    });
   });
 });

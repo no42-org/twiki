@@ -6,7 +6,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   backoffDecision,
   installationTokenGen,
@@ -15,7 +15,10 @@ import {
   withRequestDiscipline,
 } from "../src/github/discipline.js";
 import {
+  createTricorderAppFromEnv,
   createTricorderReadPort,
+  MAX_ALERT_PAGES,
+  nextLink,
   OctokitGitHub,
 } from "../src/github/octokit-adapter.js";
 
@@ -47,6 +50,23 @@ describe("the backoff decision table (AD-24)", () => {
         false,
       ).kind,
     ).not.toBe("retry");
+    // The cap itself is inclusive: exactly MAX retries. An off-by-one in
+    // the comparison would otherwise stay green.
+    expect(
+      backoffDecision(403, { "retry-after": String(MAX_RETRY_AFTER_S) }, false),
+    ).toEqual({ kind: "retry", afterMs: MAX_RETRY_AFTER_S * 1000 });
+  });
+
+  it("ignores an HTTP-date retry-after, by documented choice", () => {
+    // RFC 9110 allows the date form; GitHub sends delta-seconds. The table
+    // owns no clock, so a date parses as NaN and falls through to rethrow.
+    expect(
+      backoffDecision(
+        429,
+        { "retry-after": "Fri, 21 Aug 2026 07:28:00 GMT" },
+        false,
+      ).kind,
+    ).toBe("rethrow");
   });
 
   it("fails fast and legibly on primary exhaustion", () => {
@@ -57,9 +77,26 @@ describe("the backoff decision table (AD-24)", () => {
     );
     expect(d.kind).toBe("exhausted");
     if (d.kind === "exhausted") {
-      // A reset instant a human can read, not an epoch integer.
+      // A reset instant a human can read, not an epoch integer. And no
+      // promise about what the caller does next: the table also serves the
+      // App-level client, where no run is recorded and nothing retries.
       expect(d.detail).toContain("2026-08-15T");
-      expect(d.detail).toContain("retried next cycle");
+      expect(d.detail).toContain("failing fast");
+    }
+
+    // A garbage reset from a proxy must degrade to "unknown", never replace
+    // the legible message with toISOString's RangeError.
+    const garbage = backoffDecision(
+      403,
+      {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "99999999999999",
+      },
+      false,
+    );
+    expect(garbage.kind).toBe("exhausted");
+    if (garbage.kind === "exhausted") {
+      expect(garbage.detail).toContain("unknown");
     }
   });
 
@@ -442,6 +479,49 @@ describe("the conditional alert listing", () => {
     );
   });
 
+  it("serves a listing that genuinely ends at the page cap", async () => {
+    // The cap is judged on the CLAIM of more pages, not the page count: a
+    // real listing of exactly MAX pages is in-bounds by the constant's own
+    // doc, and rejecting it would fail a legitimate 5,000-alert org.
+    let call = 0;
+    const { gh } = stubGh(() => {
+      call++;
+      const headers: Record<string, string> =
+        call < MAX_ALERT_PAGES
+          ? {
+              link: `<https://api.github.com/x?page=${call + 1}>; rel="next"`,
+            }
+          : {};
+      return { data: [alertItem], headers };
+    });
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    const page = await adapter.listOrgDependabotAlerts("no42-org");
+    expect(page.alerts.length + page.unreadable).toBe(MAX_ALERT_PAGES);
+  });
+
+  it("refuses to follow a cross-origin next link", async () => {
+    // The next URL is followed with the installation token attached. A
+    // proxy-injected Link header must not be able to point the
+    // Authorization header at another host.
+    const { gh } = stubGh(() => ({
+      data: [alertItem],
+      headers: { link: '<https://evil.example/steal?page=2>; rel="next"' },
+    }));
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+    await expect(adapter.listOrgDependabotAlerts("no42-org")).rejects.toThrow(
+      /cross-origin/,
+    );
+  });
+
   it("treats a null token generation as cold on both sides", async () => {
     // auth without an expiry cannot be compared across rotations; a stable
     // sentinel would compare equal to itself and fail open. Nothing is sent
@@ -563,6 +643,75 @@ describe("the conditional alert listing", () => {
   });
 });
 
+describe("parsing the Link header's next target", () => {
+  it("handles the shapes a naive split gets wrong", () => {
+    // GitHub's own emission: quoted rel, first parameter.
+    expect(
+      nextLink(
+        '<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=9>; rel="last"',
+      ),
+    ).toBe("https://api.github.com/x?page=2");
+    // A comma inside the bracketed URL is legal in query strings; splitting
+    // the header on commas severs the URL and drops the link.
+    expect(
+      nextLink('<https://api.github.com/x?fields=a,b&page=2>; rel="next"'),
+    ).toBe("https://api.github.com/x?fields=a,b&page=2");
+    // Unquoted and list-valued rel are both spec-valid proxy rewrites, and
+    // missing either truncates the listing at the current page.
+    expect(nextLink("<https://api.github.com/x?page=2>; rel=next")).toBe(
+      "https://api.github.com/x?page=2",
+    );
+    expect(nextLink('<https://api.github.com/x?page=2>; rel="next last"')).toBe(
+      "https://api.github.com/x?page=2",
+    );
+    // rel is not required to be the first parameter.
+    expect(
+      nextLink('<https://api.github.com/x?page=2>; type="a"; rel="next"'),
+    ).toBe("https://api.github.com/x?page=2");
+    // And plain absences answer null.
+    expect(
+      nextLink('<https://api.github.com/x?page=9>; rel="last"'),
+    ).toBeNull();
+    expect(nextLink("")).toBeNull();
+  });
+});
+
+describe("the installation token across its TTL", () => {
+  it("is reused up to expiry and rotates the generation after it", async () => {
+    // Story 14's AC verbatim: reused for its FULL one-hour TTL, never
+    // refreshed early. The mint-once test covers reuse at t0; this one
+    // drives the clock to just short of expiry (still the same token, same
+    // generation) and past it (new mint, new generation), because an early
+    // refresh silently invalidates every cached validator.
+    vi.useFakeTimers();
+    try {
+      let mintCount = 0;
+      const { gh, minted } = appOctokit(() => {
+        mintCount++;
+        return new Date(Date.now() + 60 * 60_000).toISOString();
+      });
+
+      const gen1 = await installationTokenGen(gh);
+      // 58 minutes in: within the TTL (auth-app renews inside its final
+      // minute), so no new mint and the generation holds.
+      vi.advanceTimersByTime(58 * 60_000);
+      const gen2 = await installationTokenGen(gh);
+      expect(minted()).toBe(1);
+      expect(gen2).toBe(gen1);
+
+      // Past expiry: a new mint, and with it a new generation, which is
+      // what turns every cached validator cold (AD-25).
+      vi.advanceTimersByTime(3 * 60_000);
+      const gen3 = await installationTokenGen(gh);
+      expect(minted()).toBe(2);
+      expect(gen3).not.toBe(gen1);
+      expect(mintCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("the discipline hook rides the factory's clients", () => {
   it("createTricorderReadPort's clients retry a limited request", async () => {
     // The wrapper's one production attachment was deletable with a green
@@ -617,5 +766,85 @@ describe("the discipline hook rides the factory's clients", () => {
     // retries. An unwrapped one would have thrown the 403.
     expect(apiCalls).toBe(2);
     expect(page.alerts).toEqual([]);
+  });
+
+  it("createTricorderAppFromEnv's App client retries a limited request", async () => {
+    // The same deletable-wrapper hole the read-port test closes, one
+    // factory over: the App-JWT client serves startup listInstallations and
+    // every resolver miss, and its wrap was removable with a green suite.
+    let apiCalls = 0;
+    const fetchImpl = async () => {
+      apiCalls++;
+      if (apiCalls === 1) {
+        return new Response("slow down", {
+          status: 403,
+          headers: { "retry-after": "0" },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const appPort = createTricorderAppFromEnv(
+      {
+        TRICORDER_GITHUB_APP_ID: "1",
+        TRICORDER_GITHUB_APP_PRIVATE_KEY: TEST_KEY,
+      } as NodeJS.ProcessEnv,
+      fetchImpl as typeof fetch,
+    );
+
+    const installations = await appPort.listInstallations();
+
+    expect(apiCalls).toBe(2);
+    expect(installations).toEqual([]);
+  });
+
+  it("the App port's per-installation clients are disciplined too", async () => {
+    // listInstallationRepos builds its own clients; leaving those bare
+    // would make the doctor's requests the only ones in the system with no
+    // retry-after handling, behind a comment claiming otherwise.
+    let repoCalls = 0;
+    const fetchImpl = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/access_tokens")) {
+        return new Response(
+          JSON.stringify({
+            token: "ghs_app",
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            permissions: {},
+            repository_selection: "all",
+          }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        );
+      }
+      repoCalls++;
+      if (repoCalls === 1) {
+        return new Response("slow down", {
+          status: 403,
+          headers: { "retry-after": "0" },
+        });
+      }
+      const res = new Response(
+        JSON.stringify({ total_count: 0, repositories: [] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+      // A hand-built Response has an empty url, and octokit's paginate
+      // calls new URL(response.url) on envelope endpoints.
+      Object.defineProperty(res, "url", { value: u });
+      return res;
+    };
+    const appPort = createTricorderAppFromEnv(
+      {
+        TRICORDER_GITHUB_APP_ID: "1",
+        TRICORDER_GITHUB_APP_PRIVATE_KEY: TEST_KEY,
+      } as NodeJS.ProcessEnv,
+      fetchImpl as typeof fetch,
+    );
+
+    const repos = await appPort.listInstallationRepos(7);
+
+    expect(repoCalls).toBe(2);
+    expect(repos).toEqual([]);
   });
 });

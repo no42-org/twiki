@@ -70,6 +70,27 @@ const ISSUE_SEARCH_BASE = "is:issue is:open no:assignee";
 /** Pagination sanity cap: 50 pages is 5,000 open alerts in one org. */
 export const MAX_ALERT_PAGES = 50;
 
+/**
+ * The rel="next" target from a Link header, or null.
+ *
+ * Parsed per RFC 8288 shape rather than one regex over the whole header,
+ * exported so the parsing is testable on its own. Three traps a naive split
+ * falls into, each of which silently truncates the listing at the current
+ * page - and page one's validator then gets cached for an incomplete
+ * listing: a comma inside a bracketed URL (legal in query strings), an
+ * unquoted `rel=next`, and a list-valued `rel="next last"`.
+ */
+export function nextLink(header: string): string | null {
+  for (const m of header.matchAll(/<([^>]*)>((?:[^,<"]|"[^"]*")*)/g)) {
+    const url = m[1];
+    const params = m[2] ?? "";
+    const rel = params.match(/\brel\s*=\s*(?:"([^"]*)"|([^\s;,]+))/);
+    const tokens = (rel?.[1] ?? rel?.[2] ?? "").toLowerCase().split(/\s+/);
+    if (tokens.includes("next") && url) return url;
+  }
+  return null;
+}
+
 export function issueSearchQueries(repos: readonly RepoRef[]): string[] {
   const queries: string[] = [];
   let current = ISSUE_SEARCH_BASE;
@@ -660,12 +681,13 @@ export class OctokitGitHub implements GitHubPort {
           if (send && pages === 1) {
             // Byte-identical to the listing the validator came from. No
             // pages to walk: a single-page listing is the only kind we cache
-            // for. tokenGen is non-null whenever send is.
+            // for. The send guard already proved send.tokenGen === tokenGen,
+            // so the cached validator goes back as it came.
             return {
               alerts: [],
               unreadable: 0,
               notModified: true,
-              validator: { ...send, tokenGen: tokenGen as string },
+              validator: { ...send },
             };
           }
           // Same posture as the KEV path, same legible message: a broken
@@ -693,25 +715,27 @@ export class OctokitGitHub implements GitHubPort {
         );
       }
       raw.push(...(res.data as unknown[]));
+      const link = typeof res.headers.link === "string" ? res.headers.link : "";
+      next = nextLink(link);
+      if (!next) break;
+      // The cap is judged on the CLAIM of more pages, after the link parse:
+      // a listing that genuinely ends at page MAX is served in full, while a
+      // proxy echoing a self-referential Link header cannot loop this lane
+      // forever. Hitting the cap is a fault, and a fault must not look like
+      // the end of the listing.
       if (pages >= MAX_ALERT_PAGES) {
-        // A proxy echoing a self-referential Link header would otherwise
-        // loop this lane forever. The cap is far above any real estate
-        // (5,000 open alerts per organisation); hitting it is a fault, and
-        // a fault must not look like the end of the listing.
         throw new Error(
-          `alert listing for ${org} exceeded ${MAX_ALERT_PAGES} pages; refusing to loop`,
+          `alert listing for ${org} claims more than ${MAX_ALERT_PAGES} pages; refusing to loop`,
         );
       }
-      const link = typeof res.headers.link === "string" ? res.headers.link : "";
-      // Per link entry, not one regex over the whole header: rel="next" is
-      // not required to be the first parameter, and missing a reordered one
-      // would silently truncate the listing at this page.
-      next =
-        link
-          .split(",")
-          .map((entry) => entry.match(/<([^>]+)>[^,]*\brel="next"/)?.[1])
-          .find((url) => url !== undefined) ?? null;
-      if (!next) break;
+      // The next URL is followed with the installation token attached, so it
+      // must stay on GitHub's API origin: a proxy-injected Link header must
+      // not be able to point the Authorization header at another host.
+      if (!next.startsWith("https://api.github.com/")) {
+        throw new Error(
+          `alert listing for ${org} carried a cross-origin next link; refusing to follow it`,
+        );
+      }
     }
 
     // Deliberately unfiltered. Which repositories are watched is AD-10's rule
@@ -911,6 +935,8 @@ export class OctokitGitHubApp implements GitHubAppPort {
   constructor(
     private readonly app: Octokit,
     private readonly auth: AppAuthConfig,
+    /** Test seam, threaded to the per-installation clients built below. */
+    private readonly fetchImpl?: typeof fetch,
   ) {}
 
   async identity(): Promise<AppIdentity> {
@@ -951,7 +977,18 @@ export class OctokitGitHubApp implements GitHubAppPort {
     if (!client) {
       // Cached: building one re-reads the private key from disk and mints a
       // fresh installation token, and a diagnosis walks every installation.
-      client = installationOctokit(this.auth, installationId);
+      // Disciplined like every other collector client (AD-24): these hit
+      // installation buckets, and an undisciplined one here would be the
+      // only requests in the system with no retry-after handling.
+      client = withRequestDiscipline(
+        this.fetchImpl
+          ? new Octokit({
+              authStrategy: createAppAuth,
+              auth: { ...this.auth, installationId },
+              request: { fetch: this.fetchImpl },
+            })
+          : installationOctokit(this.auth, installationId),
+      );
       this.clients.set(installationId, client);
     }
     const repos = await client.paginate(
@@ -963,14 +1000,26 @@ export class OctokitGitHubApp implements GitHubAppPort {
 }
 
 /** Build the App-level client for gitricorder's read-only App (AD-21). */
-export function createTricorderAppFromEnv(env = process.env): GitHubAppPort {
+export function createTricorderAppFromEnv(
+  env = process.env,
+  /** Test seam only, like createTricorderReadPort's: it exists so a test
+   * can prove the discipline hook rides the client THIS factory builds. */
+  fetchImpl?: typeof fetch,
+): GitHubAppPort {
   const auth = loadAppAuthFromEnv(env, "TRICORDER");
   return new OctokitGitHubApp(
     // Disciplined like the installation clients (AD-24): listInstallations
     // runs at startup and again on every resolver miss, and those are
     // collector requests too, on the App's own JWT bucket.
-    withRequestDiscipline(new Octokit({ authStrategy: createAppAuth, auth })),
+    withRequestDiscipline(
+      new Octokit({
+        authStrategy: createAppAuth,
+        auth,
+        ...(fetchImpl ? { request: { fetch: fetchImpl } } : {}),
+      }),
+    ),
     auth,
+    fetchImpl,
   );
 }
 

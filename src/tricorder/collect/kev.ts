@@ -21,8 +21,10 @@ export const KEV_INSTALLATION = KEV_KEY;
 
 /**
  * The KEV feed is unauthenticated, so its validators have no token
- * generation. One constant, because a typo in one of the save sites would
- * silently make every stored KEV validator a generation miss.
+ * generation. Nothing compares this value today (the KEV lane sends its
+ * validator regardless of generation); the constant exists so the two save
+ * sites cannot drift apart, and so any future comparison has one name to
+ * compare against.
  */
 export const KEV_TOKEN_GEN = "none";
 
