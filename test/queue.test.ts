@@ -413,6 +413,66 @@ describe("update PRs in the queue (CAP-3)", () => {
     expect(prs[1]?.explanation).toContain("bump unknown");
   });
 
+  it("joins across the casing gap between advisory data and PR titles", () => {
+    // The alert name comes from ecosystem-normalised advisory data (pip says
+    // django); the PR title carries manifest casing. A case miss silently
+    // loses the risk inheritance and the PR ranks as a plain update.
+    seedKev(["CVE-2026-1234"]);
+    seedAlert(1, {
+      packageName: "django",
+      cveId: "CVE-2026-1234",
+      severity: "critical",
+    });
+    seedPr("PR_case", {
+      number: 30,
+      packageName: "Django",
+      title: "Bump Django from 3.2 to 4.2",
+    });
+
+    const pr = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "update_pr",
+    );
+    expect(pr?.kevListed).toBe(true);
+    expect(pr?.advisory).toBe("CVE-2026-1234");
+
+    // And the other direction, so folding only the side this fixture happens
+    // to exercise cannot regress: mixed-case advisory data, lowercase title.
+    seedAlert(2, {
+      packageName: "Sequelize",
+      cveId: "CVE-2026-9876",
+      severity: "critical",
+    });
+    seedPr("PR_case2", {
+      number: 32,
+      packageName: "sequelize",
+      title: "Bump sequelize from 5.0.0 to 6.0.0",
+    });
+    const pr2 = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "update_pr" && i.number === 32,
+    );
+    expect(pr2?.advisory).toBe("CVE-2026-9876");
+  });
+
+  it("keeps the advisory when the only candidate ties the plain baseline", () => {
+    // kev=false and below-band EPSS both rank LEAST_KNOWN, exactly like n/a,
+    // so a strict comparison seeded from the baseline skipped the candidate
+    // and the row said "no advisory" about a PR fixing a real one.
+    seedKev(["CVE-0000-0000"]);
+    seedAlert(1, {
+      packageName: "left-pad",
+      cveId: "CVE-2026-5555",
+      epssPercentage: 0.005,
+      severity: "low",
+    });
+    seedPr("PR_tie", { number: 31, packageName: "left-pad", bump: "patch" });
+
+    const pr = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "update_pr",
+    );
+    expect(pr?.advisory).toBe("CVE-2026-5555");
+    expect(pr?.explanation).toContain("not in CISA KEV");
+  });
+
   it("judges a PR fixing two advisories by the more urgent one", () => {
     seedKev(["CVE-2021-44228"]);
     seedAlert(1, {
@@ -534,6 +594,32 @@ describe("the queue page", () => {
     expect(html).toContain("no42-org/twiki#1");
     expect(html).toContain("could not be read");
     expect(html).toContain("incomplete");
+  });
+
+  it("counts alerts and PRs separately in the header", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number: 1 })),
+      {
+        subject: { type: "dependency_update_pr", key: "PR_h" },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 2,
+          title: "Bump x from 1.0.0 to 1.0.1",
+          author: "dependabot",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/2",
+          createdAt: "2026-08-17T00:00:00.000Z",
+          packageName: "x",
+          bump: "patch",
+        },
+      },
+    ]);
+
+    const html = await (await app().request("/queue")).text();
+    // "2 open alerts" over rows that are half PRs read as a collector bug to
+    // anyone reconciling against GitHub's security tab.
+    expect(html).toContain("1 open alerts");
+    expect(html).toContain("1 update PRs");
   });
 
   it("labels the ordering a local policy, never SSVC (AD-20)", async () => {

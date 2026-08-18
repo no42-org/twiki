@@ -208,6 +208,32 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     expect(current()).toHaveLength(1);
   });
 
+  it("does not tombstone when the search hit GitHub's result ceiling", async () => {
+    // Search caps at 1000 results and reports it only through issueCount:
+    // hasNextPage goes false exactly as at a genuine end. A capped sweep that
+    // finished "ok" would conclude every PR beyond the cap was closed.
+    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    await collectUpdatePRs(deps(), "no42-org", "full");
+
+    github.updatePrs.set("no42-org", []);
+    github.updatePrTruncated.add("no42-org");
+    const r = await collectUpdatePRs(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    expect(current()).toHaveLength(1);
+    expect(store.latestRuns(1)[0]?.detail).toContain("truncated");
+  });
+
+  it("parses the package name out of a Renovate title", () => {
+    // The bump stays unknown, but severing the name silently severed the
+    // alert-risk join for one of the two bots the README promises to cover.
+    expect(
+      bumpFromTitle("chore(deps): update dependency esbuild to v0.21.0"),
+    ).toEqual({ packageName: "esbuild", bump: null });
+    expect(bumpFromTitle("Update react to v19").packageName).toBe("react");
+    expect(bumpFromTitle("Update README").packageName).toBeNull();
+  });
+
   it("contains a search failure rather than throwing past the lane", async () => {
     github.listOpenUpdatePRs = async () => {
       throw new Error("GraphQL upstream 502");
@@ -246,6 +272,15 @@ describe("the actor set is configuration (AD-19)", () => {
     writeFileSync(without, "repos:\n  - repo: no42-org/twiki\n");
 
     expect(loadConfig(withBots).bots).toEqual(["app/custom-bot"]);
+
+    // A value with whitespace or search syntax silently rewrites the query,
+    // and the narrowed "ok" sweep then tombstones everything it filtered out.
+    const injected = join(dir, "injected.yaml");
+    writeFileSync(
+      injected,
+      "repos:\n  - repo: no42-org/twiki\nbots:\n  - app/dependabot app/renovate\n",
+    );
+    expect(() => loadConfig(injected)).toThrow(/one login per entry/);
     // No default in source: an unset list means the lane does not run, and the
     // entrypoint says so, rather than a bot login living in code.
     expect(loadConfig(without).bots).toEqual([]);

@@ -180,6 +180,15 @@ export interface UpdatePrPage {
   prs: RawUpdatePr[];
   /** Nodes the mapper could not read. Never silently discarded. */
   unreadable: number;
+  /**
+   * True when GitHub returned fewer results than the query matched.
+   *
+   * Search hard-caps at 1000 results and reports the truncation only through
+   * `issueCount`: the last page still says hasNextPage false, so without this
+   * flag a capped sweep looks complete and the tombstone pass concludes every
+   * PR beyond the cap was closed.
+   */
+  truncated: boolean;
 }
 
 /** Repository metadata the coverage lane needs, one call per 100 repos. */

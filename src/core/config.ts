@@ -33,7 +33,14 @@ const ConfigSchema = z.strictObject({
    * bot login literal in source, so there is no default. An absent list means
    * the update-PR lane collects nothing, loudly.
    */
-  bots: z.array(z.string().min(1)).optional(),
+  bots: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .regex(/^[^\s:"]+$/, "one login per entry, no spaces or search syntax"),
+    )
+    .optional(),
 });
 
 export type RawConfig = z.infer<typeof ConfigSchema>;

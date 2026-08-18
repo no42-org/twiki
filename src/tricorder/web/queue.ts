@@ -129,6 +129,19 @@ export function buildQueue(
   const items: QueueItem[] = [];
   let unreadable = 0;
 
+  // Filled during the alert pass, read during the PR pass. One derivation of
+  // kev and severity per alert: two copy-parallel loops let the two drift, and
+  // a PR could "inherit" a risk disagreeing with the alert row beside it.
+  const alertsByPackage = new Map<
+    string,
+    {
+      kev: ReturnType<typeof kevSignal>;
+      epss: number | null;
+      severity: ReturnType<typeof normaliseSeverity>;
+      advisory: string | null;
+    }[]
+  >();
+
   for (const row of store.currentByType("dependabot_alert")) {
     if (row.state !== "present") continue;
     const alert = readAlert(row.payload);
@@ -138,6 +151,18 @@ export function buildQueue(
     }
 
     const kev = kevSignal(index, alert.cveId);
+    const severity = normaliseSeverity(alert.severity ?? "");
+    if (alert.packageName !== null) {
+      const key = `${alert.repo.toLowerCase()}|${alert.packageName.toLowerCase()}`;
+      const list = alertsByPackage.get(key) ?? [];
+      list.push({
+        kev,
+        epss: alert.epssPercentage,
+        severity,
+        advisory: alert.cveId ?? alert.ghsaId ?? null,
+      });
+      alertsByPackage.set(key, list);
+    }
     const ranking = rank(
       {
         kev,
@@ -147,7 +172,7 @@ export function buildQueue(
         epss: alert.epssPercentage,
         // An unrecognised severity becomes null and ranks as unknown, which is
         // what the adapter's own "unknown" value should do.
-        severity: normaliseSeverity(alert.severity ?? ""),
+        severity,
         // An alert is not an update: nothing to bump, nothing to be stuck.
         bump: NOT_APPLICABLE,
         stuck: NOT_APPLICABLE,
@@ -179,37 +204,13 @@ export function buildQueue(
   // stable. It stays as defence: that SQL clause is one edit away from
   // disappearing, and a queue that reshuffles between refreshes on rank ties
   // would look broken in a way no test of ordering-by-rank catches.
-  // The update PRs (CAP-3), ranked by the risk of what they fix. The join to
-  // that risk is local: the stored alerts already carry package, CVE, EPSS and
-  // severity, so a PR bumping a package with an open alert inherits the
+  // The update PRs (CAP-3), ranked by the risk of what they fix. The join is
+  // local: alertsByPackage was filled during the single pass over the alerts
+  // above, so a PR bumping a package with an open alert inherits the
   // worst-ranking alert's top three terms. A PR whose package has no open
   // alert is a plain update, and its security terms are facts of absence
   // (n/a), not gaps (unknown): calling them unknown would float every routine
   // bump above every alert we checked and found absent.
-  const alertsByPackage = new Map<
-    string,
-    {
-      kev: ReturnType<typeof kevSignal>;
-      epss: number | null;
-      severity: ReturnType<typeof normaliseSeverity>;
-      advisory: string | null;
-    }[]
-  >();
-  for (const row of store.currentByType("dependabot_alert")) {
-    if (row.state !== "present") continue;
-    const alert = readAlert(row.payload);
-    if (alert === null || alert.packageName === null) continue;
-    const key = `${alert.repo.toLowerCase()}|${alert.packageName}`;
-    const list = alertsByPackage.get(key) ?? [];
-    list.push({
-      kev: kevSignal(index, alert.cveId),
-      epss: alert.epssPercentage,
-      severity: normaliseSeverity(alert.severity ?? ""),
-      advisory: alert.cveId ?? alert.ghsaId ?? null,
-    });
-    alertsByPackage.set(key, list);
-  }
-
   for (const row of store.currentByType("dependency_update_pr")) {
     if (row.state !== "present") continue;
     const pr = readPr(row.payload);
@@ -221,40 +222,56 @@ export function buildQueue(
     const candidates =
       pr.packageName === null
         ? []
-        : (alertsByPackage.get(`${pr.repo.toLowerCase()}|${pr.packageName}`) ??
-          []);
+        : // Folded on both sides: the alert name comes from GitHub's
+          // ecosystem-normalised advisory data (pip says django) while the PR
+          // title carries manifest casing (Bump Django from ...), and a case
+          // miss silently loses the CAP-3 risk inheritance.
+          (alertsByPackage.get(
+            `${pr.repo.toLowerCase()}|${pr.packageName.toLowerCase()}`,
+          ) ?? []);
 
-    // No open alert for the package: a plain update.
-    let best = rank(
-      {
-        kev: NOT_APPLICABLE,
-        epss: NOT_APPLICABLE,
-        severity: NOT_APPLICABLE,
-        bump: pr.bump,
-        stuck: NOT_APPLICABLE,
-      },
-      deps.rankPolicy,
-    );
-    let advisory: string | null = null;
-    let kevListed = false;
-    for (const c of candidates) {
-      const r = rank(
+    // A PR with candidates takes its terms from them, even when a candidate
+    // happens to tie the all-n/a baseline: seeding from the baseline and
+    // comparing strictly lost the advisory on exactly that tie, and the row
+    // said "no advisory" about a PR that fixes a real one.
+    let best: Ranking;
+    let advisory: string | null;
+    let kevListed: boolean;
+    if (candidates.length === 0) {
+      // No open alert for the package: a plain update.
+      best = rank(
         {
-          kev: c.kev,
-          epss: c.epss,
-          severity: c.severity,
+          kev: NOT_APPLICABLE,
+          epss: NOT_APPLICABLE,
+          severity: NOT_APPLICABLE,
           bump: pr.bump,
           stuck: NOT_APPLICABLE,
         },
         deps.rankPolicy,
       );
+      advisory = null;
+      kevListed = false;
+    } else {
+      const ranked = candidates.map((c) => ({
+        c,
+        r: rank(
+          {
+            kev: c.kev,
+            epss: c.epss,
+            severity: c.severity,
+            bump: pr.bump,
+            stuck: NOT_APPLICABLE,
+          },
+          deps.rankPolicy,
+        ),
+      }));
       // The worst-ranking alert wins: a PR fixing two advisories is judged by
       // the more urgent of them.
-      if (compareRankings(r, best) < 0) {
-        best = r;
-        advisory = c.advisory;
-        kevListed = c.kev === true;
-      }
+      ranked.sort((a, b) => compareRankings(a.r, b.r));
+      const winner = ranked[0] as (typeof ranked)[number];
+      best = winner.r;
+      advisory = winner.c.advisory;
+      kevListed = winner.c.kev === true;
     }
 
     items.push({

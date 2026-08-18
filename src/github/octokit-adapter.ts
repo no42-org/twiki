@@ -149,12 +149,14 @@ export class OctokitGitHub implements GitHubPort {
     for (;;) {
       const page: {
         search: {
+          issueCount: number;
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
           nodes: unknown[];
         };
       } = await gh.graphql(
         `query ($q: String!, $cursor: String) {
            search(type: ISSUE, query: $q, first: 100, after: $cursor) {
+             issueCount
              pageInfo { hasNextPage endCursor }
              nodes {
                ... on PullRequest {
@@ -201,10 +203,19 @@ export class OctokitGitHub implements GitHubPort {
           createdAt: pr.createdAt ?? "",
         });
       }
-      if (!page.search.pageInfo.hasNextPage) break;
+      if (!page.search.pageInfo.hasNextPage) {
+        // hasNextPage goes false at the 1000-result search ceiling exactly as
+        // it does at a genuine end, so completeness is judged against what the
+        // query matched, not against pagination.
+        const collected = prs.length + unreadable;
+        return {
+          prs,
+          unreadable,
+          truncated: collected < page.search.issueCount,
+        };
+      }
       cursor = page.search.pageInfo.endCursor;
     }
-    return { prs, unreadable };
   }
 
   async listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]> {
@@ -490,7 +501,6 @@ export class OctokitGitHub implements GitHubPort {
   }
 }
 
-/** Parse "Bump <name> from <a> to <b>" (and common variants) from a PR title. */
 /**
  * Translate a failed probe on OBSERVED behaviour, never on documented codes.
  *

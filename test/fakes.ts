@@ -187,6 +187,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   /** Update PRs per org, and the author lists each call asked for. */
   updatePrs = new Map<string, RawUpdatePr[]>();
   updatePrUnreadable = new Map<string, number>();
+  updatePrTruncated = new Set<string>();
   updatePrQueries: { org: string; authors: readonly string[] }[] = [];
 
   async listOpenUpdatePRs(
@@ -197,6 +198,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
     return {
       prs: this.updatePrs.get(org) ?? [],
       unreadable: this.updatePrUnreadable.get(org) ?? 0,
+      truncated: this.updatePrTruncated.has(org),
     };
   }
 

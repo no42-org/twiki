@@ -62,7 +62,14 @@ export function bumpFromTitle(title: string): {
   bump: BumpLevel | null;
 } {
   const dep = parseDependency(title);
-  if (!dep?.name) return { packageName: null, bump: null };
+  if (!dep?.name) {
+    // Renovate's format: "chore(deps): update dependency esbuild to v0.21.0".
+    // No from-version, so the bump stays unknown, but the package NAME is
+    // right there, and dropping it silently severed the alert-risk join for
+    // one of the two bots the README promises to cover.
+    const renovate = title.match(/update (?:dependency\s+)?(\S+)\s+to\s+\S+/i);
+    return { packageName: renovate?.[1] ?? null, bump: null };
+  }
   if (!dep.from || !dep.to) return { packageName: dep.name, bump: null };
   const bump = classifyBump(dep.from, dep.to, dep.name);
   // Indeterminate means classifyBump could not read the versions. That is
@@ -115,9 +122,13 @@ export async function collectUpdatePRs(
     const watched = page.prs.filter((pr) => deps.isWatched(pr.repo));
     const observations = watched.map(normalisePr);
 
-    const outcome = page.unreadable > 0 ? "partial" : "ok";
-    const detail =
-      page.unreadable > 0
+    // Truncation degrades the run exactly as unreadable nodes do: both mean
+    // the result set is incomplete, and a tombstone pass over an incomplete
+    // set concludes that every PR it did not see was closed.
+    const outcome = page.unreadable > 0 || page.truncated ? "partial" : "ok";
+    const detail = page.truncated
+      ? "search results truncated at GitHub's ceiling; nothing tombstoned"
+      : page.unreadable > 0
         ? `${page.unreadable} PR nodes could not be read`
         : undefined;
 
