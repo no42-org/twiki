@@ -817,7 +817,10 @@ export class OctokitGitHub implements GitHubPort {
       // conditional: an all-null one would count as "cached" while sending
       // no header, the unsolicited-304 state guarded against above.
       // A truncated listing earns no validator either: a 304 against it
-      // would confirm an incomplete set as the whole answer.
+      // would confirm an incomplete set as the whole answer. Unreachable
+      // while the cap exceeds one page (truncation implies many), so no
+      // test can kill it; kept because the two conditions are independent
+      // reasons and a future cap change must not silently couple them.
       validator:
         pages === 1 && !truncated
           ? validatorFrom(
