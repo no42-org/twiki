@@ -521,6 +521,303 @@ describe("update PRs in the queue (CAP-3)", () => {
   });
 });
 
+describe("the stuck flag and untriaged issues (CAP-2, CAP-3)", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const run = () =>
+    store.beginRun({
+      lane: "graphql-update-status",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T11:55:00.000Z",
+    });
+
+  const seedAlert = (
+    number: number,
+    over: Partial<Parameters<typeof makeAlert>[0]> = {},
+  ) => {
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number, ...over })),
+    ]);
+  };
+
+  const seedStatus = (
+    alertNumber: number,
+    update: { pullRequestNumber: number | null; error: string | null } | null,
+    repo = "no42-org/twiki",
+  ) => {
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: {
+          type: "dependabot_update_status",
+          key: `${repo}#${alertNumber}`,
+        },
+        payload: { repo, alertNumber, update },
+      },
+    ]);
+  };
+
+  const seedPr = (nodeId: string, over: Partial<UpdatePrObservation> = {}) => {
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "dependency_update_pr", key: nodeId },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 1,
+          title: "Bump x from 1.0.0 to 1.0.1",
+          author: "dependabot",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/1",
+          createdAt: "2026-08-17T00:00:00.000Z",
+          packageName: "x",
+          bump: "patch",
+          ...over,
+        } satisfies UpdatePrObservation,
+      },
+    ]);
+  };
+
+  const seedIssue = (nodeId: string, over: Record<string, unknown> = {}) => {
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "issue", key: nodeId },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 5,
+          title: "Crash on startup",
+          author: "some-user",
+          htmlUrl: "https://github.com/no42-org/twiki/issues/5",
+          createdAt: "2026-08-17T00:00:00.000Z",
+          ...over,
+        },
+      },
+    ]);
+  };
+
+  const seedKev = (cveIds: string[]) => {
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: KEV_SUBJECT,
+        payload: { version: "v", released: "r", cveIds },
+      },
+    ]);
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "queues-"));
+    store = SqliteStore.openForWrite(join(dir, "qs.db"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("distinguishes stuck, unknown, and prepared on otherwise-equal alerts", () => {
+    // CAP-3's remaining criterion: an update GitHub could not prepare is
+    // visible as stuck rather than silently absent. Four alerts identical on
+    // every other term, so the stuck flag alone decides the order: a named
+    // error first, then never-looked (unknown, AD-20), then the two facts
+    // (prepared, and not-attempted) tied at the bottom.
+    seedKev(["CVE-0000-0000"]);
+    for (const n of [1, 2, 3, 4]) seedAlert(n);
+    seedStatus(1, { pullRequestNumber: null, error: "pull_request_limit" });
+    seedStatus(3, { pullRequestNumber: 10, error: null });
+    seedStatus(4, null);
+    // Alert 2 has no status row at all: we have not looked.
+
+    const items = buildQueue(store, NOW, DEPS).items;
+
+    expect(items.map((i) => i.number)).toEqual([1, 2, 3, 4]);
+    expect(items[0]?.explanation).toContain(
+      "GitHub could not prepare this update",
+    );
+    expect(items[1]?.explanation).toContain("stuck state unknown");
+    expect(items[2]?.explanation).toContain("update prepared normally");
+    expect(items[3]?.explanation).toContain(
+      "no Dependabot fix attempt on record",
+    );
+  });
+
+  it("lets stuck break ties only, never overturn a higher term", () => {
+    // AD-20: the chain order is code. A stuck medium alert must not outrank a
+    // critical one whose update is fine.
+    seedKev(["CVE-0000-0000"]);
+    seedAlert(1, { severity: "medium" });
+    seedAlert(2, { severity: "critical" });
+    seedStatus(1, { pullRequestNumber: null, error: "some_error" });
+    seedStatus(2, { pullRequestNumber: 10, error: null });
+
+    const items = buildQueue(store, NOW, DEPS).items;
+    expect(items.map((i) => i.number)).toEqual([2, 1]);
+  });
+
+  it("joins a PR to its alert by the status's PR number, not the title", () => {
+    // GitHub's own statement of which alert a PR fixes beats the parsed
+    // package heuristic: here the title's name matches nothing, so only the
+    // precise join can carry the advisory across.
+    seedKev(["CVE-2021-44228"]);
+    seedAlert(1, {
+      packageName: "org.apache.logging.log4j:log4j-core",
+      cveId: "CVE-2021-44228",
+    });
+    seedStatus(1, { pullRequestNumber: 40, error: null });
+    seedPr("PR_precise", {
+      number: 40,
+      packageName: "log4j-core",
+      title: "Bump log4j-core from 2.14.0 to 2.17.1",
+    });
+
+    const pr = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "update_pr",
+    );
+
+    expect(pr?.advisory).toBe("CVE-2021-44228");
+    expect(pr?.kevListed).toBe(true);
+    // A PR we are looking at was prepared: the linked status settles stuck.
+    expect(pr?.explanation).toContain("update prepared normally");
+  });
+
+  it("prefers the precise join over a package-name candidate", () => {
+    // Two alerts share the package name; the status says this PR fixes the
+    // harmless one. The heuristic alone would inherit the worst of both.
+    seedKev(["CVE-2021-44228"]);
+    seedAlert(1, {
+      packageName: "log4j",
+      cveId: "CVE-2021-44228",
+      severity: "critical",
+    });
+    seedAlert(2, {
+      packageName: "log4j",
+      cveId: "CVE-2026-0002",
+      epssPercentage: 0.001,
+      severity: "low",
+    });
+    seedStatus(2, { pullRequestNumber: 50, error: null });
+    seedPr("PR_linked", { number: 50, packageName: "log4j" });
+
+    const pr = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "update_pr",
+    );
+    expect(pr?.advisory).toBe("CVE-2026-0002");
+    expect(pr?.kevListed).toBe(false);
+  });
+
+  it("marks a PR stuck when its status carries both a PR number and an error", () => {
+    // A status can name a PR AND an error: the PR opened, a later update
+    // attempt failed. The alert row says "could not prepare", and the PR row
+    // one line away must not say "prepared normally" about the same update.
+    seedKev(["CVE-0000-0000"]);
+    seedAlert(1, { packageName: "left-pad" });
+    seedStatus(1, { pullRequestNumber: 60, error: "update_not_possible" });
+    seedPr("PR_both", { number: 60, packageName: "left-pad" });
+
+    const items = buildQueue(store, NOW, DEPS).items;
+    const pr = items.find((i) => i.kind === "update_pr");
+    const alert = items.find((i) => i.kind === "alert");
+
+    expect(pr?.explanation).toContain("GitHub could not prepare this update");
+    expect(alert?.explanation).toContain(
+      "GitHub could not prepare this update",
+    );
+  });
+
+  it("does not fall back to the package heuristic when the linked alert is unreadable", () => {
+    // The status names WHICH alert the PR fixes. If that row cannot be read,
+    // the honest answer is unknown, not the terms of a different alert that
+    // happens to share the package name: that is the wrong-alert inheritance
+    // the precise join exists to prevent.
+    seedKev(["CVE-2021-44228"]);
+    seedAlert(1, {
+      packageName: "log4j",
+      cveId: "CVE-2021-44228",
+      severity: "critical",
+    });
+    // Alert 2 is what the status names, and it is malformed.
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "dependabot_alert", key: "no42-org/twiki#2" },
+        payload: { number: 2, repo: "no42-org/twiki", cveId: 42 },
+      },
+    ]);
+    seedStatus(2, { pullRequestNumber: 70, error: null });
+    seedPr("PR_ghost", { number: 70, packageName: "log4j" });
+
+    const pr = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "update_pr",
+    );
+
+    // Not the KEV-listed critical from alert 1, and not a plain update either:
+    // there IS an advisory, we failed to read it, so the terms are unknown.
+    expect(pr?.kevListed).toBe(false);
+    expect(pr?.advisory).toBeNull();
+    expect(pr?.explanation).toContain("KEV status unknown");
+    expect(pr?.explanation).toContain("update prepared normally");
+  });
+
+  it("degrades a malformed status row to unknown, not to a crash or a zero", () => {
+    seedKev(["CVE-0000-0000"]);
+    seedAlert(1);
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "dependabot_update_status", key: "no42-org/twiki#1" },
+        payload: { repo: "no42-org/twiki", alertNumber: 1, update: "yes" },
+      },
+    ]);
+
+    const queue = buildQueue(store, NOW, DEPS);
+
+    // Not counted as an unshown item: the degradation is visible on the alert
+    // row itself, which honestly says we do not know.
+    expect(queue.unreadable).toBe(0);
+    expect(queue.items[0]?.explanation).toContain("stuck state unknown");
+  });
+
+  it("ranks an untriaged issue below every measured alert", () => {
+    // CAP-2: the issue is on the list, but all its security terms are facts
+    // of absence, so anything we actually measured outranks it.
+    seedKev(["CVE-0000-0000"]);
+    seedAlert(1, { epssPercentage: 0.001, severity: "low" });
+    seedIssue("I_5");
+
+    const items = buildQueue(store, NOW, DEPS).items;
+
+    expect(items.map((i) => i.kind)).toEqual(["alert", "issue"]);
+    const issue = items[1];
+    expect(issue?.explanation).toBe("untriaged issue, nobody assigned");
+    expect(issue?.title).toBe("Crash on startup");
+    expect(issue?.number).toBe(5);
+  });
+
+  it("counts a malformed issue row instead of dropping or throwing", () => {
+    // Each bad row is wrong in exactly ONE field, so each check in the guard
+    // is the only thing standing between that row and the page: a fixture
+    // malformed in several fields dies on whichever check happens to run
+    // first and pins none of the others.
+    seedIssue("I_ok");
+    seedIssue("I_bad_number", { number: "five" });
+    seedIssue("I_bad_title", { title: 42 });
+    // The one that detonates: htmlUrl gets .startsWith() called on it.
+    seedIssue("I_bad_url", { htmlUrl: 42 });
+    // A field NOTHING renders must not hide the row: only the fields the
+    // page consumes are validated.
+    seedIssue("I_odd_author", { author: 42, number: 6 });
+
+    const queue = buildQueue(store, NOW, DEPS);
+    expect(queue.items.filter((i) => i.kind === "issue")).toHaveLength(2);
+    expect(queue.unreadable).toBe(3);
+  });
+
+  it("drops a non-https issue link but keeps the row", () => {
+    seedIssue("I_evil", { htmlUrl: "javascript:alert(1)" });
+    const issue = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "issue",
+    );
+    expect(issue).toBeDefined();
+    expect(issue?.htmlUrl).toBeNull();
+  });
+});
+
 describe("the queue page", () => {
   let dir: string;
   let store: SqliteStore;
@@ -596,7 +893,7 @@ describe("the queue page", () => {
     expect(html).toContain("incomplete");
   });
 
-  it("counts alerts and PRs separately in the header", async () => {
+  it("counts alerts, PRs and issues separately in the header", async () => {
     const r = run();
     store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
       normalise(makeAlert({ number: 1 })),
@@ -613,13 +910,27 @@ describe("the queue page", () => {
           bump: "patch",
         },
       },
+      {
+        subject: { type: "issue", key: "I_h" },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 3,
+          title: "Crash on startup",
+          author: "some-user",
+          htmlUrl: "https://github.com/no42-org/twiki/issues/3",
+          createdAt: "2026-08-17T00:00:00.000Z",
+        },
+      },
     ]);
 
     const html = await (await app().request("/queue")).text();
-    // "2 open alerts" over rows that are half PRs read as a collector bug to
-    // anyone reconciling against GitHub's security tab.
+    // "3 open alerts" over rows that are one of each read as a collector bug
+    // to anyone reconciling against GitHub's security tab.
     expect(html).toContain("1 open alerts");
     expect(html).toContain("1 update PRs");
+    expect(html).toContain("1 untriaged issues");
+    // The issue's title is on the row: repo#number alone forces a click.
+    expect(html).toContain("Crash on startup");
   });
 
   it("labels the ordering a local policy, never SSVC (AD-20)", async () => {

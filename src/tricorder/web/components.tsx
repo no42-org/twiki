@@ -216,6 +216,8 @@ export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
       {queue.items.filter((i) => i.kind === "alert").length} open alerts
       {" · "}
       {queue.items.filter((i) => i.kind === "update_pr").length} update PRs
+      {" · "}
+      {queue.items.filter((i) => i.kind === "issue").length} untriaged issues
       {" · KEV catalogue "}
       {queue.kev.usable
         ? `${queue.kev.version ?? "?"} · ${queue.kev.age}`
@@ -251,6 +253,8 @@ export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
               <td>
                 {item.kind === "update_pr" ? (
                   <span class="badge">PR</span>
+                ) : item.kind === "issue" ? (
+                  <span class="badge">issue</span>
                 ) : null}{" "}
                 {item.htmlUrl ? (
                   <a href={item.htmlUrl}>
@@ -260,6 +264,7 @@ export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
                   `${item.repo}#${item.number}`
                 )}
                 {item.packageName ? ` · ${item.packageName}` : ""}
+                {item.title ? ` · ${item.title}` : ""}
                 {item.advisory ? ` · ${item.advisory}` : ""}
               </td>
               <td>

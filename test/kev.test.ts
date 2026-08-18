@@ -343,6 +343,8 @@ describe("the real schedule table", () => {
     coverage: noop,
     kev: noop,
     updatePrs: noop,
+    issues: noop,
+    updateStatuses: noop,
   });
 
   const lane = (name: string) => schedules.find((s) => s.lane === name);
@@ -350,7 +352,9 @@ describe("the real schedule table", () => {
   it("schedules every lane the collector is supposed to run", () => {
     expect(schedules.map((s) => s.lane).sort()).toEqual([
       "coverage",
+      "graphql-issues",
       "graphql-update-prs",
+      "graphql-update-status",
       "kev",
       "rest-org-dependabot",
     ]);
@@ -366,6 +370,8 @@ describe("the real schedule table", () => {
       coverage: noop,
       kev: noop,
       updatePrs: null,
+      issues: noop,
+      updateStatuses: noop,
     });
     expect(without.map((s) => s.lane)).not.toContain("graphql-update-prs");
   });
@@ -377,7 +383,13 @@ describe("the real schedule table", () => {
   it("keeps the GitHub lanes off that pseudo-installation", () => {
     // The bug this restriction fixed: both lanes swept `cisa`, failed, and the
     // run reported failure it had not really had.
-    for (const name of ["rest-org-dependabot", "coverage"]) {
+    for (const name of [
+      "rest-org-dependabot",
+      "coverage",
+      "graphql-update-prs",
+      "graphql-issues",
+      "graphql-update-status",
+    ]) {
       const installations = lane(name)?.installations;
       expect(installations, name).toBeDefined();
       expect(installations, name).not.toContain(KEV_INSTALLATION);

@@ -12,7 +12,9 @@ import {
 } from "../../core/rank.js";
 import { normaliseSeverity } from "../../core/severity.js";
 import type { AlertObservation } from "../collect/dependabot-alerts.js";
+import type { IssueObservation } from "../collect/issues.js";
 import type { UpdatePrObservation } from "../collect/update-prs.js";
+import type { UpdateStatusObservation } from "../collect/update-status.js";
 import { kevSignal, loadKevIndex } from "../kev-lookup.js";
 import type { StorePort } from "../store/port.js";
 import {
@@ -30,12 +32,17 @@ import {
 // review rounds flagged in a row.
 
 export interface QueueItem {
-  kind: "alert" | "update_pr";
-  /** The subject key: `owner/name#number` for alerts, the node id for PRs. */
+  kind: "alert" | "update_pr" | "issue";
+  /**
+   * The subject key: `owner/name#number` for alerts, the node id for PRs and
+   * issues.
+   */
   key: string;
   repo: string;
   number: number;
   packageName: string | null;
+  /** The issue title. Null for alerts and PRs, whose package says enough. */
+  title: string | null;
   /** The advisory id shown to the reader: CVE when present, else GHSA. */
   advisory: string | null;
   htmlUrl: string | null;
@@ -119,6 +126,48 @@ function readPr(payload: unknown): UpdatePrObservation | null {
   return p;
 }
 
+/**
+ * The issue shape check, same posture as readAlert: counted, not guessed at.
+ */
+function readIssue(payload: unknown): IssueObservation | null {
+  const i = payload as IssueObservation | null | undefined;
+  if (!i || typeof i !== "object") return null;
+  if (typeof i.number !== "number" || typeof i.repo !== "string") return null;
+  // Only the fields the page consumes: rejecting a row over a field nothing
+  // renders (author, createdAt) would hide a real issue behind the
+  // "items not shown" banner for no reader-visible reason.
+  if (typeof i.title !== "string") return null;
+  if (typeof i.htmlUrl !== "string") return null;
+  return i;
+}
+
+/**
+ * The update-status shape check.
+ *
+ * A malformed row is skipped rather than counted into `unreadable`: a status
+ * is never itself a queue item, and its absence already degrades honestly to
+ * "stuck state unknown" on the alert it belonged to (AD-20), which the page
+ * shows. Counting it would make the "items not shown" banner claim items
+ * that were never items.
+ */
+function readStatus(payload: unknown): UpdateStatusObservation | null {
+  const s = payload as UpdateStatusObservation | null | undefined;
+  if (!s || typeof s !== "object") return null;
+  if (typeof s.repo !== "string") return null;
+  if (typeof s.alertNumber !== "number") return null;
+  if (s.update !== null) {
+    if (!s.update || typeof s.update !== "object") return null;
+    if (
+      s.update.pullRequestNumber !== null &&
+      typeof s.update.pullRequestNumber !== "number"
+    ) {
+      return null;
+    }
+    if (!stringOrNull(s.update.error)) return null;
+  }
+  return s;
+}
+
 export function buildQueue(
   store: StorePort,
   now: Date,
@@ -126,21 +175,47 @@ export function buildQueue(
 ): Queue {
   const index = loadKevIndex(store, now, deps.kevPolicy);
 
+  // What dependabotUpdate said, read before the alert pass because both later
+  // passes consume it: the alert's stuck flag comes from the status keyed like
+  // the alert itself, and a status naming a PR number is the precise
+  // alert-to-PR link the package heuristic only approximates.
+  const statusByAlertKey = new Map<string, UpdateStatusObservation>();
+  const linksByPr = new Map<
+    string,
+    { alertKey: string; error: string | null }[]
+  >();
+  for (const row of store.currentByType("dependabot_update_status")) {
+    if (row.state !== "present") continue;
+    const status = readStatus(row.payload);
+    if (status === null) continue;
+    statusByAlertKey.set(row.subject.key, status);
+    if (status.update?.pullRequestNumber != null) {
+      const prKey = `${status.repo.toLowerCase()}|${status.update.pullRequestNumber}`;
+      const list = linksByPr.get(prKey) ?? [];
+      // The error rides along: a status can carry BOTH a PR and an error
+      // (the PR opened, a later update attempt failed), and the PR row must
+      // agree with the alert row about it rather than say "prepared
+      // normally" one line away from "could not prepare".
+      list.push({ alertKey: row.subject.key, error: status.update.error });
+      linksByPr.set(prKey, list);
+    }
+  }
+
   const items: QueueItem[] = [];
   let unreadable = 0;
 
   // Filled during the alert pass, read during the PR pass. One derivation of
   // kev and severity per alert: two copy-parallel loops let the two drift, and
   // a PR could "inherit" a risk disagreeing with the alert row beside it.
-  const alertsByPackage = new Map<
-    string,
-    {
-      kev: ReturnType<typeof kevSignal>;
-      epss: number | null;
-      severity: ReturnType<typeof normaliseSeverity>;
-      advisory: string | null;
-    }[]
-  >();
+  interface AlertTerms {
+    kev: ReturnType<typeof kevSignal>;
+    epss: number | null;
+    severity: ReturnType<typeof normaliseSeverity>;
+    advisory: string | null;
+  }
+  const alertsByPackage = new Map<string, AlertTerms[]>();
+  // The same triples keyed by subject key, for the precise status-driven join.
+  const alertsByKey = new Map<string, AlertTerms>();
 
   for (const row of store.currentByType("dependabot_alert")) {
     if (row.state !== "present") continue;
@@ -152,17 +227,31 @@ export function buildQueue(
 
     const kev = kevSignal(index, alert.cveId);
     const severity = normaliseSeverity(alert.severity ?? "");
+    const terms: AlertTerms = {
+      kev,
+      epss: alert.epssPercentage,
+      severity,
+      advisory: alert.cveId ?? alert.ghsaId ?? null,
+    };
+    alertsByKey.set(row.subject.key, terms);
     if (alert.packageName !== null) {
       const key = `${alert.repo.toLowerCase()}|${alert.packageName.toLowerCase()}`;
       const list = alertsByPackage.get(key) ?? [];
-      list.push({
-        kev,
-        epss: alert.epssPercentage,
-        severity,
-        advisory: alert.cveId ?? alert.ghsaId ?? null,
-      });
+      list.push(terms);
       alertsByPackage.set(key, list);
     }
+    // The stuck flag (CAP-3): a status naming an error means GitHub tried to
+    // prepare the fix and could not, so nothing is coming automatically. No
+    // status row means we have not looked yet, which is unknown, never "fine"
+    // (AD-20); a status whose update is null means GitHub is not attempting a
+    // fix at all, which is a fact of absence (n/a), not a gap.
+    const status = statusByAlertKey.get(row.subject.key);
+    const stuck =
+      status === undefined
+        ? null
+        : status.update === null
+          ? NOT_APPLICABLE
+          : status.update.error !== null;
     const ranking = rank(
       {
         kev,
@@ -173,9 +262,9 @@ export function buildQueue(
         // An unrecognised severity becomes null and ranks as unknown, which is
         // what the adapter's own "unknown" value should do.
         severity,
-        // An alert is not an update: nothing to bump, nothing to be stuck.
+        // An alert is not an update: nothing to bump.
         bump: NOT_APPLICABLE,
-        stuck: NOT_APPLICABLE,
+        stuck,
       },
       deps.rankPolicy,
     );
@@ -186,6 +275,7 @@ export function buildQueue(
       repo: alert.repo,
       number: alert.number,
       packageName: alert.packageName ?? null,
+      title: null,
       advisory: alert.cveId ?? alert.ghsaId ?? null,
       // GitHub only ever hands out https URLs, so anything else in this field
       // is a corrupted or foreign row, and this is the first store-derived
@@ -219,16 +309,34 @@ export function buildQueue(
       continue;
     }
 
+    // The precise join first: a status row naming this PR's number is
+    // GitHub's own statement of which alert the PR fixes, so when one exists
+    // it wins over the title-parsed package heuristic, INCLUDING when the
+    // named alert row cannot be read: falling back to the heuristic there
+    // would re-inherit a different alert's risk, the exact wrong-alert
+    // inheritance the join exists to fix. The stuck term comes from the
+    // linked statuses' own error fields, not from the PR's existence.
+    const links = linksByPr.get(`${pr.repo.toLowerCase()}|${pr.number}`) ?? [];
+    const linked = links
+      .map((link) => alertsByKey.get(link.alertKey))
+      .filter((terms): terms is AlertTerms => terms !== undefined);
+
     const candidates =
-      pr.packageName === null
-        ? []
-        : // Folded on both sides: the alert name comes from GitHub's
-          // ecosystem-normalised advisory data (pip says django) while the PR
-          // title carries manifest casing (Bump Django from ...), and a case
-          // miss silently loses the CAP-3 risk inheritance.
-          (alertsByPackage.get(
-            `${pr.repo.toLowerCase()}|${pr.packageName.toLowerCase()}`,
-          ) ?? []);
+      links.length > 0
+        ? linked
+        : pr.packageName === null
+          ? []
+          : // Folded on both sides: the alert name comes from GitHub's
+            // ecosystem-normalised advisory data (pip says django) while the PR
+            // title carries manifest casing (Bump Django from ...), and a case
+            // miss silently loses the CAP-3 risk inheritance.
+            (alertsByPackage.get(
+              `${pr.repo.toLowerCase()}|${pr.packageName.toLowerCase()}`,
+            ) ?? []);
+    const prStuck =
+      links.length === 0
+        ? NOT_APPLICABLE
+        : links.some((link) => link.error !== null);
 
     // A PR with candidates takes its terms from them, even when a candidate
     // happens to tie the all-n/a baseline: seeding from the baseline and
@@ -238,14 +346,18 @@ export function buildQueue(
     let advisory: string | null;
     let kevListed: boolean;
     if (candidates.length === 0) {
-      // No open alert for the package: a plain update.
+      // Two different absences (AD-20). A status names an alert we could not
+      // read: there IS an advisory, we failed to see it, so the security
+      // terms are unknown. No link and no package match: a plain update, and
+      // its security terms are facts of absence.
+      const linkedButUnreadable = links.length > 0;
       best = rank(
         {
-          kev: NOT_APPLICABLE,
-          epss: NOT_APPLICABLE,
-          severity: NOT_APPLICABLE,
+          kev: linkedButUnreadable ? null : NOT_APPLICABLE,
+          epss: linkedButUnreadable ? null : NOT_APPLICABLE,
+          severity: linkedButUnreadable ? null : NOT_APPLICABLE,
           bump: pr.bump,
-          stuck: NOT_APPLICABLE,
+          stuck: prStuck,
         },
         deps.rankPolicy,
       );
@@ -260,7 +372,7 @@ export function buildQueue(
             epss: c.epss,
             severity: c.severity,
             bump: pr.bump,
-            stuck: NOT_APPLICABLE,
+            stuck: prStuck,
           },
           deps.rankPolicy,
         ),
@@ -280,11 +392,53 @@ export function buildQueue(
       repo: pr.repo,
       number: pr.number,
       packageName: pr.packageName,
+      title: null,
       advisory,
       htmlUrl: pr.htmlUrl.startsWith("https://") ? pr.htmlUrl : null,
       explanation: best.explanation,
       kevListed,
       ranking: best,
+      freshness: freshness(row.verifiedAt, now, deps.policy),
+      age: ageLabel(row.verifiedAt, now),
+    });
+  }
+
+  // Untriaged issues (CAP-2). Every security term is a fact of absence: an
+  // issue carries no CVE, no advisory and no update, so all-n/a is the honest
+  // ranking and it sinks below every alert we actually measured. The chain's
+  // generated explanation would recite five absences, so the row says the one
+  // thing that is true instead.
+  for (const row of store.currentByType("issue")) {
+    if (row.state !== "present") continue;
+    const issue = readIssue(row.payload);
+    if (issue === null) {
+      unreadable++;
+      continue;
+    }
+
+    const ranking = rank(
+      {
+        kev: NOT_APPLICABLE,
+        epss: NOT_APPLICABLE,
+        severity: NOT_APPLICABLE,
+        bump: NOT_APPLICABLE,
+        stuck: NOT_APPLICABLE,
+      },
+      deps.rankPolicy,
+    );
+
+    items.push({
+      kind: "issue",
+      key: row.subject.key,
+      repo: issue.repo,
+      number: issue.number,
+      packageName: null,
+      title: issue.title,
+      advisory: null,
+      htmlUrl: issue.htmlUrl.startsWith("https://") ? issue.htmlUrl : null,
+      explanation: "untriaged issue, nobody assigned",
+      kevListed: false,
+      ranking,
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
     });

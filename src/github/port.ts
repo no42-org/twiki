@@ -88,6 +88,27 @@ export interface GitHubReadPort {
     authors: readonly string[],
   ): Promise<UpdatePrPage>;
 
+  /**
+   * Open issues in the given repositories that nobody has picked up.
+   *
+   * Search with explicit qualifiers, never @me: an installation token has no
+   * user identity, and the whole-account issue endpoints are excluded from
+   * installation tokens entirely. Scoped per repository, not `org:`, because
+   * `org:` matches only organization accounts (a personal-account
+   * installation would read as a confident zero) and an org-wide result set
+   * spends the 1000-result search ceiling on unwatched repositories.
+   */
+  listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage>;
+
+  /**
+   * What dependabotUpdate reports per open alert of one repository.
+   *
+   * GraphQL-only: the REST alert payload carries no link to the update PR and
+   * no error, and this is the only place "GitHub could not prepare the fix"
+   * exists at all.
+   */
+  listDependabotUpdateStatuses(repo: RepoRef): Promise<RawUpdateStatus[]>;
+
   listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]>;
   prChecks(repo: RepoRef, headSha: string): Promise<CheckStatus>;
   branchChecks(repo: RepoRef, branch: string): Promise<CheckStatus>;
@@ -189,6 +210,43 @@ export interface UpdatePrPage {
    * PR beyond the cap was closed.
    */
   truncated: boolean;
+}
+
+/** An open, unassigned issue, as the search returned it. */
+export interface RawIssue {
+  /** GraphQL node id: the issue's stable identity (AD-22). */
+  nodeId: string;
+  repo: RepoRef;
+  number: number;
+  title: string;
+  author: string;
+  htmlUrl: string;
+  createdAt: string;
+}
+
+export interface IssuePage {
+  issues: RawIssue[];
+  /** Nodes the mapper could not read. Never silently discarded. */
+  unreadable: number;
+  /** True when GitHub returned fewer results than the query matched. */
+  truncated: boolean;
+}
+
+/** What dependabotUpdate says about one alert's automated fix. */
+export interface RawUpdateStatus {
+  repo: RepoRef;
+  alertNumber: number;
+  /**
+   * Null when GitHub is not attempting an automated fix for this alert at
+   * all, which is a fact (n/a), not a gap: collapsing it into "no error"
+   * would report an update nobody is preparing as prepared normally.
+   */
+  update: {
+    /** The PR Dependabot opened for it, when one exists. */
+    pullRequestNumber: number | null;
+    /** Why GitHub could not prepare the update, when it could not. */
+    error: string | null;
+  } | null;
 }
 
 /** Repository metadata the coverage lane needs, one call per 100 repos. */

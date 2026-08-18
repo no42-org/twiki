@@ -263,8 +263,13 @@ function stuckTerm(stuck: Signal<boolean>): RankTerm {
     name: "stuck",
     rank: scaleRank(stuck, [false, true]),
     reason:
+      // Worded to be true in every n/a state: an alert whose status says
+      // GitHub is not attempting a fix, a Renovate PR no Dependabot
+      // machinery is behind, and a Dependabot PR no stored status names
+      // (which IS an attempted fix, so "no fix attempted" would be false on
+      // its face there).
       stuck === NOT_APPLICABLE
-        ? "not an update"
+        ? "no Dependabot fix attempt on record"
         : stuck === null
           ? "stuck state unknown"
           : stuck

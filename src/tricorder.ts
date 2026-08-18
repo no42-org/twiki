@@ -24,6 +24,10 @@ import {
   collectOrgAlerts,
 } from "./tricorder/collect/dependabot-alerts.js";
 import {
+  collectIssues,
+  LANE as ISSUE_LANE,
+} from "./tricorder/collect/issues.js";
+import {
   collectKev,
   KEV_INSTALLATION,
   LANE as KEV_LANE,
@@ -38,6 +42,10 @@ import {
   collectUpdatePRs,
   LANE as UPDATE_PR_LANE,
 } from "./tricorder/collect/update-prs.js";
+import {
+  collectUpdateStatuses,
+  LANE as UPDATE_STATUS_LANE,
+} from "./tricorder/collect/update-status.js";
 import { diagnose, formatReport } from "./tricorder/doctor.js";
 import type { RunOutcome, RunScope } from "./tricorder/store/port.js";
 import { SqliteStore } from "./tricorder/store/sqlite-store.js";
@@ -144,6 +152,8 @@ export function buildSchedules(deps: {
   updatePrs:
     | ((installation: string) => Promise<{ outcome: RunOutcome }>)
     | null;
+  issues: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  updateStatuses: (installation: string) => Promise<{ outcome: RunOutcome }>;
 }): LaneSchedule[] {
   const schedules: LaneSchedule[] = [
     {
@@ -175,6 +185,23 @@ export function buildSchedules(deps: {
             run: deps.updatePrs,
           },
         ]),
+    {
+      lane: ISSUE_LANE,
+      scope: "full",
+      cadenceMs: ALERT_CADENCE_MS,
+      installations: deps.installations,
+      run: deps.issues,
+    },
+    // Always on, deliberately not gated on the bots config like updatePrs: a
+    // STUCK update is exactly one with no PR to search for, and tying the two
+    // together would hide the stuck state from anyone without bots configured.
+    {
+      lane: UPDATE_STATUS_LANE,
+      scope: "full",
+      cadenceMs: ALERT_CADENCE_MS,
+      installations: deps.installations,
+      run: deps.updateStatuses,
+    },
     {
       lane: COVERAGE_LANE,
       scope: "full",
@@ -361,6 +388,9 @@ async function main(): Promise<void> {
                 "full",
               )
           : null,
+      issues: (installation) => collectIssues(laneDeps, installation, "full"),
+      updateStatuses: (installation) =>
+        collectUpdateStatuses(laneDeps, installation, "full"),
     });
 
     if (config.bots.length === 0) {

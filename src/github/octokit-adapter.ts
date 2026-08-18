@@ -25,11 +25,14 @@ import type {
   GitHubPort,
   GitHubReadPort,
   InstallationRef,
+  IssuePage,
   OrgAlertPage,
   RawDependabotAlert,
+  RawIssue,
   RawPullRequest,
   RawRepoMeta,
   RawUpdatePr,
+  RawUpdateStatus,
   UpdatePrPage,
 } from "./port.js";
 
@@ -52,6 +55,129 @@ export type OctokitResolver = (repo: RepoRef) => Promise<Octokit>;
  * one, so its wiring does not need to supply this.
  */
 export type OrgOctokitResolver = (org: string) => Promise<Octokit>;
+
+/**
+ * GitHub caps search queries at 256 characters, so the watched repositories
+ * are spread over as many queries as their slugs need. Pure and exported so
+ * the packing (every repo present, every query under the cap, base qualifiers
+ * on each) is testable without an API.
+ */
+export const SEARCH_QUERY_MAX = 256;
+const ISSUE_SEARCH_BASE = "is:issue is:open no:assignee";
+
+export function issueSearchQueries(repos: readonly RepoRef[]): string[] {
+  const queries: string[] = [];
+  let current = ISSUE_SEARCH_BASE;
+  for (const repo of repos) {
+    const qualifier = ` repo:${repo.owner}/${repo.name}`;
+    if (current.length + qualifier.length > SEARCH_QUERY_MAX) {
+      queries.push(current);
+      current = ISSUE_SEARCH_BASE + qualifier;
+    } else {
+      current += qualifier;
+    }
+  }
+  if (current !== ISSUE_SEARCH_BASE) queries.push(current);
+  return queries;
+}
+
+/**
+ * One paginated node search, shared by the PR and issue lanes. Extracted
+ * because the two copies each carried the subtle ceiling arithmetic below,
+ * and a fix landing in one copy would leave the other lane tombstoning
+ * against an incomplete result set.
+ *
+ * PullRequest and Issue nodes are read through one shape: the two fragments
+ * request the same fields.
+ */
+async function runNodeSearch(
+  gh: Octokit,
+  nodeType: "PullRequest" | "Issue",
+  query: string,
+): Promise<{ items: RawUpdatePr[]; unreadable: number; truncated: boolean }> {
+  const items: RawUpdatePr[] = [];
+  let unreadable = 0;
+  let cursor: string | null = null;
+  for (;;) {
+    const page: {
+      search: {
+        issueCount: number;
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        nodes: unknown[];
+      } | null;
+    } = await gh.graphql(
+      `query ($q: String!, $cursor: String) {
+         search(type: ISSUE, query: $q, first: 100, after: $cursor) {
+           issueCount
+           pageInfo { hasNextPage endCursor }
+           nodes {
+             ... on ${nodeType} {
+               id
+               number
+               title
+               url
+               createdAt
+               author { login }
+               repository { name owner { login } }
+             }
+           }
+         }
+       }`,
+      { q: query, cursor },
+    );
+    if (!page.search) {
+      // A missing container is a failed read, never an empty result: treating
+      // it as complete would hand the lane a clean "ok" sweep whose tombstone
+      // pass concludes everything unseen was closed.
+      throw new Error(`search returned no result container for: ${query}`);
+    }
+    for (const node of page.search.nodes) {
+      const item = node as {
+        id?: string;
+        number?: number;
+        title?: string;
+        url?: string;
+        createdAt?: string;
+        author?: { login?: string } | null;
+        repository?: { name?: string; owner?: { login?: string } } | null;
+      } | null;
+      if (
+        !item?.id ||
+        typeof item.number !== "number" ||
+        typeof item.title !== "string" ||
+        !item.repository?.owner?.login ||
+        !item.repository.name
+      ) {
+        unreadable++;
+        continue;
+      }
+      items.push({
+        nodeId: item.id,
+        repo: {
+          owner: item.repository.owner.login,
+          name: item.repository.name,
+        },
+        number: item.number,
+        title: item.title,
+        author: item.author?.login ?? "unknown",
+        htmlUrl: item.url ?? "",
+        createdAt: item.createdAt ?? "",
+      });
+    }
+    if (!page.search.pageInfo.hasNextPage) {
+      // hasNextPage goes false at the 1000-result search ceiling exactly as
+      // it does at a genuine end, so completeness is judged against what the
+      // query matched, not against pagination.
+      const collected = items.length + unreadable;
+      return {
+        items,
+        unreadable,
+        truncated: collected < page.search.issueCount,
+      };
+    }
+    cursor = page.search.pageInfo.endCursor;
+  }
+}
 
 /**
  * GitHubPort backed by Octokit. Scoped to the allowlist: every call asserts the
@@ -143,79 +269,115 @@ export class OctokitGitHub implements GitHubPort {
       ...authors.map((a) => `author:${a}`),
     ].join(" ");
 
-    const prs: RawUpdatePr[] = [];
+    const page = await runNodeSearch(gh, "PullRequest", query);
+    return {
+      prs: page.items,
+      unreadable: page.unreadable,
+      truncated: page.truncated,
+    };
+  }
+
+  async listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listUntriagedIssues needs an org resolver; this client was built without one",
+      );
+    }
+    if (repos.length === 0)
+      return { issues: [], unreadable: 0, truncated: false };
+    const gh = await this.orgOctokitFor(repos[0]?.owner ?? "");
+
+    // One search per query chunk. Scoped by repo: qualifiers, not org:, for
+    // two reasons: `org:` matches only organization accounts, so a
+    // personal-account installation would get a confident-empty "ok" sweep
+    // every time; and an org-wide query counts every unwatched repository's
+    // issues against the 1000-result ceiling, which can starve the watched
+    // repositories out of the window entirely while still looking complete.
+    const issues: RawIssue[] = [];
     let unreadable = 0;
+    let truncated = false;
+    for (const query of issueSearchQueries(repos)) {
+      const page = await runNodeSearch(gh, "Issue", query);
+      issues.push(...page.items);
+      unreadable += page.unreadable;
+      truncated = truncated || page.truncated;
+    }
+    return { issues, unreadable, truncated };
+  }
+
+  async listDependabotUpdateStatuses(
+    repo: RepoRef,
+  ): Promise<RawUpdateStatus[]> {
+    const gh = await this.client(repo);
+    const out: RawUpdateStatus[] = [];
     let cursor: string | null = null;
     for (;;) {
       const page: {
-        search: {
-          issueCount: number;
-          pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          nodes: unknown[];
-        };
+        repository: {
+          vulnerabilityAlerts: {
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+            nodes: {
+              number?: number;
+              dependabotUpdate?: {
+                pullRequest?: { number?: number } | null;
+                error?: { title?: string; errorType?: string } | null;
+              } | null;
+            }[];
+          } | null;
+        } | null;
       } = await gh.graphql(
-        `query ($q: String!, $cursor: String) {
-           search(type: ISSUE, query: $q, first: 100, after: $cursor) {
-             issueCount
-             pageInfo { hasNextPage endCursor }
-             nodes {
-               ... on PullRequest {
-                 id
+        `query ($owner: String!, $name: String!, $cursor: String) {
+           repository(owner: $owner, name: $name) {
+             vulnerabilityAlerts(states: OPEN, first: 100, after: $cursor) {
+               pageInfo { hasNextPage endCursor }
+               nodes {
                  number
-                 title
-                 url
-                 createdAt
-                 author { login }
-                 repository { name owner { login } }
+                 dependabotUpdate {
+                   pullRequest { number }
+                   error { title errorType }
+                 }
                }
              }
            }
          }`,
-        { q: query, cursor },
+        { owner: repo.owner, name: repo.name, cursor },
       );
-      for (const node of page.search.nodes) {
-        const pr = node as {
-          id?: string;
-          number?: number;
-          title?: string;
-          url?: string;
-          createdAt?: string;
-          author?: { login?: string } | null;
-          repository?: { name?: string; owner?: { login?: string } } | null;
-        } | null;
-        if (
-          !pr?.id ||
-          typeof pr.number !== "number" ||
-          typeof pr.title !== "string" ||
-          !pr.repository?.owner?.login ||
-          !pr.repository.name
-        ) {
-          unreadable++;
-          continue;
-        }
-        prs.push({
-          nodeId: pr.id,
-          repo: { owner: pr.repository.owner.login, name: pr.repository.name },
-          number: pr.number,
-          title: pr.title,
-          author: pr.author?.login ?? "unknown",
-          htmlUrl: pr.url ?? "",
-          createdAt: pr.createdAt ?? "",
+      const alerts = page.repository?.vulnerabilityAlerts;
+      if (!alerts) {
+        // A missing container is a failed read (access lost, repository
+        // renamed or transferred mid-run), never an empty alert list. Both
+        // search loops crash on this shape and fail their lane loudly; this
+        // one used to return [] cleanly, the lane reported "ok", and the
+        // full-sweep reconciliation tombstoned every stored status for the
+        // repository.
+        throw new Error(
+          `${repo.owner}/${repo.name}: vulnerabilityAlerts returned no container`,
+        );
+      }
+      for (const node of alerts.nodes) {
+        if (typeof node.number !== "number") continue;
+        const update = node.dependabotUpdate;
+        out.push({
+          repo,
+          alertNumber: node.number,
+          // dependabotUpdate null means GitHub is not attempting a fix, which
+          // is a different fact from an attempted fix with no error.
+          update: update
+            ? {
+                pullRequestNumber: update.pullRequest?.number ?? null,
+                error: update.error
+                  ? (update.error.title ??
+                    update.error.errorType ??
+                    "unknown error")
+                  : null,
+              }
+            : null,
         });
       }
-      if (!page.search.pageInfo.hasNextPage) {
-        // hasNextPage goes false at the 1000-result search ceiling exactly as
-        // it does at a genuine end, so completeness is judged against what the
-        // query matched, not against pagination.
-        const collected = prs.length + unreadable;
-        return {
-          prs,
-          unreadable,
-          truncated: collected < page.search.issueCount,
-        };
-      }
-      cursor = page.search.pageInfo.endCursor;
+      if (!alerts.pageInfo.hasNextPage) break;
+      cursor = alerts.pageInfo.endCursor;
     }
+    return out;
   }
 
   async listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]> {
