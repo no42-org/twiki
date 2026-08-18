@@ -382,6 +382,27 @@ describe("the KEV conditional re-fetch (AD-25)", () => {
     ).toBeNull();
   });
 
+  it("purges a stale validator when a fresh 200 carried none", async () => {
+    // The stored validator matches the PREVIOUS body; the store now holds a
+    // NEWER catalogue. If the feed later reverted to the old body, a 304
+    // against the stale validator would confirm the newer catalogue as
+    // current while the origin serves the older one.
+    const p = new FakeEnrichmentPort();
+    p.cveIds = ["CVE-2021-44228"];
+    await collectKev(depsFor(p, "2026-08-18T06:00:00.000Z"));
+    expect(
+      store.loadValidator(KEV_INSTALLATION, "https://fake.test/kev.json"),
+    ).not.toBeNull();
+
+    p.cveIds = ["CVE-2021-44228", "CVE-2026-0001"];
+    p.validator = { etag: null, lastModified: null };
+    await collectKev(depsFor(p, "2026-08-18T07:00:00.000Z"));
+
+    expect(
+      store.loadValidator(KEV_INSTALLATION, "https://fake.test/kev.json"),
+    ).toBeNull();
+  });
+
   it("a degraded fetch leaves the validator alone with the catalogue", async () => {
     // The feed changed (we read a new degraded body), so the old validator
     // now misses: the next conditional fetch gets a 200 and a clean chance.

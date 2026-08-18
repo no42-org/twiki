@@ -204,7 +204,11 @@ export async function collectOrgAlerts(
         .filter((c) => deps.isWatched(repoOfKey(c.subject.key)))
         .map((c) => c.subject);
       deps.store.touchVerified(confirmed, deps.now());
-      if (page.validator) {
+      // Same gate as the 200 path's save. Unreachable today (the entrypoint
+      // only runs full sweeps) and the refreshed validator is value-identical
+      // to the stored one, but an adapter change returning a fresh validator
+      // on 304 must not slip past the guard the 200 path enforces.
+      if (scope === "full" && page.validator) {
         deps.store.saveValidator(installation, url, page.validator, deps.now());
       }
       deps.store.finishRun(run, "ok", deps.now(), "not modified (304)");
@@ -284,9 +288,19 @@ export async function collectOrgAlerts(
     // tombstones, because a 304 against it asserts exactly what they assert:
     // "the stored rows are the complete answer". A partial sweep's validator
     // would let the next sweep confirm rows it knows are incomplete, and a
-    // hot sweep's would confirm a subset as the whole.
+    // hot sweep's would let one confirm rows it never tombstone-reconciled.
+    //
+    // When a 200 stored rows WITHOUT earning a fresh validator (multi-page
+    // listing, partial sweep), the stored validator must go: it describes the
+    // pre-rewrite listing, and if the listing later reverts byte-identical to
+    // that old body, a 304 against it would confirm every present row -
+    // including alerts the listing no longer contains - and skip the tombstone
+    // pass a 200 would have run. A fixed alert would render current forever
+    // (AD-23).
     if (scope === "full" && outcome === "ok" && page.validator) {
       deps.store.saveValidator(installation, url, page.validator, deps.now());
+    } else {
+      deps.store.deleteValidator(installation, url);
     }
 
     deps.store.finishRun(run, outcome, deps.now(), detail);

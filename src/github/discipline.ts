@@ -35,20 +35,41 @@ export type BackoffDecision =
  * sleeping out a primary window (up to an hour) inside a lane would stall
  * the whole cycle, and the scheduler retries next tick anyway (AD-16).
  */
+/**
+ * A secondary limit sometimes arrives with NO retry-after at all; GitHub's
+ * docs say to wait at least a minute in that case. The message is the only
+ * signal that distinguishes it from a permissions 403.
+ */
+export const SECONDARY_LIMIT_FALLBACK_MS = 60_000;
+const SECONDARY_LIMIT_MESSAGE = /secondary rate limit/i;
+
 export function backoffDecision(
   status: number | undefined,
   headers: Record<string, string | undefined>,
   alreadyRetried: boolean,
+  message = "",
 ): BackoffDecision {
   if (status !== 403 && status !== 429) return { kind: "rethrow" };
-  const retryAfter = Number(headers["retry-after"]);
+  // Delta-seconds only, deliberately: GitHub sends seconds, and RFC 9110's
+  // HTTP-date form would need a clock this table refuses to own. A date here
+  // parses as NaN and falls through.
+  const rawRetryAfter = headers["retry-after"];
+  const retryAfter =
+    rawRetryAfter === undefined || rawRetryAfter.trim() === ""
+      ? Number.NaN
+      : Number(rawRetryAfter);
   if (
     !alreadyRetried &&
     Number.isFinite(retryAfter) &&
-    retryAfter > 0 &&
+    // Zero is spec-valid ("retry immediately") and safe to honour: the
+    // episode cooldown still bounds how often this branch fires.
+    retryAfter >= 0 &&
     retryAfter <= MAX_RETRY_AFTER_S
   ) {
     return { kind: "retry", afterMs: retryAfter * 1000 };
+  }
+  if (!alreadyRetried && SECONDARY_LIMIT_MESSAGE.test(message)) {
+    return { kind: "retry", afterMs: SECONDARY_LIMIT_FALLBACK_MS };
   }
   if (headers["x-ratelimit-remaining"] === "0") {
     const reset = Number(headers["x-ratelimit-reset"]);
@@ -97,7 +118,12 @@ export function withRequestDiscipline(
       (options.headers as Record<string, unknown> | undefined)?.[
         "x-tricorder-retried"
       ] === "1";
-    const decision = backoffDecision(err.status, headers, alreadyRetried);
+    const decision = backoffDecision(
+      err.status,
+      headers,
+      alreadyRetried,
+      error instanceof Error ? error.message : "",
+    );
     if (decision.kind === "retry") {
       if (now() < episodeUntil) {
         // This episode already had its sleep. Fail this request fast; the
@@ -112,7 +138,15 @@ export function withRequestDiscipline(
       } as unknown as Parameters<Octokit["request"]>[0]);
     }
     if (decision.kind === "exhausted") {
-      throw new Error(decision.detail);
+      // Legible message, original evidence intact: status for any caller
+      // that branches on it, cause for anyone debugging. Message-based
+      // translation (the Dependabot probe) is unaffected - "rate limit
+      // exhausted" matches none of its known shapes and lands on "unknown",
+      // which is the honest answer during an outage.
+      throw Object.assign(new Error(decision.detail), {
+        status: err.status,
+        cause: error,
+      });
     }
     throw error;
   });
@@ -126,10 +160,18 @@ export function withRequestDiscipline(
  * until it expires, so two calls within the TTL see the same expiresAt, and a
  * re-mint changes it. The token itself is never used as the generation
  * because the generation is persisted, and a stored token is a leaked token.
+ *
+ * Null when the auth result carries no expiry. Null, not a sentinel string:
+ * a stable "unknown" would compare equal to itself across genuinely
+ * different tokens, silently disabling the cold-on-rotation guard - the
+ * exact fail-open AD-25 exists to prevent. A caller holding null must treat
+ * every validator as cold and cache none.
  */
-export async function installationTokenGen(gh: Octokit): Promise<string> {
+export async function installationTokenGen(
+  gh: Octokit,
+): Promise<string | null> {
   const auth = (await gh.auth({ type: "installation" })) as {
     expiresAt?: string;
   } | null;
-  return auth?.expiresAt ?? "unknown";
+  return auth?.expiresAt ?? null;
 }

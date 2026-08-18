@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { alertSubject } from "../src/core/subject.js";
+import { orgAlertsUrl } from "../src/github/port.js";
 import type { AlertObservation } from "../src/tricorder/collect/dependabot-alerts.js";
 import {
   collectAllOrgs,
@@ -638,8 +639,9 @@ describe("Dependabot alerts lane", () => {
     });
 
     it("does not save a validator from a hot sweep", async () => {
-      // A hot sweep queried a subset; a 304 against its validator would
-      // confirm that subset as the whole answer.
+      // The request is identical across scopes; what a hot sweep skips is
+      // the tombstone reconciliation, so a 304 against its validator would
+      // confirm rows it never reconciled.
       github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
       github.orgAlertValidators.set("no42-org", VALIDATOR);
       await collectOrgAlerts(deps(), "no42-org", "hot");
@@ -675,6 +677,42 @@ describe("Dependabot alerts lane", () => {
 
       await collectOrgAlerts(deps(), "no42-org", "full");
       expect(github.orgAlertCachedSeen[1]).toBeNull();
+    });
+
+    it("purges a stored validator when a 200 rewrote rows without one", async () => {
+      // The stored validator describes the pre-rewrite listing. If the
+      // listing later reverts byte-identical to that old body (alert opened,
+      // then fixed: A to B back to A), a 304 against the stale validator
+      // would confirm every present row - including the alert B added -
+      // and skip the tombstone pass a 200 would have run. The fixed alert
+      // would render current forever (AD-23).
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(
+        store.loadValidator("no42-org", orgAlertsUrl("no42-org")),
+      ).not.toBeNull();
+
+      // The next 200 stores rows but earns no validator (multi-page).
+      github.orgAlerts.set("no42-org", [
+        makeAlert({ number: 1 }),
+        makeAlert({ number: 2 }),
+      ]);
+      github.orgAlertValidators.delete("no42-org");
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(
+        store.loadValidator("no42-org", orgAlertsUrl("no42-org")),
+      ).toBeNull();
+      // And a partial 200 purges it too: it also stored rows.
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      github.orgAlertValidators.delete("no42-org");
+      github.unreadableByOrg.set("no42-org", 1);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(
+        store.loadValidator("no42-org", orgAlertsUrl("no42-org")),
+      ).toBeNull();
     });
   });
 });

@@ -14,7 +14,10 @@ import {
   MAX_RETRY_AFTER_S,
   withRequestDiscipline,
 } from "../src/github/discipline.js";
-import { OctokitGitHub } from "../src/github/octokit-adapter.js";
+import {
+  createTricorderReadPort,
+  OctokitGitHub,
+} from "../src/github/octokit-adapter.js";
 
 describe("the backoff decision table (AD-24)", () => {
   it("honours a sane retry-after once", () => {
@@ -58,6 +61,36 @@ describe("the backoff decision table (AD-24)", () => {
       expect(d.detail).toContain("2026-08-15T");
       expect(d.detail).toContain("retried next cycle");
     }
+  });
+
+  it("retries a secondary limit that arrives without retry-after", () => {
+    // GitHub documents this shape and says to wait at least a minute. The
+    // message is the only signal distinguishing it from a permissions 403.
+    const d = backoffDecision(
+      403,
+      { "x-ratelimit-remaining": "42" },
+      false,
+      "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+    );
+    expect(d).toEqual({ kind: "retry", afterMs: 60_000 });
+    // But only once: the retried request hitting it again fails through.
+    expect(
+      backoffDecision(403, {}, true, "secondary rate limit").kind,
+    ).not.toBe("retry");
+  });
+
+  it("honours retry-after zero as an immediate retry", () => {
+    // Spec-valid "retry immediately"; the episode cooldown still bounds how
+    // often the branch fires.
+    expect(backoffDecision(429, { "retry-after": "0" }, false)).toEqual({
+      kind: "retry",
+      afterMs: 0,
+    });
+    // An empty header is absence, not zero: Number("") is 0, and treating a
+    // blank header as an immediate-retry instruction would retry on noise.
+    expect(backoffDecision(429, { "retry-after": " " }, false).kind).toBe(
+      "rethrow",
+    );
   });
 
   it("leaves every other failure alone", () => {
@@ -170,6 +203,31 @@ describe("the discipline hook on a real Octokit", () => {
     await expect(gh.request("GET /rate_limit")).rejects.toThrow(
       /rate limit exhausted/,
     );
+    // Legible message, evidence intact: the original status rides along for
+    // any caller that branches on it.
+    await expect(gh.request("GET /rate_limit")).rejects.toMatchObject({
+      status: 403,
+    });
+  });
+
+  it("passes a 304 through untouched", async () => {
+    // The adapter's whole conditional path depends on catching octokit's
+    // 304 rejection with its status intact; a hook that swallowed or
+    // rewrote it would turn every cache hit into a mystery.
+    const gh = withRequestDiscipline(
+      new Octokit({
+        request: {
+          fetch: async () => new Response(null, { status: 304 }),
+        },
+      }),
+      async () => {},
+    );
+
+    await expect(
+      gh.request("GET /orgs/x/dependabot/alerts"),
+    ).rejects.toMatchObject({
+      status: 304,
+    });
   });
 });
 
@@ -317,18 +375,18 @@ describe("the conditional alert listing", () => {
       tokenGen: EXPIRES,
     });
 
-    // Two pages: each carries its own ETag, and a 304 on page one says
-    // nothing about page two, so nothing is cacheable.
+    // Three pages: each carries its own ETag, and a 304 on page one says
+    // nothing about the pages behind it, so nothing is cacheable.
     let call = 0;
     const multi = stubGh(() => {
       call++;
       const headers: Record<string, string> =
-        call === 1
+        call < 3
           ? {
-              etag: 'W/"page1"',
-              link: '<https://api.github.com/x?page=2>; rel="next"',
+              etag: `W/"page${call}"`,
+              link: `<https://api.github.com/x?page=${call + 1}>; rel="next"`,
             }
-          : { etag: 'W/"page2"' };
+          : { etag: 'W/"page3"' };
       return { data: [alertItem], headers };
     });
     const adapter2 = new OctokitGitHub(
@@ -337,8 +395,81 @@ describe("the conditional alert listing", () => {
       async () => multi.gh,
     );
     const two = await adapter2.listOrgDependabotAlerts("no42-org");
-    expect(two.alerts.length + two.unreadable).toBeGreaterThan(0);
+    // EVERY page's items arrive, exactly. The old assertion (> 0) was
+    // satisfied by page one alone: a mutation dropping all later pages kept
+    // the suite green, and the next full-ok sweep would have tombstoned
+    // every alert past page one as resolved.
+    expect(two.alerts.length + two.unreadable).toBe(3);
     expect(two.validator).toBeNull();
+  });
+
+  it("walks a link header whose rel is not the first parameter", async () => {
+    // A proxy may reorder link-value parameters; missing the next link ends
+    // pagination early, and page one alone then reads as the whole listing -
+    // with a validator cached for it.
+    let call = 0;
+    const { gh } = stubGh(() => {
+      call++;
+      const headers: Record<string, string> =
+        call === 1
+          ? {
+              link: '<https://api.github.com/x?page=2>; type="a"; rel="next", <https://api.github.com/x?page=2>; rel="last"',
+            }
+          : {};
+      return { data: [alertItem], headers };
+    });
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+    const page = await adapter.listOrgDependabotAlerts("no42-org");
+    expect(page.alerts.length + page.unreadable).toBe(2);
+  });
+
+  it("refuses to loop forever on a self-referential link header", async () => {
+    const { gh } = stubGh(() => ({
+      data: [alertItem],
+      headers: { link: '<https://api.github.com/x?page=1>; rel="next"' },
+    }));
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+    await expect(adapter.listOrgDependabotAlerts("no42-org")).rejects.toThrow(
+      /refusing to loop/,
+    );
+  });
+
+  it("treats a null token generation as cold on both sides", async () => {
+    // auth without an expiry cannot be compared across rotations; a stable
+    // sentinel would compare equal to itself and fail open. Nothing is sent
+    // and nothing is cached.
+    const seen: Record<string, unknown>[] = [];
+    const gh = {
+      auth: async () => ({ token: "ghs_x" }),
+      request: async (route: string, options: Record<string, unknown> = {}) => {
+        seen.push({ route, ...options });
+        return { data: [alertItem], headers: { etag: 'W/"a"' } };
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    const page = await adapter.listOrgDependabotAlerts("no42-org", {
+      etag: 'W/"a"',
+      lastModified: null,
+      tokenGen: "2026-08-18T08:00:00Z",
+    });
+
+    const headers =
+      (seen[0] as { headers?: Record<string, string> }).headers ?? {};
+    expect(headers["if-none-match"]).toBeUndefined();
+    expect(page.validator).toBeNull();
   });
 
   it("sends if-modified-since alongside the etag, and alone", async () => {
@@ -412,10 +543,12 @@ describe("the conditional alert listing", () => {
     );
   });
 
-  it("a 304 without a sent validator is an error, not an empty page", async () => {
+  it("a 304 without a sent validator is a legible error, not an empty page", async () => {
     // Only a conditional request may be answered 304; getting one on an
     // unconditional fetch means something upstream is broken, and treating
     // it as notModified would confirm rows against a validator never sent.
+    // The message names the cause, like the KEV path: octokit's raw "Not
+    // modified" gives an operator nothing to act on.
     const { gh } = stubGh(() => {
       throw Object.assign(new Error("Not modified"), { status: 304 });
     });
@@ -424,6 +557,65 @@ describe("the conditional alert listing", () => {
       () => true,
       async () => gh,
     );
-    await expect(adapter.listOrgDependabotAlerts("no42-org")).rejects.toThrow();
+    await expect(adapter.listOrgDependabotAlerts("no42-org")).rejects.toThrow(
+      /unconditional/,
+    );
+  });
+});
+
+describe("the discipline hook rides the factory's clients", () => {
+  it("createTricorderReadPort's clients retry a limited request", async () => {
+    // The wrapper's one production attachment was deletable with a green
+    // suite: every discipline test built its own client. This goes through
+    // the real factory, so removing the wrapping now breaks a test.
+    let apiCalls = 0;
+    const fetchImpl = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/access_tokens")) {
+        return new Response(
+          JSON.stringify({
+            token: "ghs_wired",
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            permissions: {},
+            repository_selection: "all",
+          }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        );
+      }
+      apiCalls++;
+      if (apiCalls === 1) {
+        return new Response("slow down", {
+          status: 403,
+          headers: { "retry-after": "0" },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const appPort = {
+      identity: async () => ({ slug: "t", name: "t", permissions: {} }),
+      listInstallations: async () => [
+        { id: 7, account: "no42-org", repositorySelection: "all" },
+      ],
+      listInstallationRepos: async () => [],
+    };
+    const port = await createTricorderReadPort(
+      appPort,
+      () => true,
+      {
+        TRICORDER_GITHUB_APP_ID: "1",
+        TRICORDER_GITHUB_APP_PRIVATE_KEY: TEST_KEY,
+      } as NodeJS.ProcessEnv,
+      fetchImpl as typeof fetch,
+    );
+
+    const page = await port.listOrgDependabotAlerts("no42-org");
+
+    // One 403 with retry-after, then success: only a disciplined client
+    // retries. An unwrapped one would have thrown the 403.
+    expect(apiCalls).toBe(2);
+    expect(page.alerts).toEqual([]);
   });
 });

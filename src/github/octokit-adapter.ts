@@ -67,6 +67,9 @@ export type OrgOctokitResolver = (org: string) => Promise<Octokit>;
 export const SEARCH_QUERY_MAX = 256;
 const ISSUE_SEARCH_BASE = "is:issue is:open no:assignee";
 
+/** Pagination sanity cap: 50 pages is 5,000 open alerts in one org. */
+export const MAX_ALERT_PAGES = 50;
+
 export function issueSearchQueries(repos: readonly RepoRef[]): string[] {
   const queries: string[] = [];
   let current = ISSUE_SEARCH_BASE;
@@ -609,9 +612,13 @@ export class OctokitGitHub implements GitHubPort {
     // GitHub's ETags vary with the Authorization header. Cold, not sent. An
     // all-null validator is not a validator: sending nothing while treating
     // the request as conditional is how an unsolicited 304 gets honoured.
+    // A null generation (auth carried no expiry) fails closed on both sides:
+    // nothing is sent and nothing is cached, because a generation that
+    // cannot be compared would otherwise compare equal across rotations.
     const tokenGen = await installationTokenGen(gh);
     const send =
       cached &&
+      tokenGen !== null &&
       cached.tokenGen === tokenGen &&
       (cached.etag || cached.lastModified)
         ? cached
@@ -649,19 +656,23 @@ export class OctokitGitHub implements GitHubPort {
               headers: conditionalHeaders,
             });
       } catch (err) {
-        if (
-          send &&
-          pages === 1 &&
-          (err as { status?: number }).status === 304
-        ) {
-          // Byte-identical to the listing the validator came from. No pages
-          // to walk: a single-page listing is the only kind we cache for.
-          return {
-            alerts: [],
-            unreadable: 0,
-            notModified: true,
-            validator: { ...send, tokenGen },
-          };
+        if ((err as { status?: number }).status === 304) {
+          if (send && pages === 1) {
+            // Byte-identical to the listing the validator came from. No
+            // pages to walk: a single-page listing is the only kind we cache
+            // for. tokenGen is non-null whenever send is.
+            return {
+              alerts: [],
+              unreadable: 0,
+              notModified: true,
+              validator: { ...send, tokenGen: tokenGen as string },
+            };
+          }
+          // Same posture as the KEV path, same legible message: a broken
+          // proxy confirming a validator we never sent, not an empty page.
+          throw new Error(
+            `alert listing for ${org} answered 304 to an unconditional request`,
+          );
         }
         throw err;
       }
@@ -682,8 +693,24 @@ export class OctokitGitHub implements GitHubPort {
         );
       }
       raw.push(...(res.data as unknown[]));
+      if (pages >= MAX_ALERT_PAGES) {
+        // A proxy echoing a self-referential Link header would otherwise
+        // loop this lane forever. The cap is far above any real estate
+        // (5,000 open alerts per organisation); hitting it is a fault, and
+        // a fault must not look like the end of the listing.
+        throw new Error(
+          `alert listing for ${org} exceeded ${MAX_ALERT_PAGES} pages; refusing to loop`,
+        );
+      }
       const link = typeof res.headers.link === "string" ? res.headers.link : "";
-      next = link.match(/<([^>]+)>;\s*rel="next"/)?.[1] ?? null;
+      // Per link entry, not one regex over the whole header: rel="next" is
+      // not required to be the first parameter, and missing a reordered one
+      // would silently truncate the listing at this page.
+      next =
+        link
+          .split(",")
+          .map((entry) => entry.match(/<([^>]+)>[^,]*\brel="next"/)?.[1])
+          .find((url) => url !== undefined) ?? null;
       if (!next) break;
     }
 
@@ -710,7 +737,7 @@ export class OctokitGitHub implements GitHubPort {
       // conditional: an all-null one would count as "cached" while sending
       // no header, the unsolicited-304 state guarded against above.
       validator:
-        pages === 1 && (firstEtag || firstLastModified)
+        pages === 1 && (firstEtag || firstLastModified) && tokenGen !== null
           ? { etag: firstEtag, lastModified: firstLastModified, tokenGen }
           : null,
     };
@@ -939,7 +966,10 @@ export class OctokitGitHubApp implements GitHubAppPort {
 export function createTricorderAppFromEnv(env = process.env): GitHubAppPort {
   const auth = loadAppAuthFromEnv(env, "TRICORDER");
   return new OctokitGitHubApp(
-    new Octokit({ authStrategy: createAppAuth, auth }),
+    // Disciplined like the installation clients (AD-24): listInstallations
+    // runs at startup and again on every resolver miss, and those are
+    // collector requests too, on the App's own JWT bucket.
+    withRequestDiscipline(new Octokit({ authStrategy: createAppAuth, auth })),
     auth,
   );
 }
@@ -964,6 +994,13 @@ export async function createTricorderReadPort(
   /** repos.yaml is the entire universe (AD-10); the adapter enforces it too. */
   isAllowed: (repo: RepoRef) => boolean,
   env: NodeJS.ProcessEnv = process.env,
+  /**
+   * Test seam only: the transport handed to each installation Octokit. It
+   * exists so a test can prove the discipline hook is attached to the
+   * clients THIS factory builds - the wrapper was deletable with a green
+   * suite, because every discipline test constructed its own client.
+   */
+  fetchImpl?: typeof fetch,
 ): Promise<GitHubReadPort> {
   const auth = loadAppAuthFromEnv(env, "TRICORDER");
   const verbose = (env.TRICORDER_VERBOSE ?? "").trim() !== "";
@@ -990,6 +1027,7 @@ export async function createTricorderReadPort(
           authStrategy: createAppAuth,
           auth: { ...auth, installationId: id },
           log: quiet,
+          ...(fetchImpl ? { request: { fetch: fetchImpl } } : {}),
         }),
       );
       clients.set(id, c);

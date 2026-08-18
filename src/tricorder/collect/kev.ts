@@ -19,6 +19,13 @@ export const LANE = "kev";
  */
 export const KEV_INSTALLATION = KEV_KEY;
 
+/**
+ * The KEV feed is unauthenticated, so its validators have no token
+ * generation. One constant, because a typo in one of the save sites would
+ * silently make every stored KEV validator a generation miss.
+ */
+export const KEV_TOKEN_GEN = "none";
+
 export interface KevObservation {
   version: string;
   released: string;
@@ -102,7 +109,7 @@ export async function collectKev(
       deps.store.saveValidator(
         KEV_INSTALLATION,
         url,
-        { ...outcome.validator, tokenGen: "none" },
+        { ...outcome.validator, tokenGen: KEV_TOKEN_GEN },
         deps.now(),
       );
       deps.store.finishRun(run, "ok", deps.now(), "not modified (304)");
@@ -150,13 +157,19 @@ export async function collectKev(
     // all-null validator is never saved: it cannot make a request
     // conditional, and a stored one would count as "cached" while sending no
     // header, the state in which a broken proxy's 304 freezes the catalogue.
+    // When the 200 carried no usable validator, any STORED one goes too: it
+    // describes the previous body, and if the feed later reverts to exactly
+    // that body, a 304 against it would confirm the newer catalogue as
+    // current when the origin is serving the older one.
     if (outcome.validator.etag || outcome.validator.lastModified) {
       deps.store.saveValidator(
         KEV_INSTALLATION,
         url,
-        { ...outcome.validator, tokenGen: "none" },
+        { ...outcome.validator, tokenGen: KEV_TOKEN_GEN },
         deps.now(),
       );
+    } else {
+      deps.store.deleteValidator(KEV_INSTALLATION, url);
     }
     deps.store.finishRun(run, "ok", deps.now());
 

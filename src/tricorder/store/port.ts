@@ -113,6 +113,17 @@ export interface StorePort {
     verifiedAt: string,
   ): void;
 
+  /**
+   * Drop a stored validator.
+   *
+   * Called whenever a 200 sweep stores rows without producing a cacheable
+   * validator: the stored one still describes the pre-rewrite listing, and a
+   * later byte-identical revert of the listing would let a 304 against it
+   * confirm rows the listing no longer contains, skipping the tombstone pass
+   * a 200 would have run (AD-23, AD-25).
+   */
+  deleteValidator(installation: string, requestUrl: string): void;
+
   /** Trim observations older than the cutoff. Never touches the projection (AD-4). */
   trimObservations(olderThan: string): number;
 
