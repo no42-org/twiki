@@ -149,6 +149,14 @@ export function buildCollectionHealth(
   store: StorePort,
   now: Date,
   policy: FreshnessPolicy,
+  /**
+   * Per-lane cadences. A lane absent here is judged on `policy`.
+   *
+   * AD-11 calls one global cadence applied to every lane a defect, and this
+   * table had exactly that: a daily lane was reported stale thirty minutes
+   * after succeeding, forever.
+   */
+  lanePolicies: Readonly<Record<string, FreshnessPolicy>> = {},
 ): CollectionHealth[] {
   return store.latestRunPerKey().map((run) => {
     // beginRun writes `partial` as its placeholder and leaves detail null, so a
@@ -165,7 +173,11 @@ export function buildCollectionHealth(
     // finish; forcing it green would hide the dead lane this table exists to
     // show. "running" is only a truthful reading while the run is still
     // inside its freshness budget.
-    const seen = freshness(run.verifiedAt, now, policy);
+    const seen = freshness(
+      run.verifiedAt,
+      now,
+      lanePolicies[run.lane] ?? policy,
+    );
     const stalled = inFlight && seen !== "fresh";
 
     return {

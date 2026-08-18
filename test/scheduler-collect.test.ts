@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  assertSchedules,
   DEFAULT_TICK_MS,
   formatLine,
   isDue,
@@ -73,6 +74,65 @@ describe("deciding what is due", () => {
     expect(isDue(record({ verifiedAt: "last tuesday" }), 60_000, NOW)).toBe(
       true,
     );
+  });
+
+  it("retries anything that did not finish cleanly, not only failures", () => {
+    // beginRun writes `partial` as its in-flight placeholder, so a collector
+    // killed mid-run leaves a row that would otherwise wait a full cadence.
+    const daily = 24 * 60 * 60_000;
+    const hourly = 60 * 60_000;
+    for (const outcome of ["failed", "partial"] as const) {
+      const last = record({
+        outcome,
+        verifiedAt: "2026-08-17T10:30:00.000Z",
+      });
+      expect(isDue(last, daily, NOW, hourly), outcome).toBe(true);
+    }
+  });
+
+  it("clamps a zero or negative retry to a floor", () => {
+    // The tick interval already bounds how often this can fire, so the floor
+    // is belt-and-braces rather than the real protection; it makes the intent
+    // explicit and stops a `0` meaning "always due".
+    const last = record({
+      outcome: "failed",
+      verifiedAt: "2026-08-17T11:59:59.500Z",
+    });
+    for (const retry of [0, -1]) {
+      expect(isDue(last, 24 * 60 * 60_000, NOW, retry), String(retry)).toBe(
+        false,
+      );
+    }
+  });
+
+  it("retries a failed run sooner when the lane asks for it", () => {
+    // A daily lane that fails once would otherwise collect nothing for 24
+    // hours, and twice in a row crosses the staleness budget entirely, taking
+    // the ranking chain's top term with it.
+    const failed = record({
+      outcome: "failed",
+      verifiedAt: "2026-08-17T10:30:00.000Z",
+    });
+    const daily = 24 * 60 * 60_000;
+    const hourly = 60 * 60_000;
+
+    expect(isDue(failed, daily, NOW), "without a retry it waits a day").toBe(
+      false,
+    );
+    expect(isDue(failed, daily, NOW, hourly), "with one it retries").toBe(true);
+  });
+
+  it("does not shorten the wait for a run that succeeded", () => {
+    const ok = record({ verifiedAt: "2026-08-17T11:30:00.000Z" });
+    expect(isDue(ok, 24 * 60 * 60_000, NOW, 60 * 60_000)).toBe(false);
+  });
+
+  it("never lets the retry exceed the cadence", () => {
+    const failed = record({
+      outcome: "failed",
+      verifiedAt: "2026-08-17T11:59:00.000Z",
+    });
+    expect(isDue(failed, 60_000, NOW, 24 * 60 * 60_000)).toBe(true);
   });
 
   it("does not treat a failed run as a reason to hammer", () => {
@@ -176,6 +236,87 @@ describe("the cycle", () => {
     expect(report).toEqual({ ran: 4, skipped: 0, failed: 0 });
     // Serial, and grouped per installation (AD-24).
     expect(seen).toEqual(["a:org-1", "b:org-1", "a:org-2", "b:org-2"]);
+  });
+
+  it("runs a lane only on the installations it declares", async () => {
+    // Not every lane is per-installation. KEV is one public document that no
+    // organisation has its own copy of; giving it a pseudo-installation to ride
+    // made the GitHub lanes try to collect from it and fail twice a cycle, with
+    // the run then reporting failure it had not really had.
+    const seen: string[] = [];
+    const schedules = [
+      {
+        ...lane("github", async (i) => {
+          seen.push(`github:${i}`);
+          return { outcome: "ok" as const };
+        }),
+        installations: ["org-1"],
+      },
+      {
+        ...lane("global", async (i) => {
+          seen.push(`global:${i}`);
+          return { outcome: "ok" as const };
+        }),
+        installations: ["elsewhere"],
+      },
+    ];
+
+    const report = await runCycle(deps(), schedules, ["org-1", "elsewhere"]);
+
+    expect(seen).toEqual(["github:org-1", "global:elsewhere"]);
+    expect(report.failed).toBe(0);
+  });
+
+  it("runs a lane everywhere when it declares nothing", async () => {
+    const seen: string[] = [];
+    await runCycle(
+      deps(),
+      [
+        lane("a", async (i) => {
+          seen.push(i);
+          return { outcome: "ok" as const };
+        }),
+      ],
+      ["org-1", "org-2"],
+    );
+    expect(seen).toEqual(["org-1", "org-2"]);
+  });
+
+  it("rejects an unusable schedule where it is built, not mid-cycle", () => {
+    // Throwing inside runCycle aborts every remaining lane and installation,
+    // which is what AD-16 forbids, and repeats every tick forever.
+    expect(() =>
+      assertSchedules(
+        [{ ...lane("a", async () => ({ outcome: "ok" })), installations: [] }],
+        ["org-1"],
+      ),
+    ).toThrow(/declares no installations/);
+
+    expect(() =>
+      assertSchedules(
+        [
+          {
+            ...lane("a", async () => ({ outcome: "ok" })),
+            installations: ["nowhere"],
+          },
+        ],
+        ["org-1"],
+      ),
+    ).toThrow(/never visits/);
+  });
+
+  it("does not abort the cycle when a lane matches no installation", async () => {
+    const report = await runCycle(
+      deps(),
+      [
+        {
+          ...lane("a", async () => ({ outcome: "ok" as const })),
+          installations: [],
+        },
+      ],
+      ["org-1"],
+    );
+    expect(report).toEqual({ ran: 0, skipped: 0, failed: 0 });
   });
 
   it("skips a lane whose cadence has not elapsed", async () => {

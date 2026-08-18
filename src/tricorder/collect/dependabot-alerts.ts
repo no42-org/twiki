@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { safeLog } from "../../core/log.js";
 import { redact } from "../../core/redact.js";
 import { worstSeverity } from "../../core/severity.js";
 import { alertSubject, repositorySubject } from "../../core/subject.js";
@@ -149,6 +150,9 @@ export async function collectOrgAlerts(
   scope: RunScope,
 ): Promise<LaneResult> {
   let run: ReturnType<StorePort["beginRun"]> | null = null;
+  // A logger that throws after finishRun committed would land in the catch and
+  // rewrite a successful run as failed (AD-16). Same fix as the KEV lane.
+  const log = safeLog(deps.log);
 
   try {
     // Inside the try: beginRun touches the database, and a busy store here
@@ -222,13 +226,13 @@ export async function collectOrgAlerts(
 
       if (gone.length > 0) {
         deps.store.recordTombstones(run, deps.now(), gone);
-        deps.log(`${LANE} ${installation}: ${gone.length} alerts resolved`);
+        log(`${LANE} ${installation}: ${gone.length} alerts resolved`);
       }
     }
 
     deps.store.finishRun(run, outcome, deps.now(), detail);
 
-    deps.log(
+    log(
       `${LANE} ${installation}: ${observations.length} watched alerts` +
         `, ${page.alerts.length - watched.length} outside the allowlist` +
         (page.unreadable > 0 ? `, ${page.unreadable} unreadable` : ""),
@@ -250,7 +254,7 @@ export async function collectOrgAlerts(
         // The store is the thing that failed. Nothing further to record.
       }
     }
-    deps.log(`${LANE} ${installation}: failed, ${detail}`);
+    log(`${LANE} ${installation}: failed, ${detail}`);
     return { installation, outcome: "failed", alerts: 0, unreadable: 0 };
   }
 }

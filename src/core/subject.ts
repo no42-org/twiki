@@ -16,6 +16,10 @@ export const SUBJECT_TYPES = [
   // because it has its own freshness: a coverage lane that stops running must
   // not leave every repository reading as permanently covered (AD-28).
   "repository_coverage",
+  // The KEV catalogue is fetched atomically as one document, so it is ONE
+  // subject rather than one per CVE: a listing is only ever as current as the
+  // fetch that found it, and per-CVE freshness would be a fiction.
+  "kev_catalogue",
   "dependabot_alert",
   "code_scanning_alert",
   "secret_scanning_alert",
@@ -59,6 +63,23 @@ export function repositorySubject(repo: RepoRef): Subject {
 export function coverageSubject(repo: RepoRef): Subject {
   return { type: "repository_coverage", key: subjectSlug(repo) };
 }
+
+/**
+ * The one name CISA is known by.
+ *
+ * Shared so the subject key and the scheduler's pseudo-installation cannot
+ * drift apart: they were two unrelated string literals in unrelated modules,
+ * with nothing asserting the relationship they depend on.
+ */
+export const KEV_KEY = "cisa";
+
+/** The KEV catalogue. A single subject; the key is constant. */
+export function kevSubject(): Subject {
+  return { type: "kev_catalogue", key: KEV_KEY };
+}
+
+/** Frozen, because every other subject in this file is produced fresh. */
+export const KEV_SUBJECT: Subject = Object.freeze(kevSubject());
 
 export function alertSubject(
   type: "dependabot_alert" | "code_scanning_alert" | "secret_scanning_alert",

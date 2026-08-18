@@ -165,8 +165,9 @@ renames should read as a name mismatch rather than as "you did not grant
 something you did grant", so `doctor` prints what GitHub actually reported
 alongside what it expected.
 
-`collect` migrates the schema, then runs each lane on its own cadence: Dependabot
-alerts every 15 minutes, coverage daily.
+`collect` migrates the schema, then runs each lane on its own cadence: Dependabot alerts every 15 minutes, coverage daily, and the CISA KEV catalogue daily.
+KEV is the one non-GitHub request the system makes.
+The catalogue is collected and stored; the ranked queue that consumes it is not built yet, so nothing renders it today.
 Due-ness is read from the store rather than from memory, so a restart neither re-sweeps everything nor waits a full cadence before doing anything.
 Set `TRICORDER_ONCE` to run a single cycle and exit, for cron.
 
@@ -180,6 +181,7 @@ Set `TRICORDER_ONCE` to run a single cycle and exit, for cron.
 | `TRICORDER_RUN_RETENTION_DAYS` | Days of collection-run history to keep. Unset keeps everything. | unset |
 | `TRICORDER_ONCE` | Run one collection cycle and exit, instead of looping. | unset (loops) |
 | `TRICORDER_TICK_SECONDS` | How often `collect` wakes to look for due lanes. | `60` |
+| `TRICORDER_KEV_URL` | Where to fetch the CISA KEV catalogue. Point it at a mirror or proxy in an egress-restricted deployment. | CISA's public feed |
 | `TRICORDER_VERBOSE` | Print Octokit's own request logging. Off by default because the coverage lane expects a 403 per repository with Dependabot switched off, and those would otherwise look like errors on a healthy run. | unset |
 
 Both retention windows are off by default and a malformed value refuses to start rather than falling back to a default, because silently ignoring a typo in the one setting that deletes data is not a recoverable mistake.
@@ -194,6 +196,12 @@ port. Doing so logs a warning; put your own authenticated proxy in front.
 The `web` process opens the database read-only and refuses to start if the
 schema is a version it was not built against, rather than serving misread rows.
 Upgrading means restarting both roles, not just the collector.
+
+### Outbound network
+
+The collector reaches **api.github.com** and, for the KEV lane only, **www.cisa.gov** over HTTPS.
+The CISA request carries no credentials and downloads roughly 1.5 MB once a day.
+`TRICORDER_KEV_URL` repoints it; there is no way to disable the lane, and a failed fetch leaves every KEV answer `unknown` rather than "not listed".
 
 ### Sharing the database between the two roles
 

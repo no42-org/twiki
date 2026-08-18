@@ -23,6 +23,21 @@ export interface LaneSchedule {
   lane: string;
   scope: RunScope;
   cadenceMs: number;
+  /**
+   * Which installations this lane applies to. Omitted means all of them.
+   *
+   * Not every lane is per-installation. KEV is one public document that no
+   * organisation has its own copy of, and giving it a pseudo-installation to
+   * ride made the GitHub lanes try to collect from it and fail twice a cycle,
+   * with the run then reporting failure it had not really had.
+   */
+  installations?: readonly string[];
+  /**
+   * How long to wait after a FAILED run, when that should be shorter than the
+   * cadence. A daily lane that fails once would otherwise collect nothing for
+   * 24 hours, and twice in a row crosses the staleness budget entirely.
+   */
+  retryAfterMs?: number;
   /** Runs one installation. Must not throw; lanes contain their own failures. */
   run: (installation: string) => Promise<{ outcome: RunOutcome }>;
 }
@@ -56,16 +71,49 @@ export interface LogFields {
  * cycle early is cheap; silently stopping is the failure this whole build is
  * organised against.
  */
+/**
+ * Reject a schedule that cannot work, at the point it is built.
+ *
+ * Not inside the cycle: throwing there aborts every remaining lane and
+ * installation, which is exactly what AD-16 forbids, and turns one
+ * misconfigured lane into a total collection outage repeated every tick.
+ */
+export function assertSchedules(
+  schedules: readonly LaneSchedule[],
+  installations: readonly string[],
+): void {
+  for (const s of schedules) {
+    if (s.installations && s.installations.length === 0) {
+      throw new Error(`lane ${s.lane} declares no installations`);
+    }
+    const orphan = s.installations?.find((i) => !installations.includes(i));
+    if (orphan !== undefined) {
+      throw new Error(
+        `lane ${s.lane} declares installation ${orphan}, which the cycle never visits`,
+      );
+    }
+  }
+}
+
 export function isDue(
   last: RunRecord | undefined,
   cadenceMs: number,
   now: Date,
+  retryAfterMs?: number,
 ): boolean {
   if (!last) return true;
+  // Anything that is not a clean success, not just `failed`. beginRun writes
+  // `partial` as its in-flight placeholder, so a collector killed mid-run
+  // leaves a row that would otherwise wait a full cadence, and a lane that
+  // finished `partial` has not delivered what it was scheduled to deliver.
+  const wait =
+    last.outcome !== "ok" && retryAfterMs !== undefined
+      ? Math.min(Math.max(retryAfterMs, 1_000), cadenceMs)
+      : cadenceMs;
   const since = now.getTime() - new Date(last.verifiedAt).getTime();
   if (Number.isNaN(since)) return true;
   if (since < 0) return true;
-  return since >= cadenceMs;
+  return since >= wait;
 }
 
 export interface CycleReport {
@@ -99,6 +147,7 @@ export async function runCycle(
 
   for (const installation of installations) {
     for (const s of schedules) {
+      if (s.installations && !s.installations.includes(installation)) continue;
       const key = `${s.lane}|${installation}|${s.scope}`;
       const fields = {
         lane: s.lane,
@@ -107,7 +156,7 @@ export async function runCycle(
       };
       const cadence = cadenceOverride ?? s.cadenceMs;
 
-      if (!isDue(latest.get(key), cadence, now)) {
+      if (!isDue(latest.get(key), cadence, now, s.retryAfterMs)) {
         report.skipped++;
         continue;
       }
@@ -193,8 +242,15 @@ export async function loop(
       opts.log(
         `cycle failed: ${redact(String(err instanceof Error ? err.message : err))}`,
       );
-      // The cycle itself falling over is worse than a lane failing, not better.
-      return Math.max(1, schedules.length * installations.length);
+      // The cycle itself falling over is worse than a lane failing, not
+      // better. Counted as the runs a cycle would actually have attempted,
+      // which per-lane `installations` made smaller than lanes x installations.
+      const attempts = schedules.reduce(
+        (n, s) =>
+          n + (s.installations ? s.installations.length : installations.length),
+        0,
+      );
+      return Math.max(1, attempts);
     }
   };
 

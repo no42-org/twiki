@@ -13,6 +13,7 @@ import {
   repoSlug,
   type WorkflowRunRef,
 } from "../src/core/types.js";
+import type { EnrichmentPort, KevCatalogue } from "../src/enrich/port.js";
 import type {
   DependabotAccess,
   GitHubPort,
@@ -138,6 +139,35 @@ export interface FakeRepoData {
   workflowRuns?: Record<string, WorkflowRunRef[]>;
   /** behind_by keyed by PR head SHA. */
   behindByMap?: Record<string, number | null>;
+}
+
+/**
+ * Enrichment stub. Named and placed per the conventions, so tests stop casting
+ * an object literal to the port and can no longer build states the real parser
+ * refuses to produce.
+ */
+export class FakeEnrichmentPort implements EnrichmentPort {
+  /** Ids the next fetch reports as listed. */
+  cveIds: string[] = [];
+  /** Entries the next fetch could not read. */
+  unreadable = 0;
+  version = "2026.08.17";
+  released = "2026-08-17T17:00:24.7655Z";
+  /** When set, the next fetch throws this instead of answering. */
+  failWith: Error | null = null;
+  calls = 0;
+
+  async fetchKev(): Promise<KevCatalogue> {
+    this.calls++;
+    if (this.failWith) throw this.failWith;
+    return {
+      version: this.version,
+      released: this.released,
+      claimedCount: this.cveIds.length + this.unreadable,
+      cveIds: [...this.cveIds].sort(),
+      unreadable: this.unreadable,
+    };
+  }
 }
 
 /** Read half, usable on its own by a consumer that holds only GitHubReadPort. */

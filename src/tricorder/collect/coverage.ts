@@ -4,6 +4,7 @@
  */
 
 import type { CoverageState } from "../../core/coverage.js";
+import { safeLog } from "../../core/log.js";
 import { redact } from "../../core/redact.js";
 import { coverageSubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
@@ -82,6 +83,9 @@ export async function collectCoverage(
   scope: RunScope = "full",
 ): Promise<CoverageResult> {
   let run: ReturnType<StorePort["beginRun"]> | null = null;
+  // A logger that throws after finishRun committed would land in the catch and
+  // rewrite a successful run as failed (AD-16). Same fix as the KEV lane.
+  const log = safeLog(deps.log);
 
   try {
     run = deps.store.beginRun({
@@ -146,7 +150,7 @@ export async function collectCoverage(
         : undefined;
     deps.store.finishRun(run, outcome, deps.now(), detail);
 
-    deps.log(
+    log(
       `${LANE} ${installation}: ${covered} covered, ${notCovered} not covered` +
         (unknown > 0 ? `, ${unknown} unknown` : ""),
     );
@@ -162,7 +166,7 @@ export async function collectCoverage(
         // The store is what failed. Nothing further to record.
       }
     }
-    deps.log(`${LANE} ${installation}: failed, ${detail}`);
+    log(`${LANE} ${installation}: failed, ${detail}`);
     return {
       installation,
       outcome: "failed",

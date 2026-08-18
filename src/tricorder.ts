@@ -5,6 +5,7 @@
 
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./core/config.js";
+import { HttpEnrichment } from "./enrich/kev.js";
 import {
   createTricorderAppFromEnv,
   createTricorderReadPort,
@@ -18,11 +19,18 @@ import {
   collectOrgAlerts,
 } from "./tricorder/collect/dependabot-alerts.js";
 import {
+  collectKev,
+  KEV_INSTALLATION,
+  LANE as KEV_LANE,
+} from "./tricorder/collect/kev.js";
+import {
+  assertSchedules,
   formatLine,
   type LaneSchedule,
   loop,
 } from "./tricorder/collect/scheduler.js";
 import { diagnose, formatReport } from "./tricorder/doctor.js";
+import type { RunOutcome, RunScope } from "./tricorder/store/port.js";
 import { SqliteStore } from "./tricorder/store/sqlite-store.js";
 import { createApp } from "./tricorder/web/app.js";
 import { startServer } from "./tricorder/web/server.js";
@@ -35,6 +43,19 @@ import { startServer } from "./tricorder/web/server.js";
 // the boundary lint enforces that.
 
 const DEFAULT_DB = "tricorder.db";
+
+/**
+ * Lane cadences, in one place.
+ *
+ * The scheduler's cadence and the reader's freshness budget must be the same
+ * number, and they were three separate literals. AD-11 calls a lane judged on
+ * the wrong cadence a defect, and duplication is how that happens.
+ */
+export const ALERT_CADENCE_MS = 15 * 60_000;
+export const COVERAGE_CADENCE_MS = 24 * 60 * 60_000;
+export const KEV_CADENCE_MS = 24 * 60 * 60_000;
+/** After a failed or partial run, retry sooner than a full day. */
+export const KEV_RETRY_MS = 60 * 60_000;
 
 /**
  * `??` does not catch NaN, so an unparseable port would reach listen(), coerce
@@ -97,6 +118,81 @@ export function parseTickSeconds(
   return n;
 }
 
+/**
+ * The real schedule table.
+ *
+ * Extracted so it can be asserted over. Every lane here was deletable with a
+ * green suite: removing the KEV block, or the `installations` restriction that
+ * keeps the GitHub lanes off the KEV pseudo-installation, passed lint,
+ * typecheck and every test.
+ */
+export function buildSchedules(deps: {
+  installations: readonly string[];
+  alerts: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  coverage: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  kev: (scope: RunScope) => Promise<{ outcome: RunOutcome }>;
+}): LaneSchedule[] {
+  const schedules: LaneSchedule[] = [
+    {
+      lane: KEV_LANE,
+      scope: "full",
+      cadenceMs: KEV_CADENCE_MS,
+      retryAfterMs: KEV_RETRY_MS,
+      installations: [KEV_INSTALLATION],
+      // Scope passed explicitly rather than relying on a default: if the two
+      // disagree the due-ness key never matches the run that was written, and
+      // the lane re-fetches on every tick.
+      run: () => deps.kev("full"),
+    },
+    {
+      lane: ALERT_LANE,
+      scope: "full",
+      cadenceMs: ALERT_CADENCE_MS,
+      installations: deps.installations,
+      run: deps.alerts,
+    },
+    {
+      lane: COVERAGE_LANE,
+      scope: "full",
+      cadenceMs: COVERAGE_CADENCE_MS,
+      installations: deps.installations,
+      run: deps.coverage,
+    },
+  ];
+  // Validated here, not at the call site: an earlier version exported the
+  // check and relied on the entrypoint to call it, the wiring silently never
+  // landed, and a lane whose installations the cycle never visits would have
+  // been skipped every tick with no run rows and no error.
+  assertSchedules(schedules, cycleInstallations(deps.installations));
+  return schedules;
+}
+
+/**
+ * Every installation a cycle visits, KEV's pseudo-installation included.
+ *
+ * A Set, because an owner literally named `cisa` would otherwise appear twice
+ * and every GitHub lane would sweep it twice per cycle.
+ */
+export function cycleInstallations(installations: readonly string[]): string[] {
+  return [...new Set([...installations, KEV_INSTALLATION])];
+}
+
+/** An https URL, or unset. Anything else refuses to start. */
+export function parseKevUrl(raw: string | undefined): string | undefined {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return undefined;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error(`TRICORDER_KEV_URL is not a URL: ${raw}`);
+  }
+  if (url.protocol !== "https:") {
+    throw new Error(`TRICORDER_KEV_URL must be https: ${raw}`);
+  }
+  return url.toString();
+}
+
 function usage(): never {
   console.error("usage: tricorder <collect|web|doctor>");
   process.exit(2);
@@ -130,10 +226,14 @@ async function main(): Promise<void> {
       store,
       watched,
       // Matches the full-sweep cadence the architecture plans for.
-      policy: { cadenceMs: 15 * 60_000 },
-      // The coverage lane is daily (AD-15), so judging it on the sweep cadence
-      // would report every attestation as stale within half an hour.
-      coveragePolicy: { cadenceMs: 24 * 60 * 60_000 },
+      policy: { cadenceMs: ALERT_CADENCE_MS },
+      // Each lane judged on its own cadence. One global threshold applied to
+      // every lane is a defect AD-11 names explicitly, and it made both daily
+      // lanes read stale thirty minutes after succeeding.
+      lanePolicies: {
+        [KEV_LANE]: { cadenceMs: KEV_CADENCE_MS },
+        [COVERAGE_LANE]: { cadenceMs: COVERAGE_CADENCE_MS },
+      },
       now: () => new Date(),
     });
 
@@ -191,20 +291,20 @@ async function main(): Promise<void> {
       log,
     };
 
-    const schedules: LaneSchedule[] = [
-      {
-        lane: ALERT_LANE,
-        scope: "full",
-        cadenceMs: 15 * 60_000,
-        run: (installation) => collectOrgAlerts(laneDeps, installation, "full"),
-      },
-      {
-        lane: COVERAGE_LANE,
-        scope: "full",
-        cadenceMs: 24 * 60 * 60_000,
-        run: (installation) => collectCoverage(laneDeps, installation, "full"),
-      },
-    ];
+    // Configurable so a mirror or an egress proxy can be used. Validated like
+    // every neighbouring setting: a typo that silently reverts to CISA's feed
+    // would look like a working mirror until someone read the logs.
+    const enrichment = new HttpEnrichment(parseKevUrl(env.TRICORDER_KEV_URL));
+
+    const schedules = buildSchedules({
+      installations,
+      alerts: (installation) =>
+        collectOrgAlerts(laneDeps, installation, "full"),
+      coverage: (installation) =>
+        collectCoverage(laneDeps, installation, "full"),
+      kev: (scope) =>
+        collectKev({ enrichment, store, now: laneDeps.now, log }, scope),
+    });
 
     log(
       `collecting ${watched.length} repositories across ${installations.length} installations: ${installations.join(", ")}`,
@@ -233,7 +333,7 @@ async function main(): Promise<void> {
         log: (fields, msg) => log(formatLine(fields, msg)),
       },
       schedules,
-      installations,
+      cycleInstallations(installations),
       {
         once,
         tickMs: parseTickSeconds(env.TRICORDER_TICK_SECONDS, log) * 1000,

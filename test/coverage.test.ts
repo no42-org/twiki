@@ -327,6 +327,20 @@ describe("the coverage lane", () => {
     expect(stateOf(REPO)).toBe("unknown");
   });
 
+  it("a throwing logger cannot fail the lane", async () => {
+    const result = await collectCoverage(
+      {
+        ...deps(),
+        log: () => {
+          throw new Error("EPIPE");
+        },
+      },
+      "no42-org",
+    );
+    expect(result.outcome).toBe("ok");
+    expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
+  });
+
   it("contains a failure rather than aborting the cycle", async () => {
     github.listOrgRepos = async () => {
       throw new Error("org is unreachable");
