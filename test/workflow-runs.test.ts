@@ -101,7 +101,12 @@ describe("the Actions lane (story 15)", () => {
 
     const r = await collectWorkflowRuns(deps(), "no42-org", "full");
 
-    expect(r).toMatchObject({ outcome: "ok", runs: 2, calls: 1 });
+    expect(r).toMatchObject({
+      outcome: "ok",
+      runs: 2,
+      fetched: 1,
+      notModified: 0,
+    });
     const keys = current()
       .map((c) => c.subject.key)
       .sort();
@@ -166,7 +171,12 @@ describe("the Actions lane (story 15)", () => {
     github.workflowRunNotModified.add("no42-org/packyard");
     const r = await collectWorkflowRuns(deps(), "no42-org", "full");
 
-    expect(r).toMatchObject({ outcome: "ok", runs: 1, calls: 1 });
+    expect(r).toMatchObject({
+      outcome: "ok",
+      runs: 1,
+      fetched: 0,
+      notModified: 1,
+    });
     const after = current()[0];
     expect(after?.observedAt).toBe(before?.observedAt);
     expect(after?.verifiedAt).not.toBe(before?.verifiedAt);
@@ -245,10 +255,13 @@ describe("the Actions lane (story 15)", () => {
     ).not.toBeNull();
   });
 
-  it("counts every call it makes, 304s included", async () => {
-    // The measurement story 15 exists for: the lane's own report is what
-    // gets compared against the spine's per-repo floor.
+  it("splits the cost into fetched, not-modified and failed", async () => {
+    // The measurement story 15 exists for. A bare request count is
+    // tautological (always one per watched repository) and misleading: a 304
+    // costs no budget, so only `fetched` is spend and `notModified` is what
+    // the cache saved.
     watched.push({ owner: "no42-org", name: "twiki" });
+    watched.push({ owner: "no42-org", name: "broken" });
     github.workflowRuns.set("no42-org/packyard", [
       makeRun({ nodeId: "WFR_1" }),
     ]);
@@ -256,8 +269,60 @@ describe("the Actions lane (story 15)", () => {
     await collectWorkflowRuns(deps(), "no42-org", "full");
 
     github.workflowRunNotModified.add("no42-org/packyard");
+    github.workflowRunFailing.add("no42-org/broken");
     const r = await collectWorkflowRuns(deps(), "no42-org", "full");
-    expect(r.calls).toBe(2);
+
+    // packyard 304s, twiki is fetched, broken fails: three watched repos,
+    // three distinct outcomes, and only one of them cost budget.
+    expect(r).toMatchObject({
+      fetched: 1,
+      notModified: 1,
+      failedRepos: 1,
+      outcome: "partial",
+    });
+  });
+
+  it("writes no validator when the observation commit fails", async () => {
+    // A validator written inside the fetch loop would survive a failed
+    // recordObservations and then 304-confirm rows that were never stored:
+    // a red build rendering green and fresh for as long as the repo is
+    // quiet. Validators land only after the rows they vouch for.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeRun({ nodeId: "WFR_1" }),
+    ]);
+    github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
+    const exploding = {
+      ...deps(),
+      store: Object.assign(Object.create(Object.getPrototypeOf(store)), store, {
+        recordObservations: () => {
+          throw new Error("SQLITE_BUSY");
+        },
+      }) as typeof store,
+    };
+
+    const r = await collectWorkflowRuns(exploding, "no42-org", "full");
+
+    expect(r.outcome).toBe("failed");
+    expect(store.loadValidator("no42-org", workflowRunsUrl(REPO))).toBeNull();
+    expect(current()).toHaveLength(0);
+  });
+
+  it("reports the remaining budget, and survives not getting it", async () => {
+    // Story 15 asks for the remaining budget in as many words, and
+    // /rate_limit is the only honest source (AD-24). A diagnostic that took
+    // the lane down would be worse than the number is useful.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeRun({ nodeId: "WFR_1" }),
+    ]);
+    const ok = await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(ok.budgetRemaining).toBe(5000);
+
+    github.rateLimit = async () => {
+      throw new Error("rate_limit unreachable");
+    };
+    const degraded = await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(degraded.outcome).toBe("ok");
+    expect(degraded.budgetRemaining).toBeNull();
   });
 
   it("contains a store failure rather than throwing past the lane", async () => {

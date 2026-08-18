@@ -237,9 +237,14 @@ export async function collectOrgAlerts(
 
     // Unreadable payloads mean the result is incomplete. Finishing `ok` here
     // would report a confident zero if the endpoint's shape ever shifts.
-    const outcome = page.unreadable > 0 ? "partial" : "ok";
-    const detail =
-      page.unreadable > 0
+    // Truncation degrades exactly as unreadable payloads do: both mean the
+    // result set is incomplete, and every guard below keys off `ok`, so a
+    // truncated sweep confirms nothing, tombstones nothing and caches no
+    // validator.
+    const outcome = page.unreadable > 0 || page.truncated ? "partial" : "ok";
+    const detail = page.truncated
+      ? "alert listing truncated at the pagination cap; nothing tombstoned"
+      : page.unreadable > 0
         ? `${page.unreadable} alert payloads could not be read`
         : undefined;
 

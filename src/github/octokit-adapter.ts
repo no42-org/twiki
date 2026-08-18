@@ -69,8 +69,14 @@ export type OrgOctokitResolver = (org: string) => Promise<Octokit>;
 export const SEARCH_QUERY_MAX = 256;
 const ISSUE_SEARCH_BASE = "is:issue is:open no:assignee";
 
-/** Pagination sanity cap: 50 pages is 5,000 open alerts in one org. */
-export const MAX_ALERT_PAGES = 50;
+/**
+ * Pagination sanity cap: 200 pages is 20,000 open alerts in one org, far
+ * past any real estate, so this bounds a self-linking proxy rather than a
+ * large organisation. Hitting it truncates the result honestly (the caller
+ * degrades to partial and tombstones nothing); it is not an error, because
+ * failing the whole lane would ingest nothing at all.
+ */
+export const MAX_ALERT_PAGES = 200;
 
 /**
  * The rel="next" target from a Link header, or null.
@@ -205,6 +211,60 @@ async function runNodeSearch(
     }
     cursor = page.search.pageInfo.endCursor;
   }
+}
+
+/**
+ * The AD-25 send rule, in one place for every conditional endpoint.
+ *
+ * Three ways a cached validator must NOT go on the wire, each of which was
+ * separately load-bearing: a different token generation (GitHub's ETags vary
+ * with the Authorization header, so it is a guaranteed miss), an unknowable
+ * generation (null cannot be compared, and a sentinel would compare equal to
+ * itself across rotations), and an all-null validator (it adds no header, so
+ * treating the request as conditional is how an unsolicited 304 gets
+ * honoured and freezes stored state).
+ */
+export function sendableValidator(
+  cached: RequestValidator | null | undefined,
+  tokenGen: string | null,
+): RequestValidator | null {
+  if (!cached || tokenGen === null) return null;
+  if (cached.tokenGen !== tokenGen) return null;
+  if (!cached.etag && !cached.lastModified) return null;
+  return cached;
+}
+
+/**
+ * The conditional headers for a sendable validator. Both when both exist:
+ * RFC 9110 prefers If-None-Match, and a proxy honouring only Last-Modified
+ * still gets its chance to answer 304.
+ */
+export function conditionalHeadersFor(
+  send: RequestValidator | null,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (send?.etag) headers["if-none-match"] = send.etag;
+  if (send?.lastModified) headers["if-modified-since"] = send.lastModified;
+  return headers;
+}
+
+/**
+ * The validator a 200's headers earn, or null when they earn none. A
+ * validator that cannot make the next request conditional is not stored:
+ * see sendableValidator's third rule.
+ */
+export function validatorFrom(
+  headers: Record<string, string | number | undefined>,
+  tokenGen: string | null,
+): RequestValidator | null {
+  if (tokenGen === null) return null;
+  const etag = typeof headers.etag === "string" ? headers.etag : null;
+  const lastModified =
+    typeof headers["last-modified"] === "string"
+      ? headers["last-modified"]
+      : null;
+  if (!etag && !lastModified) return null;
+  return { etag, lastModified, tokenGen };
 }
 
 /**
@@ -639,27 +699,15 @@ export class OctokitGitHub implements GitHubPort {
     // nothing is sent and nothing is cached, because a generation that
     // cannot be compared would otherwise compare equal across rotations.
     const tokenGen = await installationTokenGen(gh);
-    const send =
-      cached &&
-      tokenGen !== null &&
-      cached.tokenGen === tokenGen &&
-      (cached.etag || cached.lastModified)
-        ? cached
-        : null;
-    // Both headers when both exist, same rationale as the KEV path: RFC 9110
-    // prefers If-None-Match, and a proxy honouring only Last-Modified still
-    // gets its chance to answer 304 (AD-25).
-    const conditionalHeaders: Record<string, string> = {};
-    if (send?.etag) conditionalHeaders["if-none-match"] = send.etag;
-    if (send?.lastModified) {
-      conditionalHeaders["if-modified-since"] = send.lastModified;
-    }
+    const send = sendableValidator(cached, tokenGen);
+    const conditionalHeaders = conditionalHeadersFor(send);
 
     // Paginated by link header rather than gh.paginate: the conditional
     // request needs the first page's response headers (etag, 304), which
     // paginate does not expose.
     const raw: unknown[] = [];
     let pages = 0;
+    let truncated = false;
     let firstEtag: string | null = null;
     let firstLastModified: string | null = null;
     let next: string | null = null;
@@ -689,6 +737,7 @@ export class OctokitGitHub implements GitHubPort {
               alerts: [],
               unreadable: 0,
               notModified: true,
+              truncated: false,
               validator: { ...send },
             };
           }
@@ -726,9 +775,13 @@ export class OctokitGitHub implements GitHubPort {
       // forever. Hitting the cap is a fault, and a fault must not look like
       // the end of the listing.
       if (pages >= MAX_ALERT_PAGES) {
-        throw new Error(
-          `alert listing for ${org} claims more than ${MAX_ALERT_PAGES} pages; refusing to loop`,
-        );
+        // TRUNCATE, do not throw: what we read is real and worth ingesting,
+        // and the flag makes the caller degrade to partial so nothing is
+        // tombstoned against an incomplete set. Throwing would ingest
+        // nothing at all, every sweep, for an organisation whose alert
+        // count cannot shrink without this lane.
+        truncated = true;
+        break;
       }
       // The next URL is followed with the installation token attached, so it
       // must stay on GitHub's API origin: a proxy-injected Link header must
@@ -756,15 +809,24 @@ export class OctokitGitHub implements GitHubPort {
       alerts,
       unreadable,
       notModified: false,
+      truncated,
       // Only a listing that fit in one page gets a validator: each page
       // carries its own ETag, and a 304 on page one says nothing about the
       // pages behind it.
       // A validator earns caching only when it can make a request
       // conditional: an all-null one would count as "cached" while sending
       // no header, the unsolicited-304 state guarded against above.
+      // A truncated listing earns no validator either: a 304 against it
+      // would confirm an incomplete set as the whole answer.
       validator:
-        pages === 1 && (firstEtag || firstLastModified) && tokenGen !== null
-          ? { etag: firstEtag, lastModified: firstLastModified, tokenGen }
+        pages === 1 && !truncated
+          ? validatorFrom(
+              {
+                etag: firstEtag ?? undefined,
+                "last-modified": firstLastModified ?? undefined,
+              },
+              tokenGen,
+            )
           : null,
     };
   }
@@ -780,16 +842,8 @@ export class OctokitGitHub implements GitHubPort {
     // no validator, and both headers go when both exist (AD-25). Page one
     // only, so the single-page caching restriction never bites here.
     const tokenGen = await installationTokenGen(gh);
-    const send =
-      cached &&
-      tokenGen !== null &&
-      cached.tokenGen === tokenGen &&
-      (cached.etag || cached.lastModified)
-        ? cached
-        : null;
-    const headers: Record<string, string> = {};
-    if (send?.etag) headers["if-none-match"] = send.etag;
-    if (send?.lastModified) headers["if-modified-since"] = send.lastModified;
+    const send = sendableValidator(cached, tokenGen);
+    const headers = conditionalHeadersFor(send);
 
     let res: {
       data: unknown;
@@ -866,19 +920,11 @@ export class OctokitGitHub implements GitHubPort {
       });
     }
 
-    const etag = typeof res.headers.etag === "string" ? res.headers.etag : null;
-    const lastModified =
-      typeof res.headers["last-modified"] === "string"
-        ? res.headers["last-modified"]
-        : null;
     return {
       runs,
       unreadable,
       notModified: false,
-      validator:
-        (etag || lastModified) && tokenGen !== null
-          ? { etag, lastModified, tokenGen }
-          : null,
+      validator: validatorFrom(res.headers, tokenGen),
     };
   }
 

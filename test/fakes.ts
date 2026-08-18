@@ -311,6 +311,8 @@ export class FakeGitHubReadPort implements GitHubReadPort {
 
   /** Orgs whose next conditional read answers 304. Unconditional still 200s. */
   orgAlertNotModified = new Set<string>();
+  /** Orgs whose listing stops at the pagination cap. */
+  orgAlertTruncated = new Set<string>();
   /** Validator a 200 hands back, per org; null mimics a multi-page listing. */
   orgAlertValidators = new Map<string, RequestValidator>();
   /** What each call carried, so a test can assert conditionality. */
@@ -329,6 +331,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
         alerts: [],
         unreadable: 0,
         notModified: true,
+        truncated: false,
         validator: cached,
       };
     }
@@ -336,6 +339,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       alerts: this.orgAlerts.get(org) ?? [],
       unreadable: this.unreadableByOrg.get(org) ?? 0,
       notModified: false,
+      truncated: this.orgAlertTruncated.has(org),
       validator: this.orgAlertValidators.get(org) ?? null,
     };
   }

@@ -276,6 +276,31 @@ export function parseEpssBands(raw: string | undefined): RankPolicy {
   return policy;
 }
 
+/**
+ * The installation the Actions lane runs on, or null when unset.
+ *
+ * Validated here rather than left to assertSchedules, which checks against
+ * cycleInstallations and therefore accepts KEV's pseudo-installation: `cisa`
+ * would schedule a lane that sweeps zero repositories and reports `ok`
+ * forever, making "no build failures" and "we never looked" the same picture
+ * (AD-28). An owner that is not in the allowlist is refused for the same
+ * reason: a silent no-op lane is worse than a startup failure.
+ */
+export function parseActionsInstallation(
+  raw: string | undefined,
+  installations: readonly string[],
+): string | null {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (value === "") return null;
+  if (!installations.includes(value)) {
+    throw new Error(
+      `TRICORDER_ACTIONS_INSTALLATION=${raw} is not an owner in repos.yaml` +
+        ` (have: ${installations.join(", ") || "none"})`,
+    );
+  }
+  return value;
+}
+
 /** An https URL, or unset. Anything else refuses to start. */
 export function parseKevUrl(raw: string | undefined): string | undefined {
   const trimmed = (raw ?? "").trim();
@@ -382,8 +407,10 @@ async function main(): Promise<void> {
     const app = createTricorderAppFromEnv(env);
     const github = await createTricorderReadPort(app, isWatched, env);
 
-    const actionsInstallation =
-      (env.TRICORDER_ACTIONS_INSTALLATION ?? "").trim().toLowerCase() || null;
+    const actionsInstallation = parseActionsInstallation(
+      env.TRICORDER_ACTIONS_INSTALLATION,
+      installations,
+    );
 
     const laneDeps = {
       github,
@@ -419,9 +446,11 @@ async function main(): Promise<void> {
       issues: (installation) => collectIssues(laneDeps, installation, "full"),
       updateStatuses: (installation) =>
         collectUpdateStatuses(laneDeps, installation, "full"),
-      // Case-folded like the installations it must match; a typo here fails
-      // startup loudly via assertSchedules rather than scheduling a lane the
-      // cycle never visits.
+      // Case-folded like the installations it must match. assertSchedules
+      // catches a typo, with one hole it cannot see: it validates against
+      // cycleInstallations, which unions in KEV's pseudo-installation, so
+      // `cisa` would pass and then sweep zero repositories and report ok
+      // forever. Rejected explicitly above, before it gets here.
       actionsRuns: actionsInstallation
         ? {
             installation: actionsInstallation,

@@ -28,6 +28,7 @@ import {
   buildSchedules,
   cycleInstallations,
   KEV_CADENCE_MS,
+  parseActionsInstallation,
   parseKevUrl,
 } from "../src/tricorder.js";
 import { FakeEnrichmentPort } from "./fakes.js";
@@ -587,6 +588,22 @@ describe("the real schedule table", () => {
 
   it("runs KEV only on its own pseudo-installation", () => {
     expect(lane("kev")?.installations).toEqual([KEV_INSTALLATION]);
+  });
+
+  it("refuses an Actions installation that is not a real owner", () => {
+    // assertSchedules validates against cycleInstallations, which unions in
+    // KEV's pseudo-installation, so `cisa` would pass and then sweep zero
+    // repositories and report ok forever: "no build failures" and "we never
+    // looked" become the same picture (AD-28).
+    expect(() => parseActionsInstallation("cisa", ["no42-org"])).toThrow(
+      /not an owner in repos.yaml/,
+    );
+    expect(() => parseActionsInstallation("no42-orgg", ["no42-org"])).toThrow(
+      /not an owner in repos.yaml/,
+    );
+    expect(parseActionsInstallation("NO42-ORG", ["no42-org"])).toBe("no42-org");
+    expect(parseActionsInstallation("  ", ["no42-org"])).toBeNull();
+    expect(parseActionsInstallation(undefined, ["no42-org"])).toBeNull();
   });
 
   it("runs the Actions lane only on its opted-in installation", () => {
