@@ -5,6 +5,11 @@
 
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./core/config.js";
+import {
+  assertRankPolicy,
+  DEFAULT_RANK_POLICY,
+  type RankPolicy,
+} from "./core/rank.js";
 import { HttpEnrichment } from "./enrich/kev.js";
 import {
   createTricorderAppFromEnv,
@@ -177,6 +182,29 @@ export function cycleInstallations(installations: readonly string[]): string[] {
   return [...new Set([...installations, KEV_INSTALLATION])];
 }
 
+/**
+ * EPSS thresholds from the environment, or the measured defaults.
+ *
+ * CAP-6: changing a configured threshold changes the order, and no
+ * configuration path reorders the chain itself. The numbers go through
+ * assertRankPolicy, so a typo refuses to start rather than silently
+ * mis-banding every item on the queue.
+ */
+export function parseEpssBands(raw: string | undefined): RankPolicy {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return DEFAULT_RANK_POLICY;
+  const bands = trimmed.split(",").map((part) => Number(part.trim()));
+  const policy: RankPolicy = { epssBands: bands };
+  try {
+    assertRankPolicy(policy);
+  } catch (err) {
+    throw new Error(
+      `TRICORDER_EPSS_BANDS is not usable: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+  return policy;
+}
+
 /** An https URL, or unset. Anything else refuses to start. */
 export function parseKevUrl(raw: string | undefined): string | undefined {
   const trimmed = (raw ?? "").trim();
@@ -234,6 +262,7 @@ async function main(): Promise<void> {
         [KEV_LANE]: { cadenceMs: KEV_CADENCE_MS },
         [COVERAGE_LANE]: { cadenceMs: COVERAGE_CADENCE_MS },
       },
+      rankPolicy: parseEpssBands(env.TRICORDER_EPSS_BANDS),
       now: () => new Date(),
     });
 

@@ -475,6 +475,34 @@ describe("SqliteStore", () => {
     });
   });
 
+  describe("read ordering", () => {
+    it("returns currentByType rows ordered by key", () => {
+      // The queue's stable tie order and the repo page's row order both rest
+      // on this. Honest limitation: removing the ORDER BY passes this test
+      // too, because the primary key is (subject_type, subject_key) and
+      // SQLite's index walk happens to return key order anyway. The clause is
+      // the only GUARANTEED ordering, so it stays; scan order without it is an
+      // implementation detail no test can pin from outside.
+      store.recordObservations(run, T1, [
+        {
+          subject: repositorySubject({ owner: "no42-org", name: "zzz" }),
+          payload: { a: 1 },
+        },
+        {
+          subject: repositorySubject({ owner: "no42-org", name: "aaa" }),
+          payload: { a: 2 },
+        },
+        {
+          subject: repositorySubject({ owner: "no42-org", name: "mmm" }),
+          payload: { a: 3 },
+        },
+      ]);
+      expect(
+        store.currentByType("repository").map((r) => r.subject.key),
+      ).toEqual(["no42-org/aaa", "no42-org/mmm", "no42-org/zzz"]);
+    });
+  });
+
   describe("trimming collection runs", () => {
     const runAt = (at: string, installation = "no42-org") => {
       const r = store.beginRun({

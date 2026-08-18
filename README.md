@@ -123,6 +123,9 @@ tricorder web       # reads: serves the dashboard, read-only, never migrates
 tricorder doctor    # checks the App setup; reads GitHub, writes nothing
 ```
 
+`web` serves two pages on the loopback bind: `/` lists every watched repository with its alert count and freshness, and `/queue` is one cross-repository list ordered by the ranking chain, each row saying why it ranks where it does.
+The ordering is a local policy (KEV, then EPSS, then severity, then update size), not SSVC or any published standard.
+
 ### The read-only GitHub App
 
 gitricorder uses **its own App**, separate from twiki's. This is the point, not
@@ -181,6 +184,7 @@ Set `TRICORDER_ONCE` to run a single cycle and exit, for cron.
 | `TRICORDER_RUN_RETENTION_DAYS` | Days of collection-run history to keep. Unset keeps everything. | unset |
 | `TRICORDER_ONCE` | Run one collection cycle and exit, instead of looping. | unset (loops) |
 | `TRICORDER_TICK_SECONDS` | How often `collect` wakes to look for due lanes. | `60` |
+| `TRICORDER_EPSS_BANDS` | Ranking thresholds, comma-separated and strictly descending, e.g. `0.5,0.1,0.01`. Changes the order; nothing can reorder the chain itself. A malformed value refuses to start. | `0.5,0.1,0.01` |
 | `TRICORDER_KEV_URL` | Where to fetch the CISA KEV catalogue. Point it at a mirror or proxy in an egress-restricted deployment. | CISA's public feed |
 | `TRICORDER_VERBOSE` | Print Octokit's own request logging. Off by default because the coverage lane expects a 403 per repository with Dependabot switched off, and those would otherwise look like errors on a healthy run. | unset |
 
