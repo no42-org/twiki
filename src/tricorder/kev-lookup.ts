@@ -66,9 +66,6 @@ export function loadKevIndex(
 
   // Every id must be a CVE. A list holding anything else would be a fresh,
   // confident-looking index answering false for every real CVE asked.
-
-  // Every id must be a CVE. A list holding anything else would be a fresh,
-  // confident-looking index answering false for every real CVE asked.
   if (!payload.cveIds.every((c) => typeof c === "string" && CVE_ID.test(c))) {
     return unusable;
   }

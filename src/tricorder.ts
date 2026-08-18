@@ -20,12 +20,11 @@ import {
 } from "./tricorder/collect/dependabot-alerts.js";
 import {
   collectKev,
-  KEV_CADENCE_MS,
   KEV_INSTALLATION,
   LANE as KEV_LANE,
-  KEV_RETRY_MS,
 } from "./tricorder/collect/kev.js";
 import {
+  assertSchedules,
   formatLine,
   type LaneSchedule,
   loop,
@@ -54,6 +53,9 @@ const DEFAULT_DB = "tricorder.db";
  */
 export const ALERT_CADENCE_MS = 15 * 60_000;
 export const COVERAGE_CADENCE_MS = 24 * 60 * 60_000;
+export const KEV_CADENCE_MS = 24 * 60 * 60_000;
+/** After a failed or partial run, retry sooner than a full day. */
+export const KEV_RETRY_MS = 60 * 60_000;
 
 /**
  * `??` does not catch NaN, so an unparseable port would reach listen(), coerce
@@ -130,7 +132,7 @@ export function buildSchedules(deps: {
   coverage: (installation: string) => Promise<{ outcome: RunOutcome }>;
   kev: (scope: RunScope) => Promise<{ outcome: RunOutcome }>;
 }): LaneSchedule[] {
-  return [
+  const schedules: LaneSchedule[] = [
     {
       lane: KEV_LANE,
       scope: "full",
@@ -157,6 +159,12 @@ export function buildSchedules(deps: {
       run: deps.coverage,
     },
   ];
+  // Validated here, not at the call site: an earlier version exported the
+  // check and relied on the entrypoint to call it, the wiring silently never
+  // landed, and a lane whose installations the cycle never visits would have
+  // been skipped every tick with no run rows and no error.
+  assertSchedules(schedules, cycleInstallations(deps.installations));
+  return schedules;
 }
 
 /**
@@ -226,9 +234,6 @@ async function main(): Promise<void> {
         [KEV_LANE]: { cadenceMs: KEV_CADENCE_MS },
         [COVERAGE_LANE]: { cadenceMs: COVERAGE_CADENCE_MS },
       },
-      // The coverage lane is daily (AD-15), so judging it on the sweep cadence
-      // would report every attestation as stale within half an hour.
-      coveragePolicy: { cadenceMs: COVERAGE_CADENCE_MS },
       now: () => new Date(),
     });
 

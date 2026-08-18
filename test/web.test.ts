@@ -844,6 +844,40 @@ describe("issues found in review (round 2)", () => {
       expect(kevRow.slice(0, 200)).not.toContain("stale");
     });
 
+    it("judges the coverage attestation on the lane's own cadence through createApp", async () => {
+      // The repo rows used to get their coverage cadence from a separate
+      // coveragePolicy field while the health table read lanePolicies. Two
+      // wirings for one number is how AD-11's drift happens, so both now read
+      // the same table, and this pins the repo-row half of it: a five-hour-old
+      // attestation is fresh on a daily cadence and must still suppress the
+      // count.
+      const cRun = store.beginRun({
+        lane: "coverage",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-08-16T07:00:00.000Z",
+      });
+      store.recordObservations(cRun, "2026-08-16T07:00:00.000Z", [
+        {
+          subject: coverageSubject(REPO),
+          payload: { repo: "no42-org/twiki", state: "alerts_disabled" },
+        },
+      ]);
+      store.finishRun(cRun, "ok", "2026-08-16T07:00:00.000Z");
+
+      const html = await (
+        await createApp({
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          lanePolicies: { coverage: { cadenceMs: 24 * 60 * 60_000 } },
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      expect(html).toContain("not covered");
+    });
+
     it("falls back to the sweep policy for a lane with no entry", async () => {
       const r = store.beginRun({
         lane: "rest-org-dependabot",

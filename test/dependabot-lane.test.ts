@@ -366,6 +366,24 @@ describe("Dependabot alerts lane", () => {
     });
   });
 
+  describe("logging cannot take the lane down (AD-16)", () => {
+    it("a throwing logger changes nothing", async () => {
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      const result = await collectOrgAlerts(
+        {
+          ...deps(),
+          log: () => {
+            throw new Error("EPIPE");
+          },
+        },
+        "no42-org",
+        "full",
+      );
+      expect(result.outcome).toBe("ok");
+      expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
+    });
+  });
+
   describe("scope (AD-16)", () => {
     it("records the scope it ran at", async () => {
       await collectOrgAlerts(deps(), "no42-org", "hot");

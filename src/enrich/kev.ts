@@ -83,6 +83,8 @@ export class HttpEnrichment implements EnrichmentPort {
   constructor(
     private readonly url: string = KEV_URL,
     private readonly fetchImpl: typeof fetch = fetch,
+    /** Overridable so a test can prove the cap without a 32MB fixture. */
+    private readonly maxBodyBytes: number = MAX_BODY_BYTES,
   ) {}
 
   /** The endpoint this instance will call. Exposed so a test can pin it. */
@@ -111,9 +113,40 @@ export class HttpEnrichment implements EnrichmentPort {
       throw new Error(`KEV response is not JSON: ${type}`);
     }
     const declared = Number(res.headers?.get?.("content-length") ?? "0");
-    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    if (Number.isFinite(declared) && declared > this.maxBodyBytes) {
       throw new Error(`KEV response too large: ${declared} bytes`);
     }
-    return parseKev(await res.json());
+    return parseKev(await this.readJson(res));
+  }
+
+  /**
+   * Read the body with a byte cap that holds even when no length is declared.
+   *
+   * The header check above is a cheap fast-fail, nothing more: a chunked or
+   * gzip-encoded response carries no content-length, so `res.json()` alone
+   * would buffer an unbounded body and the guard's comment would be a lie. A
+   * misbehaving mirror behind TRICORDER_KEV_URL is exactly the scenario the
+   * cap exists for.
+   */
+  private async readJson(res: Response): Promise<unknown> {
+    // Test fakes and some polyfills expose no body stream; a real fetch
+    // Response always does.
+    if (!res.body) return res.json();
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > this.maxBodyBytes) {
+        await reader.cancel();
+        throw new Error(
+          `KEV response too large: exceeded ${this.maxBodyBytes} bytes`,
+        );
+      }
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   }
 }

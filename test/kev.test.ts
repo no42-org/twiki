@@ -10,17 +10,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NOT_APPLICABLE } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
 import { HttpEnrichment, KEV_URL, parseKev } from "../src/enrich/kev.js";
-import {
-  collectKev,
-  KEV_CADENCE_MS,
-  KEV_INSTALLATION,
-} from "../src/tricorder/collect/kev.js";
+import { collectKev, KEV_INSTALLATION } from "../src/tricorder/collect/kev.js";
 import { kevSignal, loadKevIndex } from "../src/tricorder/kev-lookup.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { buildCollectionHealth } from "../src/tricorder/web/view.js";
 import {
   buildSchedules,
   cycleInstallations,
+  KEV_CADENCE_MS,
   parseKevUrl,
 } from "../src/tricorder.js";
 import { FakeEnrichmentPort } from "./fakes.js";
@@ -211,16 +208,20 @@ describe("the KEV lane stores only what it can vouch for", () => {
     expect(store.latestRuns(1)[0]?.detail).toContain("unreachable");
   });
 
-  it("does not rewrite a finished run as failed if logging throws", async () => {
-    // finishRun already committed `ok`; a throw afterwards must not turn a
-    // successful run into a fetch failure that never happened.
+  it("a throwing logger cannot fail the lane", async () => {
+    // The first version of this test pinned the bug instead of the contract:
+    // it accepted outcome "failed" for a run whose row said ok, which made a
+    // TRICORDER_ONCE cron exit non-zero on a collection that delivered
+    // everything. The logger is wrapped now, so an EPIPE on a closed stdout
+    // changes nothing at all.
     const r = await collectKev({
       ...deps(port({ cveIds: ["CVE-2021-1111"] })),
       log: () => {
         throw new Error("logging blew up");
       },
     });
-    expect(r.outcome).toBe("failed");
+    expect(r.outcome).toBe("ok");
+    expect(r.listed).toBe(1);
     expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
   });
 });
@@ -420,6 +421,37 @@ describe("the constants that hold the guards in place", () => {
     expect(parseKevUrl("https://mirror.example/kev.json")).toBe(
       "https://mirror.example/kev.json",
     );
+  });
+
+  it("caps the body even when no length is declared", async () => {
+    // Chunked and gzip-encoded responses carry no content-length, so the
+    // header check alone left res.json() buffering an unbounded body while
+    // the comment claimed otherwise. Real Response, real stream, tiny cap.
+    const big = JSON.stringify(payload(["CVE-2021-1111"])).repeat(50);
+    const port = new HttpEnrichment(
+      "https://x/k.json",
+      async () =>
+        new Response(big, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      256,
+    );
+    await expect(port.fetchKev()).rejects.toThrow(/too large/);
+  });
+
+  it("still parses a streamed body under the cap", async () => {
+    const body = JSON.stringify(payload(["CVE-2021-1111"]));
+    const port = new HttpEnrichment(
+      "https://x/k.json",
+      async () =>
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      1024 * 1024,
+    );
+    expect((await port.fetchKev()).cveIds).toEqual(["CVE-2021-1111"]);
   });
 
   it("refuses a body the declared length says is too large", async () => {

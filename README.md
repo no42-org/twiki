@@ -165,8 +165,7 @@ renames should read as a name mismatch rather than as "you did not grant
 something you did grant", so `doctor` prints what GitHub actually reported
 alongside what it expected.
 
-`collect` migrates the schema, then runs each lane on its own cadence: Dependabot
-alerts every 15 minutes, coverage daily, and the CISA KEV catalogue daily.
+`collect` migrates the schema, then runs each lane on its own cadence: Dependabot alerts every 15 minutes, coverage daily, and the CISA KEV catalogue daily.
 KEV is the one non-GitHub request the system makes.
 The catalogue is collected and stored; the ranked queue that consumes it is not built yet, so nothing renders it today.
 Due-ness is read from the store rather than from memory, so a restart neither re-sweeps everything nor waits a full cadence before doing anything.

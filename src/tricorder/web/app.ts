@@ -5,6 +5,7 @@
 
 import { Hono } from "hono";
 import type { RepoRef } from "../../core/types.js";
+import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
 import type { StorePort } from "../store/port.js";
 import { Page } from "./components.js";
 import type { FreshnessPolicy } from "./freshness.js";
@@ -17,8 +18,6 @@ export interface AppDeps {
   store: StorePort;
   watched: readonly RepoRef[];
   policy: FreshnessPolicy;
-  /** The coverage lane's own cadence; it runs daily, not per sweep. */
-  coveragePolicy?: FreshnessPolicy;
   /** Cadence per lane name, for the collection-health table (AD-11). */
   lanePolicies?: Readonly<Record<string, FreshnessPolicy>>;
   now: () => Date;
@@ -34,7 +33,7 @@ export function createApp(deps: AppDeps): Hono {
       deps.watched,
       now,
       deps.policy,
-      deps.coveragePolicy,
+      deps.lanePolicies?.[COVERAGE_LANE],
     );
     const health = buildCollectionHealth(
       deps.store,

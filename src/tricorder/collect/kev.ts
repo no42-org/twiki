@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { safeLog } from "../../core/log.js";
 import { redact } from "../../core/redact.js";
 import { KEV_KEY, KEV_SUBJECT } from "../../core/subject.js";
 import type { EnrichmentPort } from "../../enrich/port.js";
@@ -17,12 +18,6 @@ export const LANE = "kev";
  * Same constant as the subject key, so the two cannot drift.
  */
 export const KEV_INSTALLATION = KEV_KEY;
-
-/** The lane's cadence. Exported so the reader judges it on the same number. */
-export const KEV_CADENCE_MS = 24 * 60 * 60_000;
-
-/** After a failure, retry sooner than a full day. */
-export const KEV_RETRY_MS = 60 * 60_000;
 
 export interface KevObservation {
   version: string;
@@ -70,7 +65,10 @@ export async function collectKev(
   scope: RunScope = "full",
 ): Promise<KevResult> {
   let run: ReturnType<StorePort["beginRun"]> | null = null;
-  let finished = false;
+  // The logger cannot throw, so nothing after finishRun can reach the catch
+  // and rewrite a committed run as failed. This replaces a `finished` flag
+  // that guarded the same hazard less directly.
+  const log = safeLog(deps.log);
 
   try {
     run = deps.store.beginRun({
@@ -93,8 +91,7 @@ export async function collectKev(
         deps.now(),
         `${unreadable} entries unreadable; stored nothing`,
       );
-      finished = true;
-      deps.log(`${LANE}: ${unreadable} unreadable, stored nothing`);
+      log(`${LANE}: ${unreadable} unreadable, stored nothing`);
       return { outcome: "partial", listed: 0, unreadable };
     }
 
@@ -109,17 +106,16 @@ export async function collectKev(
       },
     ]);
     deps.store.finishRun(run, "ok", deps.now());
-    finished = true;
 
-    deps.log(
+    log(
       `${LANE}: ${catalogue.cveIds.length} listed CVEs, catalogue ${catalogue.version}`,
     );
     return { outcome: "ok", listed: catalogue.cveIds.length, unreadable: 0 };
   } catch (err) {
     const detail = redact(err instanceof Error ? err.message : String(err));
-    // Only if the run has not already been finished. Otherwise a throw from
-    // logging would rewrite a successful run as a failure that never happened.
-    if (run && !finished) {
+    // The logger cannot throw, so nothing lands here after finishRun("ok"):
+    // this can only be a fetch, parse or store failure on an unfinished run.
+    if (run) {
       try {
         deps.store.finishRun(run, "failed", deps.now(), detail);
       } catch {
@@ -128,13 +124,7 @@ export async function collectKev(
     }
     // A failed fetch must leave every lookup UNKNOWN, never "not listed"
     // (AD-20). Writing nothing is what achieves that.
-    try {
-      deps.log(`${LANE}: failed, ${detail}`);
-    } catch {
-      // Even the logger. Nothing throws past this boundary (AD-16), and a
-      // logger that throws inside the catch would escape the lane and take the
-      // whole cycle with it.
-    }
+    log(`${LANE}: failed, ${detail}`);
     return { outcome: "failed", listed: 0, unreadable: 0 };
   }
 }
