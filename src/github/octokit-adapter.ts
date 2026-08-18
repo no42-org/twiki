@@ -5,6 +5,7 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { parseDependency } from "../core/semver.js";
 import type {
   CheckStatus,
   FailingCheck,
@@ -28,6 +29,8 @@ import type {
   RawDependabotAlert,
   RawPullRequest,
   RawRepoMeta,
+  RawUpdatePr,
+  UpdatePrPage,
 } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
@@ -118,6 +121,90 @@ export class OctokitGitHub implements GitHubPort {
     } catch (err) {
       return translateDependabotProbe(err);
     }
+  }
+
+  async listOpenUpdatePRs(
+    org: string,
+    authors: readonly string[],
+  ): Promise<UpdatePrPage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listOpenUpdatePRs needs an org resolver; this client was built without one",
+      );
+    }
+    const gh = await this.orgOctokitFor(org);
+    // Search with explicit logins, never @me: an installation token has no
+    // user identity, and the whole-account issue endpoints are excluded from
+    // installation tokens entirely. Multiple author qualifiers OR together.
+    const query = [
+      `org:${org}`,
+      "is:pr",
+      "is:open",
+      ...authors.map((a) => `author:${a}`),
+    ].join(" ");
+
+    const prs: RawUpdatePr[] = [];
+    let unreadable = 0;
+    let cursor: string | null = null;
+    for (;;) {
+      const page: {
+        search: {
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          nodes: unknown[];
+        };
+      } = await gh.graphql(
+        `query ($q: String!, $cursor: String) {
+           search(type: ISSUE, query: $q, first: 100, after: $cursor) {
+             pageInfo { hasNextPage endCursor }
+             nodes {
+               ... on PullRequest {
+                 id
+                 number
+                 title
+                 url
+                 createdAt
+                 author { login }
+                 repository { name owner { login } }
+               }
+             }
+           }
+         }`,
+        { q: query, cursor },
+      );
+      for (const node of page.search.nodes) {
+        const pr = node as {
+          id?: string;
+          number?: number;
+          title?: string;
+          url?: string;
+          createdAt?: string;
+          author?: { login?: string } | null;
+          repository?: { name?: string; owner?: { login?: string } } | null;
+        } | null;
+        if (
+          !pr?.id ||
+          typeof pr.number !== "number" ||
+          typeof pr.title !== "string" ||
+          !pr.repository?.owner?.login ||
+          !pr.repository.name
+        ) {
+          unreadable++;
+          continue;
+        }
+        prs.push({
+          nodeId: pr.id,
+          repo: { owner: pr.repository.owner.login, name: pr.repository.name },
+          number: pr.number,
+          title: pr.title,
+          author: pr.author?.login ?? "unknown",
+          htmlUrl: pr.url ?? "",
+          createdAt: pr.createdAt ?? "",
+        });
+      }
+      if (!page.search.pageInfo.hasNextPage) break;
+      cursor = page.search.pageInfo.endCursor;
+    }
+    return { prs, unreadable };
   }
 
   async listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]> {
@@ -429,14 +516,6 @@ export function translateDependabotProbe(err: unknown): DependabotAccess {
   // 404 is how GitHub hides a repository the caller may not see at all.
   if (e.status === 404) return "unreachable";
   return "unknown";
-}
-
-export function parseDependency(
-  title: string,
-): { name?: string; from?: string; to?: string } | undefined {
-  const m = title.match(/bump\s+(\S+)\s+from\s+(\S+)\s+to\s+(\S+)/i);
-  if (!m) return undefined;
-  return { name: m[1], from: m[2], to: m[3] };
 }
 
 /**

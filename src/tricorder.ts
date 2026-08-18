@@ -34,6 +34,10 @@ import {
   type LaneSchedule,
   loop,
 } from "./tricorder/collect/scheduler.js";
+import {
+  collectUpdatePRs,
+  LANE as UPDATE_PR_LANE,
+} from "./tricorder/collect/update-prs.js";
 import { diagnose, formatReport } from "./tricorder/doctor.js";
 import type { RunOutcome, RunScope } from "./tricorder/store/port.js";
 import { SqliteStore } from "./tricorder/store/sqlite-store.js";
@@ -136,6 +140,10 @@ export function buildSchedules(deps: {
   alerts: (installation: string) => Promise<{ outcome: RunOutcome }>;
   coverage: (installation: string) => Promise<{ outcome: RunOutcome }>;
   kev: (scope: RunScope) => Promise<{ outcome: RunOutcome }>;
+  /** Null when no bot actors are configured: the lane is absent, loudly. */
+  updatePrs:
+    | ((installation: string) => Promise<{ outcome: RunOutcome }>)
+    | null;
 }): LaneSchedule[] {
   const schedules: LaneSchedule[] = [
     {
@@ -156,6 +164,17 @@ export function buildSchedules(deps: {
       installations: deps.installations,
       run: deps.alerts,
     },
+    ...(deps.updatePrs === null
+      ? []
+      : [
+          {
+            lane: UPDATE_PR_LANE,
+            scope: "full" as const,
+            cadenceMs: ALERT_CADENCE_MS,
+            installations: deps.installations,
+            run: deps.updatePrs,
+          },
+        ]),
     {
       lane: COVERAGE_LANE,
       scope: "full",
@@ -333,7 +352,24 @@ async function main(): Promise<void> {
         collectCoverage(laneDeps, installation, "full"),
       kev: (scope) =>
         collectKev({ enrichment, store, now: laneDeps.now, log }, scope),
+      updatePrs:
+        config.bots.length > 0
+          ? (installation) =>
+              collectUpdatePRs(
+                { ...laneDeps, bots: config.bots },
+                installation,
+                "full",
+              )
+          : null,
     });
+
+    if (config.bots.length === 0) {
+      // Absent, loudly. A lane that silently does not exist is how "no update
+      // PRs" and "we never looked" become the same picture (AD-19, AD-28).
+      log(
+        "no bot actors configured; the update-PR lane is disabled. Set bots: in repos.yaml.",
+      );
+    }
 
     log(
       `collecting ${watched.length} repositories across ${installations.length} installations: ${installations.join(", ")}`,

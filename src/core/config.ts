@@ -27,6 +27,13 @@ const RepoEntrySchema = z.strictObject({
 const ConfigSchema = z.strictObject({
   mode: z.enum(["shadow", "enforce"]).default("shadow"),
   repos: z.array(RepoEntrySchema).min(1, "at least one repo required"),
+  /**
+   * Dependency-update bot actors, as search-qualifier logins such as
+   * `app/dependabot`. Configuration and only configuration: AD-19 forbids a
+   * bot login literal in source, so there is no default. An absent list means
+   * the update-PR lane collects nothing, loudly.
+   */
+  bots: z.array(z.string().min(1)).optional(),
 });
 
 export type RawConfig = z.infer<typeof ConfigSchema>;
@@ -52,6 +59,8 @@ export interface Config {
   policies: Map<string, RepoPolicy>;
   /** CI-remediation settings. */
   remediation: RemediationConfig;
+  /** Dependency-update bot actors (AD-19). Empty when none are configured. */
+  bots: readonly string[];
 }
 
 export function loadConfig(
@@ -83,7 +92,13 @@ export function buildConfig(
       mergeOnly: entry.mergeOnly ?? DEFAULT_POLICY.mergeOnly,
     });
   }
-  return { mode: modeOverride ?? raw.mode, repos, policies, remediation };
+  return {
+    mode: modeOverride ?? raw.mode,
+    repos,
+    policies,
+    remediation,
+    bots: raw.bots ?? [],
+  };
 }
 
 /** Parse the remediation settings from environment variables. */

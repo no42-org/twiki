@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_RANK_POLICY } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
+import type { UpdatePrObservation } from "../src/tricorder/collect/update-prs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { buildQueue } from "../src/tricorder/web/queue.js";
@@ -291,6 +292,172 @@ describe("the ranked queue (CAP-6)", () => {
 
     expect(first).toEqual(["no42-org/aaa#1", "no42-org/zzz#3"]);
     expect(second).toEqual(first);
+  });
+});
+
+describe("update PRs in the queue (CAP-3)", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const run = () =>
+    store.beginRun({
+      lane: "graphql-update-prs",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T11:55:00.000Z",
+    });
+
+  const seedPr = (nodeId: string, over: Partial<UpdatePrObservation> = {}) => {
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "dependency_update_pr", key: nodeId },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 1,
+          title: "Bump x from 1.0.0 to 1.0.1",
+          author: "dependabot",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/1",
+          createdAt: "2026-08-17T00:00:00.000Z",
+          packageName: "x",
+          bump: "patch",
+          ...over,
+        } satisfies UpdatePrObservation,
+      },
+    ]);
+  };
+
+  const seedAlert = (
+    number: number,
+    over: Partial<Parameters<typeof makeAlert>[0]> = {},
+  ) => {
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number, ...over })),
+    ]);
+  };
+
+  const seedKev = (cveIds: string[]) => {
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: KEV_SUBJECT,
+        payload: { version: "v", released: "r", cveIds },
+      },
+    ]);
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "queuepr-"));
+    store = SqliteStore.openForWrite(join(dir, "qp.db"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("sorts a PR fixing a KEV-listed CVE above one with a higher-EPSS advisory", () => {
+    // CAP-3's acceptance criterion, word for word, through the local join: the
+    // stored alerts carry package, CVE, EPSS and severity, so the PR inherits
+    // the risk of what it fixes without any extra API call.
+    seedKev(["CVE-2021-44228"]);
+    seedAlert(1, {
+      packageName: "log4j",
+      cveId: "CVE-2021-44228",
+      epssPercentage: 0.02,
+    });
+    seedAlert(2, {
+      packageName: "lodash",
+      cveId: "CVE-2025-0001",
+      epssPercentage: 0.69,
+    });
+    seedPr("PR_kev", { number: 10, packageName: "log4j" });
+    seedPr("PR_epss", { number: 11, packageName: "lodash" });
+
+    const prs = buildQueue(store, NOW, DEPS).items.filter(
+      (i) => i.kind === "update_pr",
+    );
+
+    expect(prs.map((i) => i.number)).toEqual([10, 11]);
+    expect(prs[0]?.kevListed).toBe(true);
+    expect(prs[0]?.advisory).toBe("CVE-2021-44228");
+  });
+
+  it("treats a PR with no matching open alert as a plain update", () => {
+    // Facts of absence, not gaps: no open alert affects this package, so its
+    // security terms are n/a. Calling them unknown would float every routine
+    // bump above every alert we checked and found absent.
+    seedKev(["CVE-0000-0000"]);
+    seedAlert(1, { packageName: "unrelated", epssPercentage: 0.001 });
+    seedPr("PR_plain", { number: 12, packageName: "left-pad" });
+
+    const items = buildQueue(store, NOW, DEPS).items;
+    const pr = items.find((i) => i.kind === "update_pr");
+    const alert = items.find((i) => i.kind === "alert");
+
+    expect(pr?.explanation).toContain("no CVE to check");
+    // The measured alert, however dull, outranks the plain update on nothing:
+    // they differ only where the chain says they differ.
+    expect(alert).toBeDefined();
+  });
+
+  it("orders plain updates by bump size, with unknown between patch and minor", () => {
+    seedKev(["CVE-0000-0000"]);
+    seedPr("PR_major", { number: 1, bump: "major", packageName: "a" });
+    seedPr("PR_unknown", { number: 2, bump: null, packageName: "b" });
+    seedPr("PR_patch", { number: 3, bump: "patch", packageName: "c" });
+
+    const prs = buildQueue(store, NOW, DEPS).items.filter(
+      (i) => i.kind === "update_pr",
+    );
+
+    expect(prs.map((i) => i.number)).toEqual([1, 2, 3]);
+    expect(prs[1]?.explanation).toContain("bump unknown");
+  });
+
+  it("judges a PR fixing two advisories by the more urgent one", () => {
+    seedKev(["CVE-2021-44228"]);
+    seedAlert(1, {
+      packageName: "log4j",
+      cveId: "CVE-2025-1111",
+      epssPercentage: 0.001,
+      severity: "low",
+    });
+    seedAlert(2, {
+      packageName: "log4j",
+      cveId: "CVE-2021-44228",
+      epssPercentage: 0.02,
+      severity: "critical",
+    });
+    seedPr("PR_two", { number: 20, packageName: "log4j" });
+
+    const pr = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "update_pr",
+    );
+
+    expect(pr?.advisory).toBe("CVE-2021-44228");
+    expect(pr?.kevListed).toBe(true);
+  });
+
+  it("counts a malformed PR row instead of dropping or throwing", () => {
+    seedPr("PR_ok", { number: 1 });
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "dependency_update_pr", key: "PR_bad" },
+        payload: { repo: "no42-org/twiki", number: "seven" },
+      },
+    ]);
+
+    const queue = buildQueue(store, NOW, DEPS);
+    expect(queue.items.filter((i) => i.kind === "update_pr")).toHaveLength(1);
+    expect(queue.unreadable).toBe(1);
+  });
+
+  it("drops a non-https PR link but keeps the row", () => {
+    seedPr("PR_evil", { number: 1, htmlUrl: "javascript:alert(1)" });
+    const pr = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "update_pr",
+    );
+    expect(pr).toBeDefined();
+    expect(pr?.htmlUrl).toBeNull();
   });
 });
 

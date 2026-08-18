@@ -123,6 +123,10 @@ tricorder web       # reads: serves the dashboard, read-only, never migrates
 tricorder doctor    # checks the App setup; reads GitHub, writes nothing
 ```
 
+Dependency-update pull requests are collected for the bot actors named under `bots:` in `repos.yaml` (see `repos.example.yaml`).
+There is no default: AD-19 forbids a bot login in source, so an absent list disables the lane and the collector says so at startup.
+A PR inherits the risk of what it fixes: when its package matches an open alert, the alert's KEV, EPSS and severity rank the PR; otherwise it is a plain update ranked by bump size.
+
 `web` serves two pages on the loopback bind: `/` lists every watched repository with its alert count and freshness, and `/queue` is one cross-repository list ordered by the ranking chain, each row saying why it ranks where it does.
 The ordering is a local policy (KEV, then EPSS, then severity, then update size), not SSVC or any published standard.
 

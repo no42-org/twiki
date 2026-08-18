@@ -247,6 +247,9 @@ export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
             <tr key={item.key}>
               <td class="num">{i + 1}</td>
               <td>
+                {item.kind === "update_pr" ? (
+                  <span class="badge">PR</span>
+                ) : null}{" "}
                 {item.htmlUrl ? (
                   <a href={item.htmlUrl}>
                     {item.repo}#{item.number}

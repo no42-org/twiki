@@ -22,6 +22,8 @@ import type {
   RawDependabotAlert,
   RawPullRequest,
   RawRepoMeta,
+  RawUpdatePr,
+  UpdatePrPage,
 } from "../src/github/port.js";
 import type { Advisor, AdvisorRepoInput } from "../src/twiki/advisor.js";
 import type { Notifier } from "../src/twiki/notify.js";
@@ -181,6 +183,22 @@ export class FakeGitHubReadPort implements GitHubReadPort {
 
   /** Payloads the mapper would have dropped, per org. */
   unreadableByOrg = new Map<string, number>();
+
+  /** Update PRs per org, and the author lists each call asked for. */
+  updatePrs = new Map<string, RawUpdatePr[]>();
+  updatePrUnreadable = new Map<string, number>();
+  updatePrQueries: { org: string; authors: readonly string[] }[] = [];
+
+  async listOpenUpdatePRs(
+    org: string,
+    authors: readonly string[],
+  ): Promise<UpdatePrPage> {
+    this.updatePrQueries.push({ org, authors });
+    return {
+      prs: this.updatePrs.get(org) ?? [],
+      unreadable: this.updatePrUnreadable.get(org) ?? 0,
+    };
+  }
 
   /** Repository metadata per org, for the coverage lane. */
   orgRepos = new Map<string, RawRepoMeta[]>();
