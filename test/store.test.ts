@@ -478,8 +478,11 @@ describe("SqliteStore", () => {
   describe("read ordering", () => {
     it("returns currentByType rows ordered by key", () => {
       // The queue's stable tie order and the repo page's row order both rest
-      // on this. It was provided by an ORDER BY nothing asserted, which is one
-      // edit away from a page that reshuffles between refreshes.
+      // on this. Honest limitation: removing the ORDER BY passes this test
+      // too, because the primary key is (subject_type, subject_key) and
+      // SQLite's index walk happens to return key order anyway. The clause is
+      // the only GUARANTEED ordering, so it stays; scan order without it is an
+      // implementation detail no test can pin from outside.
       store.recordObservations(run, T1, [
         {
           subject: repositorySubject({ owner: "no42-org", name: "zzz" }),
