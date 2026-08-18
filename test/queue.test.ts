@@ -167,6 +167,83 @@ describe("the ranked queue (CAP-6)", () => {
     expect(queue.unreadable).toBe(1);
   });
 
+  it("counts a row with wrong-typed fields instead of throwing downstream", () => {
+    // The confirmed 500: `cveId: 42` passed the two-field guard, kevSignal
+    // called (42).trim(), and the whole page answered 500. The guard now
+    // validates every field the queue consumes, so this is unreadable, and
+    // "counted, not guessed at" is true rather than aspirational.
+    seedAlerts([{ number: 1 }]);
+    for (const [key, bad] of [
+      [
+        "no42-org/broken#2",
+        {
+          ...(normalise(makeAlert({ number: 2 })).payload as object),
+          cveId: 42,
+        },
+      ],
+      [
+        "no42-org/broken#3",
+        {
+          ...(normalise(makeAlert({ number: 3 })).payload as object),
+          severity: 5,
+        },
+      ],
+      [
+        "no42-org/broken#4",
+        {
+          ...(normalise(makeAlert({ number: 4 })).payload as object),
+          epssPercentage: "high",
+        },
+      ],
+    ] as const) {
+      store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+        { subject: { type: "dependabot_alert", key }, payload: bad },
+      ]);
+    }
+
+    const queue = buildQueue(store, NOW, DEPS);
+
+    expect(queue.items.map((i) => i.number)).toEqual([1]);
+    expect(queue.unreadable).toBe(3);
+  });
+
+  it("counts a row whose cveId key is missing entirely", () => {
+    // Absent is not null: a missing key would have read as "no CVE to look
+    // up", sinking the alert to n/a on the chain's top term when the honest
+    // answer is that the row is unreadable.
+    const p = normalise(makeAlert({ number: 5 })).payload as Record<
+      string,
+      unknown
+    >;
+    delete p.cveId;
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "dependabot_alert", key: "no42-org/broken#5" },
+        payload: p,
+      },
+    ]);
+
+    const queue = buildQueue(store, NOW, DEPS);
+    expect(queue.items).toHaveLength(0);
+    expect(queue.unreadable).toBe(1);
+  });
+
+  it("refuses to render a link with a non-https scheme", () => {
+    // First store-derived href in the codebase, and hono/jsx renders
+    // javascript: schemes verbatim. GitHub only hands out https, so anything
+    // else is a corrupted or foreign row and loses its link, not its row.
+    seedAlerts([
+      { number: 1, htmlUrl: "javascript:alert(1)" },
+      { number: 2, htmlUrl: "https://github.com/x/y/security/dependabot/2" },
+    ]);
+
+    const byNumber = new Map(
+      buildQueue(store, NOW, DEPS).items.map((i) => [i.number, i]),
+    );
+    expect(byNumber.get(1)?.htmlUrl).toBeNull();
+    expect(byNumber.get(2)?.htmlUrl).toContain("https://");
+  });
+
   it("reorders when a configured threshold moves, and only then", () => {
     // CAP-6: changing a configured threshold changes the order; no
     // configuration path reorders the chain itself.
@@ -221,6 +298,14 @@ describe("the queue page", () => {
   let dir: string;
   let store: SqliteStore;
 
+  const run = () =>
+    store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T11:55:00.000Z",
+    });
+
   const app = () =>
     createApp({
       store,
@@ -242,12 +327,7 @@ describe("the queue page", () => {
   });
 
   it("serves the queue with reasons and per-row freshness", async () => {
-    const r = store.beginRun({
-      lane: "rest-org-dependabot",
-      installation: "no42-org",
-      scope: "full",
-      startedAt: "2026-08-17T11:55:00.000Z",
-    });
+    const r = run();
     store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
       normalise(makeAlert({ number: 7, severity: "critical" })),
       {
@@ -268,6 +348,25 @@ describe("the queue page", () => {
     expect(html).toContain("no42-org/twiki#7");
     expect(html).toContain("severity critical");
     expect(html).toContain("fresh");
+  });
+
+  it("answers 200 with the readable rows when a stored row is malformed", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number: 1 })),
+      {
+        subject: { type: "dependabot_alert", key: "no42-org/broken#2" },
+        payload: { number: 2, repo: "no42-org/broken", cveId: 42 },
+      },
+    ]);
+
+    const res = await app().request("/queue");
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toContain("no42-org/twiki#1");
+    expect(html).toContain("could not be read");
+    expect(html).toContain("incomplete");
   });
 
   it("labels the ordering a local policy, never SSVC (AD-20)", async () => {
@@ -318,12 +417,7 @@ describe("the queue page", () => {
     // Under the custom bands both items share an EPSS band and severity
     // decides; under the defaults EPSS decides the other way. Unwiring
     // rankPolicy in createApp silently reverts to the defaults.
-    const r = store.beginRun({
-      lane: "rest-org-dependabot",
-      installation: "no42-org",
-      scope: "full",
-      startedAt: "2026-08-17T11:55:00.000Z",
-    });
+    const r = run();
     store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
       normalise(makeAlert({ number: 1, epssPercentage: 0.2, severity: "low" })),
       normalise(

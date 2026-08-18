@@ -7,6 +7,7 @@ import { Hono } from "hono";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import type { RepoRef } from "../../core/types.js";
 import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
+import { LANE as KEV_LANE } from "../collect/kev.js";
 import type { StorePort } from "../store/port.js";
 import { Page, QueuePage } from "./components.js";
 import type { FreshnessPolicy } from "./freshness.js";
@@ -61,7 +62,12 @@ export function createApp(deps: AppDeps): Hono {
       policy: deps.policy,
       // The KEV catalogue is judged on its own daily cadence, or the index
       // would read stale within the hour and every verdict would be unknown.
-      kevPolicy: deps.lanePolicies?.kev ?? deps.policy,
+      // Keyed by the exported constant, exactly as COVERAGE_LANE is above: a
+      // string literal here would survive a lane rename and silently judge the
+      // daily catalogue on the sweep cadence, degrading every verdict to
+      // unknown with no error anywhere. Unpinnable by mutation while the
+      // constant equals the literal; the shared symbol is the protection.
+      kevPolicy: deps.lanePolicies?.[KEV_LANE] ?? deps.policy,
       rankPolicy: deps.rankPolicy ?? DEFAULT_RANK_POLICY,
     });
     const body = QueuePage({ queue, generatedAt: now.toISOString() });

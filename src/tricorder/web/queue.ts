@@ -36,8 +36,6 @@ export interface QueueItem {
   packageName: string | null;
   /** The advisory id shown to the reader: CVE when present, else GHSA. */
   advisory: string | null;
-  severity: string;
-  epss: number | null;
   htmlUrl: string | null;
   /** CAP-6's "why does it rank there", most significant term first. */
   explanation: string;
@@ -46,7 +44,6 @@ export interface QueueItem {
   ranking: Ranking;
   freshness: Freshness;
   age: string;
-  verifiedAt: string;
 }
 
 export interface Queue {
@@ -70,11 +67,32 @@ export interface QueueDeps {
   rankPolicy: RankPolicy;
 }
 
-/** Minimal shape check: a row that fails it is counted, not guessed at. */
+/** A field that must be a string or an explicit null, never anything else. */
+function stringOrNull(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+/**
+ * The shape check behind "counted, not guessed at".
+ *
+ * Every field the queue consumes is validated, because the first version
+ * checked two and let the rest detonate downstream: a row with `cveId: 42`
+ * passed the guard, kevSignal called `(42).trim()`, and the whole page
+ * answered 500. A guard that forwards a row it has not actually checked is
+ * the thing this function's own comment promised it was not.
+ */
 function readAlert(payload: unknown): AlertObservation | null {
   const a = payload as AlertObservation | null | undefined;
   if (!a || typeof a !== "object") return null;
   if (typeof a.number !== "number" || typeof a.repo !== "string") return null;
+  if (typeof a.severity !== "string") return null;
+  if (!stringOrNull(a.cveId)) return null;
+  if (!stringOrNull(a.ghsaId)) return null;
+  if (!stringOrNull(a.packageName)) return null;
+  if (!stringOrNull(a.htmlUrl)) return null;
+  if (a.epssPercentage !== null && typeof a.epssPercentage !== "number") {
+    return null;
+  }
   return a;
 }
 
@@ -120,15 +138,15 @@ export function buildQueue(
       number: alert.number,
       packageName: alert.packageName ?? null,
       advisory: alert.cveId ?? alert.ghsaId ?? null,
-      severity: alert.severity ?? "unknown",
-      epss: alert.epssPercentage,
-      htmlUrl: alert.htmlUrl ?? null,
+      // GitHub only ever hands out https URLs, so anything else in this field
+      // is a corrupted or foreign row, and this is the first store-derived
+      // href in the codebase: hono/jsx renders `javascript:` schemes verbatim.
+      htmlUrl: alert.htmlUrl?.startsWith("https://") ? alert.htmlUrl : null,
       explanation: ranking.explanation,
       kevListed: kev === true,
       ranking,
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
-      verifiedAt: row.verifiedAt,
     });
   }
 

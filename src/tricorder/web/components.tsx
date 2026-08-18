@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { FC } from "hono/jsx";
+import type { FC, PropsWithChildren } from "hono/jsx";
 import type { Freshness } from "./freshness.js";
 import type { Queue } from "./queue.js";
 import type { CollectionHealth, RepoRow } from "./view.js";
@@ -93,16 +93,22 @@ export const AlertCount: FC<{ row: RepoRow }> = ({ row }) => {
   );
 };
 
-export const Page: FC<{
-  rows: RepoRow[];
-  health: CollectionHealth[];
-  generatedAt: string;
-}> = ({ rows, health, generatedAt }) => (
+/**
+ * The one page shell.
+ *
+ * Both pages used to carry their own copy of the html/head/nav chrome, which
+ * meant a nav link or a meta fix had to land twice and a missed copy shipped
+ * divergent pages.
+ */
+const Layout: FC<PropsWithChildren<{ title: string }>> = ({
+  title,
+  children,
+}) => (
   <html lang="en">
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>gitricorder</title>
+      <title>{title}</title>
       <style>{STYLE}</style>
     </head>
     <body>
@@ -110,79 +116,86 @@ export const Page: FC<{
         <a href="/">repositories</a>
         <a href="/queue">queue</a>
       </nav>
-      <h1>gitricorder</h1>
-      <p class="sub">
-        {rows.length} watched{" "}
-        {rows.length === 1 ? "repository" : "repositories"}
-        {" · rendered "}
-        {generatedAt}
-      </p>
+      {children}
+    </body>
+  </html>
+);
 
+export const Page: FC<{
+  rows: RepoRow[];
+  health: CollectionHealth[];
+  generatedAt: string;
+}> = ({ rows, health, generatedAt }) => (
+  <Layout title="gitricorder">
+    <h1>gitricorder</h1>
+    <p class="sub">
+      {rows.length} watched {rows.length === 1 ? "repository" : "repositories"}
+      {" · rendered "}
+      {generatedAt}
+    </p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Repository</th>
+          <th class="num">Open Dependabot alerts</th>
+          <th>Last confirmed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.slug}>
+            <td>
+              {row.slug}
+              {row.coverageReason ? (
+                <div class="why">{row.coverageReason}</div>
+              ) : null}
+            </td>
+            <td class="num">
+              <AlertCount row={row} />
+            </td>
+            <td>
+              <FreshnessBadge freshness={row.freshness} age={row.age} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+
+    <h2 style="font-size:1.1rem">Collection health</h2>
+    <p class="sub">A dead lane is visible here rather than only in the logs.</p>
+    {health.length === 0 ? (
+      <p class="never">No collection has run yet.</p>
+    ) : (
       <table>
         <thead>
           <tr>
-            <th>Repository</th>
-            <th class="num">Open Dependabot alerts</th>
-            <th>Last confirmed</th>
+            <th>Lane</th>
+            <th>Installation</th>
+            <th>Scope</th>
+            <th>Outcome</th>
+            <th>Last run</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.slug}>
-              <td>
-                {row.slug}
-                {row.coverageReason ? (
-                  <div class="why">{row.coverageReason}</div>
-                ) : null}
-              </td>
-              <td class="num">
-                <AlertCount row={row} />
+          {health.map((h) => (
+            <tr key={`${h.lane}|${h.installation}|${h.scope}`}>
+              <td>{h.lane}</td>
+              <td>{h.installation}</td>
+              <td>{h.scope}</td>
+              <td class={h.outcome === "ok" ? "" : h.outcome}>
+                {h.outcome}
+                {h.detail ? ` · ${h.detail}` : ""}
               </td>
               <td>
-                <FreshnessBadge freshness={row.freshness} age={row.age} />
+                <FreshnessBadge freshness={h.freshness} age={h.age} />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-
-      <h2 style="font-size:1.1rem">Collection health</h2>
-      <p class="sub">
-        A dead lane is visible here rather than only in the logs.
-      </p>
-      {health.length === 0 ? (
-        <p class="never">No collection has run yet.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Lane</th>
-              <th>Installation</th>
-              <th>Scope</th>
-              <th>Outcome</th>
-              <th>Last run</th>
-            </tr>
-          </thead>
-          <tbody>
-            {health.map((h) => (
-              <tr key={`${h.lane}|${h.installation}|${h.scope}`}>
-                <td>{h.lane}</td>
-                <td>{h.installation}</td>
-                <td>{h.scope}</td>
-                <td class={h.outcome === "ok" ? "" : h.outcome}>
-                  {h.outcome}
-                  {h.detail ? ` · ${h.detail}` : ""}
-                </td>
-                <td>
-                  <FreshnessBadge freshness={h.freshness} age={h.age} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </body>
-  </html>
+    )}
+  </Layout>
 );
 
 /**
@@ -197,83 +210,70 @@ export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
   queue,
   generatedAt,
 }) => (
-  <html lang="en">
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>gitricorder queue</title>
-      <style>{STYLE}</style>
-    </head>
-    <body>
-      <nav>
-        <a href="/">repositories</a>
-        <a href="/queue">queue</a>
-      </nav>
-      <h1>What to deal with next</h1>
-      <p class="sub">
-        {queue.items.length} open{" "}
-        {queue.items.length === 1 ? "alert" : "alerts"}
-        {" · KEV catalogue "}
-        {queue.kev.usable
-          ? `${queue.kev.version ?? "?"} · ${queue.kev.age}`
-          : "unavailable, so KEV status ranks as unknown"}
-        {" · rendered "}
-        {generatedAt}
+  <Layout title="gitricorder queue">
+    <h1>What to deal with next</h1>
+    <p class="sub">
+      {queue.items.length} open {queue.items.length === 1 ? "alert" : "alerts"}
+      {" · KEV catalogue "}
+      {queue.kev.usable
+        ? `${queue.kev.version ?? "?"} · ${queue.kev.age}`
+        : "unavailable, so KEV status ranks as unknown"}
+      {" · rendered "}
+      {generatedAt}
+    </p>
+
+    {queue.unreadable > 0 ? (
+      <p class="failed">
+        {queue.unreadable} stored {queue.unreadable === 1 ? "item" : "items"}{" "}
+        could not be read and {queue.unreadable === 1 ? "is" : "are"} not shown.
+        This list is incomplete.
       </p>
+    ) : null}
 
-      {queue.unreadable > 0 ? (
-        <p class="failed">
-          {queue.unreadable} stored {queue.unreadable === 1 ? "item" : "items"}{" "}
-          could not be read and {queue.unreadable === 1 ? "is" : "are"} not
-          shown. This list is incomplete.
-        </p>
-      ) : null}
-
-      {queue.items.length === 0 ? (
-        <p class="none">Nothing needs attention.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Alert</th>
-              <th>Why it ranks here</th>
-              <th>Last confirmed</th>
+    {queue.items.length === 0 ? (
+      <p class="none">Nothing needs attention.</p>
+    ) : (
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Alert</th>
+            <th>Why it ranks here</th>
+            <th>Last confirmed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {queue.items.map((item, i) => (
+            <tr key={item.key}>
+              <td class="num">{i + 1}</td>
+              <td>
+                {item.htmlUrl ? (
+                  <a href={item.htmlUrl}>
+                    {item.repo}#{item.number}
+                  </a>
+                ) : (
+                  `${item.repo}#${item.number}`
+                )}
+                {item.packageName ? ` · ${item.packageName}` : ""}
+                {item.advisory ? ` · ${item.advisory}` : ""}
+              </td>
+              <td>
+                <div class={item.kevListed ? "kev-hit" : "why-rank"}>
+                  {item.explanation}
+                </div>
+              </td>
+              <td>
+                <FreshnessBadge freshness={item.freshness} age={item.age} />
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {queue.items.map((item, i) => (
-              <tr key={item.key}>
-                <td class="num">{i + 1}</td>
-                <td>
-                  {item.htmlUrl ? (
-                    <a href={item.htmlUrl}>
-                      {item.repo}#{item.number}
-                    </a>
-                  ) : (
-                    `${item.repo}#${item.number}`
-                  )}
-                  {item.packageName ? ` · ${item.packageName}` : ""}
-                  {item.advisory ? ` · ${item.advisory}` : ""}
-                </td>
-                <td>
-                  <div class={item.kevListed ? "kev-hit" : ""}>
-                    {item.explanation}
-                  </div>
-                </td>
-                <td>
-                  <FreshnessBadge freshness={item.freshness} age={item.age} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+          ))}
+        </tbody>
+      </table>
+    )}
 
-      <p class="policy-note">
-        Ordering is a local policy: CISA KEV listing, then EPSS, then severity,
-        then update size. It is not SSVC and not any published standard.
-      </p>
-    </body>
-  </html>
+    <p class="policy-note">
+      Ordering is a local policy: CISA KEV listing, then EPSS, then severity,
+      then update size. It is not SSVC and not any published standard.
+    </p>
+  </Layout>
 );
