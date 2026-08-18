@@ -715,6 +715,26 @@ describe("Dependabot alerts lane", () => {
       ).toBeNull();
     });
 
+    it("a truncated listing degrades to partial and tombstones nothing", async () => {
+      // The pagination cap stops a self-linking proxy, but what came back is
+      // real: it is ingested, the run says partial, and absence from an
+      // incomplete set means nothing (AD-23).
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      github.orgAlerts.set("no42-org", []);
+      github.orgAlertTruncated.add("no42-org");
+      const r = await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(r.outcome).toBe("partial");
+      expect(
+        store
+          .currentByType("dependabot_alert")
+          .filter((c) => c.state === "present"),
+      ).toHaveLength(1);
+      expect(store.latestRuns(1)[0]?.detail).toContain("truncated");
+    });
+
     it("a hot 200 purges the stored validator too", async () => {
       // A hot sweep stores rows like any other 200, so the stored validator
       // stops describing stored state the moment it runs. Folding the purge

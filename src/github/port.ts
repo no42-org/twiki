@@ -98,6 +98,12 @@ export interface OrgAlertPage {
    */
   notModified: boolean;
   /**
+   * True when pagination stopped at the safety cap with more pages claimed.
+   * The result set is incomplete, exactly like the search lanes' ceiling: the
+   * caller must degrade to partial and tombstone nothing.
+   */
+  truncated: boolean;
+  /**
    * The validator to cache, or null when this response must not be
    * revalidated against: a listing that spanned pages has no single validator
    * (each page carries its own, and a 304 on page one says nothing about page
@@ -150,6 +156,24 @@ export interface GitHubReadPort {
    * exists at all.
    */
   listDependabotUpdateStatuses(repo: RepoRef): Promise<RawUpdateStatus[]>;
+
+  /**
+   * The newest page of workflow runs for one repository (CAP: build
+   * failures). Page one only, newest first, by design: this is the lane the
+   * spine prices at a hard per-repo floor, so it takes one call per
+   * repository and lets conditional requests (AD-25) make quiet
+   * repositories free. No org-level variant of this endpoint exists.
+   */
+  listRepoWorkflowRuns(
+    repo: RepoRef,
+    cached?: RequestValidator | null,
+  ): Promise<WorkflowRunPage>;
+
+  /**
+   * The core budget, from GET /rate_limit: the one honest source (AD-24).
+   * Free: the endpoint does not count against the limit it reports.
+   */
+  rateLimit(org: string): Promise<{ limit: number; remaining: number }>;
 
   listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]>;
   prChecks(repo: RepoRef, headSha: string): Promise<CheckStatus>;
@@ -296,6 +320,50 @@ export interface RawUpdateStatus {
     /** Why GitHub could not prepare the update, when it could not. */
     error: string | null;
   } | null;
+}
+
+/** One workflow run, as the per-repo REST listing returns it. */
+export interface RawWorkflowRun {
+  /** GraphQL node id: the run's stable identity (AD-22). */
+  nodeId: string;
+  repo: RepoRef;
+  workflowId: number;
+  /** The workflow's display name, e.g. `CI`. */
+  workflowName: string;
+  runNumber: number;
+  /** queued, in_progress or completed, as GitHub reports it. */
+  status: string;
+  /** success, failure, cancelled... or null while the run is not completed. */
+  conclusion: string | null;
+  /**
+   * Kept so a consumer can weigh a feature-branch failure differently from a
+   * main failure. The run payload's own repository object carries a null
+   * default_branch (measured 2026-08-18), so the lane cannot filter by it.
+   */
+  headBranch: string | null;
+  /** push, schedule, pull_request, workflow_dispatch, dynamic... */
+  event: string;
+  htmlUrl: string;
+  createdAt: string;
+}
+
+export interface WorkflowRunPage {
+  runs: RawWorkflowRun[];
+  /** Payloads the mapper could not read. Never silently discarded. */
+  unreadable: number;
+  /** True when GitHub answered 304: nothing changed since the validator. */
+  notModified: boolean;
+  /** The validator to cache, or null when the response is not revalidatable. */
+  validator: RequestValidator | null;
+}
+
+/**
+ * The validator-cache key for one repository's run listing (AD-25). Same
+ * convention as orgAlertsUrl: a naming convention the adapter's hard-coded
+ * parameters match; drift self-heals via an ETag miss.
+ */
+export function workflowRunsUrl(repo: RepoRef): string {
+  return `/repos/${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}/actions/runs?per_page=100`;
 }
 
 /** Repository metadata the coverage lane needs, one call per 100 repos. */

@@ -46,6 +46,10 @@ import {
   collectUpdateStatuses,
   LANE as UPDATE_STATUS_LANE,
 } from "./tricorder/collect/update-status.js";
+import {
+  LANE as ACTIONS_LANE,
+  collectWorkflowRuns,
+} from "./tricorder/collect/workflow-runs.js";
 import { diagnose, formatReport } from "./tricorder/doctor.js";
 import type { RunOutcome, RunScope } from "./tricorder/store/port.js";
 import { SqliteStore } from "./tricorder/store/sqlite-store.js";
@@ -154,6 +158,16 @@ export function buildSchedules(deps: {
     | null;
   issues: (installation: string) => Promise<{ outcome: RunOutcome }>;
   updateStatuses: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  /**
+   * Null when TRICORDER_ACTIONS_INSTALLATION is unset: the lane is absent,
+   * loudly. Story 15 runs it on ONE opted-in installation to measure the
+   * real per-repo cost before story 16 commits the whole allowlist to it -
+   * this is the lane the spine prices at a hard per-repo floor (AD-15).
+   */
+  actionsRuns: {
+    installation: string;
+    run: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  } | null;
 }): LaneSchedule[] {
   const schedules: LaneSchedule[] = [
     {
@@ -202,6 +216,17 @@ export function buildSchedules(deps: {
       installations: deps.installations,
       run: deps.updateStatuses,
     },
+    ...(deps.actionsRuns === null
+      ? []
+      : [
+          {
+            lane: ACTIONS_LANE,
+            scope: "full" as const,
+            cadenceMs: ALERT_CADENCE_MS,
+            installations: [deps.actionsRuns.installation],
+            run: deps.actionsRuns.run,
+          },
+        ]),
     {
       lane: COVERAGE_LANE,
       scope: "full",
@@ -249,6 +274,31 @@ export function parseEpssBands(raw: string | undefined): RankPolicy {
     );
   }
   return policy;
+}
+
+/**
+ * The installation the Actions lane runs on, or null when unset.
+ *
+ * Validated here rather than left to assertSchedules, which checks against
+ * cycleInstallations and therefore accepts KEV's pseudo-installation: `cisa`
+ * would schedule a lane that sweeps zero repositories and reports `ok`
+ * forever, making "no build failures" and "we never looked" the same picture
+ * (AD-28). An owner that is not in the allowlist is refused for the same
+ * reason: a silent no-op lane is worse than a startup failure.
+ */
+export function parseActionsInstallation(
+  raw: string | undefined,
+  installations: readonly string[],
+): string | null {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (value === "") return null;
+  if (!installations.includes(value)) {
+    throw new Error(
+      `TRICORDER_ACTIONS_INSTALLATION=${raw} is not an owner in repos.yaml` +
+        ` (have: ${installations.join(", ") || "none"})`,
+    );
+  }
+  return value;
 }
 
 /** An https URL, or unset. Anything else refuses to start. */
@@ -357,6 +407,11 @@ async function main(): Promise<void> {
     const app = createTricorderAppFromEnv(env);
     const github = await createTricorderReadPort(app, isWatched, env);
 
+    const actionsInstallation = parseActionsInstallation(
+      env.TRICORDER_ACTIONS_INSTALLATION,
+      installations,
+    );
+
     const laneDeps = {
       github,
       store,
@@ -391,7 +446,28 @@ async function main(): Promise<void> {
       issues: (installation) => collectIssues(laneDeps, installation, "full"),
       updateStatuses: (installation) =>
         collectUpdateStatuses(laneDeps, installation, "full"),
+      // Case-folded like the installations it must match. assertSchedules
+      // catches a typo, with one hole it cannot see: it validates against
+      // cycleInstallations, which unions in KEV's pseudo-installation, so
+      // `cisa` would pass and then sweep zero repositories and report ok
+      // forever. Rejected explicitly above, before it gets here.
+      actionsRuns: actionsInstallation
+        ? {
+            installation: actionsInstallation,
+            run: (installation) =>
+              collectWorkflowRuns(laneDeps, installation, "full"),
+          }
+        : null,
     });
+
+    if (!actionsInstallation) {
+      // Absent, loudly (AD-28): "no build failures" and "we never looked"
+      // must not be the same picture. Story 15 keeps this lane opt-in while
+      // its per-repo cost is being measured on one installation.
+      log(
+        "TRICORDER_ACTIONS_INSTALLATION is unset; the Actions lane is disabled.",
+      );
+    }
 
     if (config.bots.length === 0) {
       // Absent, loudly. A lane that silently does not exist is how "no update

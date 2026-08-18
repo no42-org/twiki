@@ -68,7 +68,13 @@ export function backoffDecision(
   ) {
     return { kind: "retry", afterMs: retryAfter * 1000 };
   }
-  if (!alreadyRetried && SECONDARY_LIMIT_MESSAGE.test(message)) {
+  // Only when GitHub named NO usable wait. A retry-after we deliberately
+  // refused as too long (300s against a 120s ceiling) must not fall through
+  // to a 60s retry: that fires 240 seconds before the wait GitHub asked for,
+  // burning the one retry and, per GitHub's own secondary-limit guidance,
+  // risking an extended block.
+  const namedAWait = Number.isFinite(retryAfter) && retryAfter >= 0;
+  if (!alreadyRetried && !namedAWait && SECONDARY_LIMIT_MESSAGE.test(message)) {
     return { kind: "retry", afterMs: SECONDARY_LIMIT_FALLBACK_MS };
   }
   if (headers["x-ratelimit-remaining"] === "0") {

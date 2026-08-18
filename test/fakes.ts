@@ -31,8 +31,10 @@ import type {
   RawRepoMeta,
   RawUpdatePr,
   RawUpdateStatus,
+  RawWorkflowRun,
   RequestValidator,
   UpdatePrPage,
+  WorkflowRunPage,
 } from "../src/github/port.js";
 import type { Advisor, AdvisorRepoInput } from "../src/twiki/advisor.js";
 import type { Notifier } from "../src/twiki/notify.js";
@@ -257,6 +259,43 @@ export class FakeGitHubReadPort implements GitHubReadPort {
     return this.updateStatuses.get(slug) ?? [];
   }
 
+  /** Workflow runs per lowercase `owner/name`, newest first like GitHub. */
+  workflowRuns = new Map<string, RawWorkflowRun[]>();
+  workflowRunUnreadable = new Map<string, number>();
+  /** Repos whose next conditional read answers 304. Unconditional still 200s. */
+  workflowRunNotModified = new Set<string>();
+  /** Validator a 200 hands back, per repo slug. */
+  workflowRunValidators = new Map<string, RequestValidator>();
+  /** Repos whose read should fail. */
+  workflowRunFailing = new Set<string>();
+  /** What each call carried, keyed in call order. */
+  workflowRunCachedSeen: { repo: string; cached: RequestValidator | null }[] =
+    [];
+
+  async listRepoWorkflowRuns(
+    repo: RepoRef,
+    cached: RequestValidator | null = null,
+  ): Promise<WorkflowRunPage> {
+    const slug = repoSlug(repo).toLowerCase();
+    this.workflowRunCachedSeen.push({ repo: slug, cached });
+    if (this.workflowRunFailing.has(slug)) {
+      throw new Error(`fake: ${slug} runs unreachable`);
+    }
+    if (cached && this.workflowRunNotModified.has(slug)) {
+      return { runs: [], unreadable: 0, notModified: true, validator: cached };
+    }
+    return {
+      runs: this.workflowRuns.get(slug) ?? [],
+      unreadable: this.workflowRunUnreadable.get(slug) ?? 0,
+      notModified: false,
+      validator: this.workflowRunValidators.get(slug) ?? null,
+    };
+  }
+
+  async rateLimit(): Promise<{ limit: number; remaining: number }> {
+    return { limit: 5800, remaining: 5000 };
+  }
+
   /** Repository metadata per org, for the coverage lane. */
   orgRepos = new Map<string, RawRepoMeta[]>();
   /** Probe answers per `owner/name`; anything unset reads as covered. */
@@ -272,6 +311,8 @@ export class FakeGitHubReadPort implements GitHubReadPort {
 
   /** Orgs whose next conditional read answers 304. Unconditional still 200s. */
   orgAlertNotModified = new Set<string>();
+  /** Orgs whose listing stops at the pagination cap. */
+  orgAlertTruncated = new Set<string>();
   /** Validator a 200 hands back, per org; null mimics a multi-page listing. */
   orgAlertValidators = new Map<string, RequestValidator>();
   /** What each call carried, so a test can assert conditionality. */
@@ -290,6 +331,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
         alerts: [],
         unreadable: 0,
         notModified: true,
+        truncated: false,
         validator: cached,
       };
     }
@@ -297,6 +339,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       alerts: this.orgAlerts.get(org) ?? [],
       unreadable: this.unreadableByOrg.get(org) ?? 0,
       notModified: false,
+      truncated: this.orgAlertTruncated.has(org),
       validator: this.orgAlertValidators.get(org) ?? null,
     };
   }
