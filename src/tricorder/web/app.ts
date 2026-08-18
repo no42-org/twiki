@@ -4,11 +4,13 @@
  */
 
 import { Hono } from "hono";
+import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import type { RepoRef } from "../../core/types.js";
 import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
 import type { StorePort } from "../store/port.js";
-import { Page } from "./components.js";
+import { Page, QueuePage } from "./components.js";
 import type { FreshnessPolicy } from "./freshness.js";
+import { buildQueue } from "./queue.js";
 import { buildCollectionHealth, buildRepoRows } from "./view.js";
 
 // Routes read through StorePort only: no SQL, no table name, no predicate
@@ -20,6 +22,8 @@ export interface AppDeps {
   policy: FreshnessPolicy;
   /** Cadence per lane name, for the collection-health table (AD-11). */
   lanePolicies?: Readonly<Record<string, FreshnessPolicy>>;
+  /** Ranking thresholds. Order stays code; only the numbers move (AD-20). */
+  rankPolicy?: RankPolicy;
   now: () => Date;
 }
 
@@ -47,6 +51,20 @@ export function createApp(deps: AppDeps): Hono {
     // Every freshness verdict on this page is computed against the render
     // clock. A cached copy re-presents those verdicts later, still claiming
     // "fresh", which is the one thing the page must never do.
+    c.header("Cache-Control", "no-store");
+    return c.html(`<!DOCTYPE html>${body}`);
+  });
+
+  app.get("/queue", (c) => {
+    const now = deps.now();
+    const queue = buildQueue(deps.store, now, {
+      policy: deps.policy,
+      // The KEV catalogue is judged on its own daily cadence, or the index
+      // would read stale within the hour and every verdict would be unknown.
+      kevPolicy: deps.lanePolicies?.kev ?? deps.policy,
+      rankPolicy: deps.rankPolicy ?? DEFAULT_RANK_POLICY,
+    });
+    const body = QueuePage({ queue, generatedAt: now.toISOString() });
     c.header("Cache-Control", "no-store");
     return c.html(`<!DOCTYPE html>${body}`);
   });
