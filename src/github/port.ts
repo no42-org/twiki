@@ -98,6 +98,12 @@ export interface OrgAlertPage {
    */
   notModified: boolean;
   /**
+   * True when pagination stopped at the safety cap with more pages claimed.
+   * The result set is incomplete, exactly like the search lanes' ceiling: the
+   * caller must degrade to partial and tombstone nothing.
+   */
+  truncated: boolean;
+  /**
    * The validator to cache, or null when this response must not be
    * revalidated against: a listing that spanned pages has no single validator
    * (each page carries its own, and a 304 on page one says nothing about page

@@ -116,6 +116,30 @@ describe("the backoff decision table (AD-24)", () => {
     ).not.toBe("retry");
   });
 
+  it("does not undercut a retry-after it deliberately refused", () => {
+    // 300s named by GitHub, refused as above the ceiling. The secondary-limit
+    // message must not then pull the wait down to 60s: retrying 240 seconds
+    // early guarantees another 403 and, per GitHub's guidance, risks an
+    // extended block. The fallback is for when NO wait was named.
+    expect(
+      backoffDecision(
+        403,
+        { "retry-after": "300" },
+        false,
+        "You have exceeded a secondary rate limit.",
+      ).kind,
+    ).toBe("rethrow");
+    // With no retry-after at all, the fallback still applies.
+    expect(
+      backoffDecision(
+        403,
+        {},
+        false,
+        "You have exceeded a secondary rate limit.",
+      ),
+    ).toEqual({ kind: "retry", afterMs: 60_000 });
+  });
+
   it("honours retry-after zero as an immediate retry", () => {
     // Spec-valid "retry immediately"; the episode cooldown still bounds how
     // often the branch fires.
@@ -464,7 +488,11 @@ describe("the conditional alert listing", () => {
     expect(page.alerts.length + page.unreadable).toBe(2);
   });
 
-  it("refuses to loop forever on a self-referential link header", async () => {
+  it("truncates rather than looping forever on a self-referential link", async () => {
+    // The cap bounds a broken proxy, but what was read is real: truncating
+    // ingests it and flags the set incomplete, where throwing would ingest
+    // nothing at all on every sweep. A legitimately huge organisation is the
+    // same shape as the proxy from here, and it must not lose its alerts.
     const { gh } = stubGh(() => ({
       data: [alertItem],
       headers: { link: '<https://api.github.com/x?page=1>; rel="next"' },
@@ -474,9 +502,14 @@ describe("the conditional alert listing", () => {
       () => true,
       async () => gh,
     );
-    await expect(adapter.listOrgDependabotAlerts("no42-org")).rejects.toThrow(
-      /refusing to loop/,
-    );
+
+    const page = await adapter.listOrgDependabotAlerts("no42-org");
+
+    expect(page.truncated).toBe(true);
+    expect(page.alerts.length + page.unreadable).toBe(MAX_ALERT_PAGES);
+    // An incomplete listing may never be revalidated against: a later 304
+    // would confirm the truncated set as the whole answer.
+    expect(page.validator).toBeNull();
   });
 
   it("serves a listing that genuinely ends at the page cap", async () => {
@@ -502,6 +535,7 @@ describe("the conditional alert listing", () => {
 
     const page = await adapter.listOrgDependabotAlerts("no42-org");
     expect(page.alerts.length + page.unreadable).toBe(MAX_ALERT_PAGES);
+    expect(page.truncated).toBe(false);
   });
 
   it("refuses to follow a cross-origin next link", async () => {
