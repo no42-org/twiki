@@ -12,6 +12,7 @@ import {
 } from "../../core/rank.js";
 import { normaliseSeverity } from "../../core/severity.js";
 import type { AlertObservation } from "../collect/dependabot-alerts.js";
+import type { UpdatePrObservation } from "../collect/update-prs.js";
 import { kevSignal, loadKevIndex } from "../kev-lookup.js";
 import type { StorePort } from "../store/port.js";
 import {
@@ -29,7 +30,8 @@ import {
 // review rounds flagged in a row.
 
 export interface QueueItem {
-  /** `owner/name#number`, the alert's stable identity (AD-22). */
+  kind: "alert" | "update_pr";
+  /** The subject key: `owner/name#number` for alerts, the node id for PRs. */
   key: string;
   repo: string;
   number: number;
@@ -96,6 +98,27 @@ function readAlert(payload: unknown): AlertObservation | null {
   return a;
 }
 
+/**
+ * The PR shape check, same posture as readAlert: counted, not guessed at.
+ */
+function readPr(payload: unknown): UpdatePrObservation | null {
+  const p = payload as UpdatePrObservation | null | undefined;
+  if (!p || typeof p !== "object") return null;
+  if (typeof p.number !== "number" || typeof p.repo !== "string") return null;
+  if (typeof p.title !== "string" || typeof p.author !== "string") return null;
+  if (typeof p.htmlUrl !== "string") return null;
+  if (p.packageName !== null && typeof p.packageName !== "string") return null;
+  if (
+    p.bump !== null &&
+    p.bump !== "patch" &&
+    p.bump !== "minor" &&
+    p.bump !== "major"
+  ) {
+    return null;
+  }
+  return p;
+}
+
 export function buildQueue(
   store: StorePort,
   now: Date,
@@ -106,6 +129,19 @@ export function buildQueue(
   const items: QueueItem[] = [];
   let unreadable = 0;
 
+  // Filled during the alert pass, read during the PR pass. One derivation of
+  // kev and severity per alert: two copy-parallel loops let the two drift, and
+  // a PR could "inherit" a risk disagreeing with the alert row beside it.
+  const alertsByPackage = new Map<
+    string,
+    {
+      kev: ReturnType<typeof kevSignal>;
+      epss: number | null;
+      severity: ReturnType<typeof normaliseSeverity>;
+      advisory: string | null;
+    }[]
+  >();
+
   for (const row of store.currentByType("dependabot_alert")) {
     if (row.state !== "present") continue;
     const alert = readAlert(row.payload);
@@ -115,6 +151,18 @@ export function buildQueue(
     }
 
     const kev = kevSignal(index, alert.cveId);
+    const severity = normaliseSeverity(alert.severity ?? "");
+    if (alert.packageName !== null) {
+      const key = `${alert.repo.toLowerCase()}|${alert.packageName.toLowerCase()}`;
+      const list = alertsByPackage.get(key) ?? [];
+      list.push({
+        kev,
+        epss: alert.epssPercentage,
+        severity,
+        advisory: alert.cveId ?? alert.ghsaId ?? null,
+      });
+      alertsByPackage.set(key, list);
+    }
     const ranking = rank(
       {
         kev,
@@ -124,7 +172,7 @@ export function buildQueue(
         epss: alert.epssPercentage,
         // An unrecognised severity becomes null and ranks as unknown, which is
         // what the adapter's own "unknown" value should do.
-        severity: normaliseSeverity(alert.severity ?? ""),
+        severity,
         // An alert is not an update: nothing to bump, nothing to be stuck.
         bump: NOT_APPLICABLE,
         stuck: NOT_APPLICABLE,
@@ -133,6 +181,7 @@ export function buildQueue(
     );
 
     items.push({
+      kind: "alert",
       key: row.subject.key,
       repo: alert.repo,
       number: alert.number,
@@ -155,6 +204,92 @@ export function buildQueue(
   // stable. It stays as defence: that SQL clause is one edit away from
   // disappearing, and a queue that reshuffles between refreshes on rank ties
   // would look broken in a way no test of ordering-by-rank catches.
+  // The update PRs (CAP-3), ranked by the risk of what they fix. The join is
+  // local: alertsByPackage was filled during the single pass over the alerts
+  // above, so a PR bumping a package with an open alert inherits the
+  // worst-ranking alert's top three terms. A PR whose package has no open
+  // alert is a plain update, and its security terms are facts of absence
+  // (n/a), not gaps (unknown): calling them unknown would float every routine
+  // bump above every alert we checked and found absent.
+  for (const row of store.currentByType("dependency_update_pr")) {
+    if (row.state !== "present") continue;
+    const pr = readPr(row.payload);
+    if (pr === null) {
+      unreadable++;
+      continue;
+    }
+
+    const candidates =
+      pr.packageName === null
+        ? []
+        : // Folded on both sides: the alert name comes from GitHub's
+          // ecosystem-normalised advisory data (pip says django) while the PR
+          // title carries manifest casing (Bump Django from ...), and a case
+          // miss silently loses the CAP-3 risk inheritance.
+          (alertsByPackage.get(
+            `${pr.repo.toLowerCase()}|${pr.packageName.toLowerCase()}`,
+          ) ?? []);
+
+    // A PR with candidates takes its terms from them, even when a candidate
+    // happens to tie the all-n/a baseline: seeding from the baseline and
+    // comparing strictly lost the advisory on exactly that tie, and the row
+    // said "no advisory" about a PR that fixes a real one.
+    let best: Ranking;
+    let advisory: string | null;
+    let kevListed: boolean;
+    if (candidates.length === 0) {
+      // No open alert for the package: a plain update.
+      best = rank(
+        {
+          kev: NOT_APPLICABLE,
+          epss: NOT_APPLICABLE,
+          severity: NOT_APPLICABLE,
+          bump: pr.bump,
+          stuck: NOT_APPLICABLE,
+        },
+        deps.rankPolicy,
+      );
+      advisory = null;
+      kevListed = false;
+    } else {
+      const ranked = candidates.map((c) => ({
+        c,
+        r: rank(
+          {
+            kev: c.kev,
+            epss: c.epss,
+            severity: c.severity,
+            bump: pr.bump,
+            stuck: NOT_APPLICABLE,
+          },
+          deps.rankPolicy,
+        ),
+      }));
+      // The worst-ranking alert wins: a PR fixing two advisories is judged by
+      // the more urgent of them.
+      ranked.sort((a, b) => compareRankings(a.r, b.r));
+      const winner = ranked[0] as (typeof ranked)[number];
+      best = winner.r;
+      advisory = winner.c.advisory;
+      kevListed = winner.c.kev === true;
+    }
+
+    items.push({
+      kind: "update_pr",
+      key: row.subject.key,
+      repo: pr.repo,
+      number: pr.number,
+      packageName: pr.packageName,
+      advisory,
+      htmlUrl: pr.htmlUrl.startsWith("https://") ? pr.htmlUrl : null,
+      explanation: best.explanation,
+      kevListed,
+      ranking: best,
+      freshness: freshness(row.verifiedAt, now, deps.policy),
+      age: ageLabel(row.verifiedAt, now),
+    });
+  }
+
   items.sort(
     (a, b) =>
       compareRankings(a.ranking, b.ranking) || a.key.localeCompare(b.key),

@@ -342,6 +342,7 @@ describe("the real schedule table", () => {
     alerts: noop,
     coverage: noop,
     kev: noop,
+    updatePrs: noop,
   });
 
   const lane = (name: string) => schedules.find((s) => s.lane === name);
@@ -349,9 +350,24 @@ describe("the real schedule table", () => {
   it("schedules every lane the collector is supposed to run", () => {
     expect(schedules.map((s) => s.lane).sort()).toEqual([
       "coverage",
+      "graphql-update-prs",
       "kev",
       "rest-org-dependabot",
     ]);
+  });
+
+  it("omits the update-PR lane when no bot actors are configured", () => {
+    // AD-19: the actor set is configuration with no default, so an unset
+    // config genuinely has no lane. The entrypoint logs the absence loudly;
+    // this pins that the schedule table itself does not invent one.
+    const without = buildSchedules({
+      installations: ["no42-org"],
+      alerts: noop,
+      coverage: noop,
+      kev: noop,
+      updatePrs: null,
+    });
+    expect(without.map((s) => s.lane)).not.toContain("graphql-update-prs");
   });
 
   it("runs KEV only on its own pseudo-installation", () => {

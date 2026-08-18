@@ -18,3 +18,11 @@ repos:
   # Never cut releases here — merge dependency PRs only.
   - repo: no42-org/legacy-tool
     mergeOnly: true
+
+# Dependency-update bot actors for gitricorder's update-PR lane, as GitHub
+# search qualifiers. Configuration and only configuration: no bot login exists
+# in the source, so an empty or absent list disables the lane, loudly.
+# Adding an actor here makes its pull requests appear with no code change.
+bots:
+  - app/dependabot
+  - app/renovate

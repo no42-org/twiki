@@ -76,6 +76,18 @@ export interface GitHubReadPort {
   /** Is Dependabot actually watching this repository? One call. */
   probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess>;
 
+  /**
+   * Open pull requests in the organisation authored by any of `authors`.
+   *
+   * The authors are search-qualifier logins from configuration (AD-19), passed
+   * through verbatim: no bot login literal exists in source, and an empty list
+   * is the caller's problem to refuse before it gets here.
+   */
+  listOpenUpdatePRs(
+    org: string,
+    authors: readonly string[],
+  ): Promise<UpdatePrPage>;
+
   listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]>;
   prChecks(repo: RepoRef, headSha: string): Promise<CheckStatus>;
   branchChecks(repo: RepoRef, branch: string): Promise<CheckStatus>;
@@ -149,6 +161,34 @@ export interface GitHubAppPort {
   listInstallations(): Promise<InstallationRef[]>;
   /** Every repository this installation can actually see. */
   listInstallationRepos(installationId: number): Promise<RepoRef[]>;
+}
+
+/** An open dependency-update pull request, as the search returned it. */
+export interface RawUpdatePr {
+  /** GraphQL node id: the PR's stable identity (AD-22). */
+  nodeId: string;
+  repo: RepoRef;
+  number: number;
+  title: string;
+  /** The author login GitHub reports, e.g. `dependabot`. */
+  author: string;
+  htmlUrl: string;
+  createdAt: string;
+}
+
+export interface UpdatePrPage {
+  prs: RawUpdatePr[];
+  /** Nodes the mapper could not read. Never silently discarded. */
+  unreadable: number;
+  /**
+   * True when GitHub returned fewer results than the query matched.
+   *
+   * Search hard-caps at 1000 results and reports the truncation only through
+   * `issueCount`: the last page still says hasNextPage false, so without this
+   * flag a capped sweep looks complete and the tombstone pass concludes every
+   * PR beyond the cap was closed.
+   */
+  truncated: boolean;
 }
 
 /** Repository metadata the coverage lane needs, one call per 100 repos. */

@@ -5,6 +5,7 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { parseDependency } from "../core/semver.js";
 import type {
   CheckStatus,
   FailingCheck,
@@ -28,6 +29,8 @@ import type {
   RawDependabotAlert,
   RawPullRequest,
   RawRepoMeta,
+  RawUpdatePr,
+  UpdatePrPage,
 } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
@@ -117,6 +120,101 @@ export class OctokitGitHub implements GitHubPort {
       return "covered";
     } catch (err) {
       return translateDependabotProbe(err);
+    }
+  }
+
+  async listOpenUpdatePRs(
+    org: string,
+    authors: readonly string[],
+  ): Promise<UpdatePrPage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listOpenUpdatePRs needs an org resolver; this client was built without one",
+      );
+    }
+    const gh = await this.orgOctokitFor(org);
+    // Search with explicit logins, never @me: an installation token has no
+    // user identity, and the whole-account issue endpoints are excluded from
+    // installation tokens entirely. Multiple author qualifiers OR together.
+    const query = [
+      `org:${org}`,
+      "is:pr",
+      "is:open",
+      ...authors.map((a) => `author:${a}`),
+    ].join(" ");
+
+    const prs: RawUpdatePr[] = [];
+    let unreadable = 0;
+    let cursor: string | null = null;
+    for (;;) {
+      const page: {
+        search: {
+          issueCount: number;
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          nodes: unknown[];
+        };
+      } = await gh.graphql(
+        `query ($q: String!, $cursor: String) {
+           search(type: ISSUE, query: $q, first: 100, after: $cursor) {
+             issueCount
+             pageInfo { hasNextPage endCursor }
+             nodes {
+               ... on PullRequest {
+                 id
+                 number
+                 title
+                 url
+                 createdAt
+                 author { login }
+                 repository { name owner { login } }
+               }
+             }
+           }
+         }`,
+        { q: query, cursor },
+      );
+      for (const node of page.search.nodes) {
+        const pr = node as {
+          id?: string;
+          number?: number;
+          title?: string;
+          url?: string;
+          createdAt?: string;
+          author?: { login?: string } | null;
+          repository?: { name?: string; owner?: { login?: string } } | null;
+        } | null;
+        if (
+          !pr?.id ||
+          typeof pr.number !== "number" ||
+          typeof pr.title !== "string" ||
+          !pr.repository?.owner?.login ||
+          !pr.repository.name
+        ) {
+          unreadable++;
+          continue;
+        }
+        prs.push({
+          nodeId: pr.id,
+          repo: { owner: pr.repository.owner.login, name: pr.repository.name },
+          number: pr.number,
+          title: pr.title,
+          author: pr.author?.login ?? "unknown",
+          htmlUrl: pr.url ?? "",
+          createdAt: pr.createdAt ?? "",
+        });
+      }
+      if (!page.search.pageInfo.hasNextPage) {
+        // hasNextPage goes false at the 1000-result search ceiling exactly as
+        // it does at a genuine end, so completeness is judged against what the
+        // query matched, not against pagination.
+        const collected = prs.length + unreadable;
+        return {
+          prs,
+          unreadable,
+          truncated: collected < page.search.issueCount,
+        };
+      }
+      cursor = page.search.pageInfo.endCursor;
     }
   }
 
@@ -403,7 +501,6 @@ export class OctokitGitHub implements GitHubPort {
   }
 }
 
-/** Parse "Bump <name> from <a> to <b>" (and common variants) from a PR title. */
 /**
  * Translate a failed probe on OBSERVED behaviour, never on documented codes.
  *
@@ -429,14 +526,6 @@ export function translateDependabotProbe(err: unknown): DependabotAccess {
   // 404 is how GitHub hides a repository the caller may not see at all.
   if (e.status === 404) return "unreachable";
   return "unknown";
-}
-
-export function parseDependency(
-  title: string,
-): { name?: string; from?: string; to?: string } | undefined {
-  const m = title.match(/bump\s+(\S+)\s+from\s+(\S+)\s+to\s+(\S+)/i);
-  if (!m) return undefined;
-  return { name: m[1], from: m[2], to: m[3] };
 }
 
 /**

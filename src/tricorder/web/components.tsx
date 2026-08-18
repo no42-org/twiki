@@ -213,7 +213,9 @@ export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
   <Layout title="gitricorder queue">
     <h1>What to deal with next</h1>
     <p class="sub">
-      {queue.items.length} open {queue.items.length === 1 ? "alert" : "alerts"}
+      {queue.items.filter((i) => i.kind === "alert").length} open alerts
+      {" · "}
+      {queue.items.filter((i) => i.kind === "update_pr").length} update PRs
       {" · KEV catalogue "}
       {queue.kev.usable
         ? `${queue.kev.version ?? "?"} · ${queue.kev.age}`
@@ -237,7 +239,7 @@ export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
         <thead>
           <tr>
             <th>#</th>
-            <th>Alert</th>
+            <th>Item</th>
             <th>Why it ranks here</th>
             <th>Last confirmed</th>
           </tr>
@@ -247,6 +249,9 @@ export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
             <tr key={item.key}>
               <td class="num">{i + 1}</td>
               <td>
+                {item.kind === "update_pr" ? (
+                  <span class="badge">PR</span>
+                ) : null}{" "}
                 {item.htmlUrl ? (
                   <a href={item.htmlUrl}>
                     {item.repo}#{item.number}

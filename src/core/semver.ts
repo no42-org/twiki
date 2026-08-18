@@ -175,3 +175,18 @@ export function planRelease(input: {
     tagSuffixes: ["main", `sha-${shortSha}`, imageVersion],
   };
 }
+
+/**
+ * Read package and versions out of a Dependabot PR title.
+ *
+ * In core because it is pure and two consumers need it: twiki's adapter and
+ * the update-PR lane. Importing it from the adapter dragged the HTTP client
+ * into a collector that never makes a per-repo REST call.
+ */
+export function parseDependency(
+  title: string,
+): { name?: string; from?: string; to?: string } | undefined {
+  const m = title.match(/bump\s+(\S+)\s+from\s+(\S+)\s+to\s+(\S+)/i);
+  if (!m) return undefined;
+  return { name: m[1], from: m[2], to: m[3] };
+}
