@@ -736,17 +736,19 @@ describe("the stuck flag and untriaged issues (CAP-2, CAP-3)", () => {
   });
 
   it("counts a malformed issue row instead of dropping or throwing", () => {
+    // Each bad row is wrong in exactly ONE field, so each check in the guard
+    // is the only thing standing between that row and the page: a fixture
+    // malformed in several fields dies on whichever check happens to run
+    // first and pins none of the others.
     seedIssue("I_ok");
-    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
-      {
-        subject: { type: "issue", key: "I_bad" },
-        payload: { repo: "no42-org/twiki", number: "five" },
-      },
-    ]);
+    seedIssue("I_bad_number", { number: "five" });
+    seedIssue("I_bad_title", { title: 42 });
+    // The one that detonates: htmlUrl gets .startsWith() called on it.
+    seedIssue("I_bad_url", { htmlUrl: 42 });
 
     const queue = buildQueue(store, NOW, DEPS);
     expect(queue.items.filter((i) => i.kind === "issue")).toHaveLength(1);
-    expect(queue.unreadable).toBe(1);
+    expect(queue.unreadable).toBe(3);
   });
 
   it("drops a non-https issue link but keeps the row", () => {

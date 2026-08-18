@@ -98,7 +98,11 @@ export async function collectUpdateStatuses(
     // Reconcile closed alerts' statuses away, under the same guards as every
     // other lane: full scope, clean outcome, and only rows this sweep was
     // authoritative for. Status keys are owner/name#number, so the
-    // per-installation read works by key prefix.
+    // per-installation read works by key prefix. That read looks redundant
+    // with the watchedSlugs filter below, whose slugs are owner-prefixed by
+    // construction, and today it is: it stays as the store-level bound AD-16
+    // asks for, so a future change to watchedIn cannot silently widen what
+    // one installation's sweep may conclude about another's rows.
     const outcome = failedRepos > 0 ? "partial" : "ok";
     if (scope === "full" && outcome === "ok") {
       const seen = new Set(observations.map((o) => o.subject.key));
