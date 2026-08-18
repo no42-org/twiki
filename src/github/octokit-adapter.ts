@@ -18,6 +18,7 @@ import {
   installationOctokit,
   loadAppAuthFromEnv,
 } from "./auth.js";
+import { installationTokenGen, withRequestDiscipline } from "./discipline.js";
 import type {
   AppIdentity,
   DependabotAccess,
@@ -33,6 +34,7 @@ import type {
   RawRepoMeta,
   RawUpdatePr,
   RawUpdateStatus,
+  RequestValidator,
   UpdatePrPage,
 } from "./port.js";
 
@@ -592,18 +594,76 @@ export class OctokitGitHub implements GitHubPort {
     }
   }
 
-  async listOrgDependabotAlerts(org: string): Promise<OrgAlertPage> {
+  async listOrgDependabotAlerts(
+    org: string,
+    cached: RequestValidator | null = null,
+  ): Promise<OrgAlertPage> {
     if (!this.orgOctokitFor) {
       throw new Error(
         "listOrgDependabotAlerts needs an org resolver; this client was built without one",
       );
     }
     const gh = await this.orgOctokitFor(org);
-    const raw = await gh.paginate(gh.dependabot.listAlertsForOrg, {
-      org,
-      state: "open",
-      per_page: 100,
-    });
+
+    // A validator from a previous token generation is a guaranteed miss:
+    // GitHub's ETags vary with the Authorization header. Cold, not sent.
+    const tokenGen = await installationTokenGen(gh);
+    const send =
+      cached && cached.tokenGen === tokenGen && cached.etag ? cached : null;
+
+    // Paginated by link header rather than gh.paginate: the conditional
+    // request needs the first page's response headers (etag, 304), which
+    // paginate does not expose.
+    const raw: unknown[] = [];
+    let pages = 0;
+    let firstEtag: string | null = null;
+    let firstLastModified: string | null = null;
+    let next: string | null = null;
+    for (;;) {
+      pages++;
+      let res: {
+        data: unknown;
+        headers: Record<string, string | number | undefined>;
+      };
+      try {
+        res = next
+          ? await gh.request(`GET ${next}`)
+          : await gh.request("GET /orgs/{org}/dependabot/alerts", {
+              org,
+              state: "open",
+              per_page: 100,
+              headers: send?.etag ? { "if-none-match": send.etag } : {},
+            });
+      } catch (err) {
+        if (
+          send &&
+          pages === 1 &&
+          (err as { status?: number }).status === 304
+        ) {
+          // Byte-identical to the listing the validator came from. No pages
+          // to walk: a single-page listing is the only kind we cache for.
+          return {
+            alerts: [],
+            unreadable: 0,
+            notModified: true,
+            validator: { ...send, tokenGen },
+          };
+        }
+        throw err;
+      }
+      if (pages === 1) {
+        firstEtag =
+          typeof res.headers.etag === "string" ? res.headers.etag : null;
+        firstLastModified =
+          typeof res.headers["last-modified"] === "string"
+            ? res.headers["last-modified"]
+            : null;
+      }
+      raw.push(...(res.data as unknown[]));
+      const link = typeof res.headers.link === "string" ? res.headers.link : "";
+      next = link.match(/<([^>]+)>;\s*rel="next"/)?.[1] ?? null;
+      if (!next) break;
+    }
 
     // Deliberately unfiltered. Which repositories are watched is AD-10's rule
     // and belongs to the lane. This adapter's allowlist guard exists to stop
@@ -617,7 +677,18 @@ export class OctokitGitHub implements GitHubPort {
       if (alert === null) unreadable++;
       else alerts.push(alert);
     }
-    return { alerts, unreadable };
+    return {
+      alerts,
+      unreadable,
+      notModified: false,
+      // Only a listing that fit in one page gets a validator: each page
+      // carries its own ETag, and a 304 on page one says nothing about the
+      // pages behind it.
+      validator:
+        pages === 1 && firstEtag
+          ? { etag: firstEtag, lastModified: firstLastModified, tokenGen }
+          : null,
+    };
   }
 
   async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
@@ -887,11 +958,15 @@ export async function createTricorderReadPort(
   const clientFor = (id: number): Octokit => {
     let c = clients.get(id);
     if (!c) {
-      c = new Octokit({
-        authStrategy: createAppAuth,
-        auth: { ...auth, installationId: id },
-        log: quiet,
-      });
+      // Every collector request flows through the discipline hook (AD-24):
+      // honour retry-after once, fail fast and legibly on primary exhaustion.
+      c = withRequestDiscipline(
+        new Octokit({
+          authStrategy: createAppAuth,
+          auth: { ...auth, installationId: id },
+          log: quiet,
+        }),
+      );
       clients.set(id, c);
     }
     return c;

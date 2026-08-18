@@ -13,7 +13,12 @@ import {
   repoSlug,
   type WorkflowRunRef,
 } from "../src/core/types.js";
-import type { EnrichmentPort, KevCatalogue } from "../src/enrich/port.js";
+import type {
+  CachedValidator,
+  EnrichmentPort,
+  KevCatalogue,
+  KevFetchOutcome,
+} from "../src/enrich/port.js";
 import type {
   DependabotAccess,
   GitHubPort,
@@ -26,6 +31,7 @@ import type {
   RawRepoMeta,
   RawUpdatePr,
   RawUpdateStatus,
+  RequestValidator,
   UpdatePrPage,
 } from "../src/github/port.js";
 import type { Advisor, AdvisorRepoInput } from "../src/twiki/advisor.js";
@@ -160,18 +166,33 @@ export class FakeEnrichmentPort implements EnrichmentPort {
   released = "2026-08-17T17:00:24.7655Z";
   /** When set, the next fetch throws this instead of answering. */
   failWith: Error | null = null;
+  /** When true, a conditional fetch answers 304. Unconditional still 200s. */
+  notModified = false;
+  /** Validators the next fresh fetch hands back. */
+  validator: CachedValidator = { etag: 'W/"kev-1"', lastModified: null };
+  /** What each call carried, so a test can assert conditionality. */
+  cachedSeen: (CachedValidator | null)[] = [];
   calls = 0;
 
-  async fetchKev(): Promise<KevCatalogue> {
+  endpoint(): string {
+    return "https://fake.test/kev.json";
+  }
+
+  async fetchKev(cached: CachedValidator | null): Promise<KevFetchOutcome> {
     this.calls++;
     if (this.failWith) throw this.failWith;
-    return {
+    this.cachedSeen.push(cached);
+    if (this.notModified && cached) {
+      return { kind: "not_modified", validator: cached };
+    }
+    const catalogue: KevCatalogue = {
       version: this.version,
       released: this.released,
       claimedCount: this.cveIds.length + this.unreadable,
       cveIds: [...this.cveIds].sort(),
       unreadable: this.unreadable,
     };
+    return { kind: "fresh", catalogue, validator: this.validator };
   }
 }
 
@@ -249,13 +270,34 @@ export class FakeGitHubReadPort implements GitHubReadPort {
     return this.access.get(repoSlug(repo).toLowerCase()) ?? "covered";
   }
 
-  async listOrgDependabotAlerts(org: string): Promise<OrgAlertPage> {
+  /** Orgs whose next conditional read answers 304. Unconditional still 200s. */
+  orgAlertNotModified = new Set<string>();
+  /** Validator a 200 hands back, per org; null mimics a multi-page listing. */
+  orgAlertValidators = new Map<string, RequestValidator>();
+  /** What each call carried, so a test can assert conditionality. */
+  orgAlertCachedSeen: (RequestValidator | null)[] = [];
+
+  async listOrgDependabotAlerts(
+    org: string,
+    cached: RequestValidator | null = null,
+  ): Promise<OrgAlertPage> {
     if (this.failingOrgs.has(org)) {
       throw new Error(`fake: ${org} is unreachable`);
+    }
+    this.orgAlertCachedSeen.push(cached);
+    if (cached && this.orgAlertNotModified.has(org)) {
+      return {
+        alerts: [],
+        unreadable: 0,
+        notModified: true,
+        validator: cached,
+      };
     }
     return {
       alerts: this.orgAlerts.get(org) ?? [],
       unreadable: this.unreadableByOrg.get(org) ?? 0,
+      notModified: false,
+      validator: this.orgAlertValidators.get(org) ?? null,
     };
   }
 

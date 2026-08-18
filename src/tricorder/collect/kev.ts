@@ -78,13 +78,53 @@ export async function collectKev(
       startedAt: deps.now(),
     });
 
-    const catalogue = await deps.enrichment.fetchKev();
+    // Conditional only while a stored catalogue exists to keep (AD-25). A 304
+    // confirms "what you have is current", which is only useful if we still
+    // have it: with no present subject the validator is a leftover, and
+    // honouring it would finish ok holding nothing.
+    const url = deps.enrichment.endpoint();
+    const prior = deps.store.current(KEV_SUBJECT);
+    const cached =
+      prior?.state === "present"
+        ? deps.store.loadValidator(KEV_INSTALLATION, url)
+        : null;
+
+    const outcome = await deps.enrichment.fetchKev(
+      cached ? { etag: cached.etag, lastModified: cached.lastModified } : null,
+    );
+
+    if (outcome.kind === "not_modified") {
+      // CISA's own statement that the stored catalogue is still current: the
+      // one condition under which advancing its verified_at is honest. This
+      // is NOT the freshness top-up that froze the catalogue before; that one
+      // touched on degraded fetches, this one only on a 304.
+      deps.store.touchVerified([KEV_SUBJECT], deps.now());
+      deps.store.saveValidator(
+        KEV_INSTALLATION,
+        url,
+        { ...outcome.validator, tokenGen: "none" },
+        deps.now(),
+      );
+      deps.store.finishRun(run, "ok", deps.now(), "not modified (304)");
+      log(`${LANE}: not modified, catalogue confirmed current`);
+      const kept = (prior?.payload as KevObservation | undefined)?.cveIds;
+      return {
+        outcome: "ok",
+        listed: Array.isArray(kept) ? kept.length : 0,
+        unreadable: 0,
+      };
+    }
+
+    const { catalogue } = outcome;
     const { unreadable } = catalogue;
 
     if (unreadable > 0) {
       // Not stored, and deliberately not touched either. The prior keeps its
       // own verified_at and ages out on schedule; topping it up is what made
-      // the freeze invisible last time.
+      // the freeze invisible last time. The stored validator is also left
+      // alone: it still matches the last body we vouched for, and the feed
+      // has demonstrably changed since, so the next conditional fetch gets a
+      // 200 and a chance at a clean read.
       deps.store.finishRun(
         run,
         "partial",
@@ -105,6 +145,14 @@ export async function collectKev(
         } satisfies KevObservation,
       },
     ]);
+    // Saved with the catalogue it validates, in the same sweep: a validator
+    // for a body we refused to store would confirm 304s about nothing.
+    deps.store.saveValidator(
+      KEV_INSTALLATION,
+      url,
+      { ...outcome.validator, tokenGen: "none" },
+      deps.now(),
+    );
     deps.store.finishRun(run, "ok", deps.now());
 
     log(

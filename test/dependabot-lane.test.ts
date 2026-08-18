@@ -550,4 +550,112 @@ describe("Dependabot alerts lane", () => {
       });
     });
   });
+
+  describe("the conditional sweep (AD-25)", () => {
+    const VALIDATOR = {
+      etag: 'W/"alerts-1"',
+      lastModified: null,
+      tokenGen: "2026-08-16T11:00:00Z",
+    };
+
+    it("saves the validator on a clean full sweep and sends it on the next", async () => {
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(github.orgAlertCachedSeen[0]).toBeNull();
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(github.orgAlertCachedSeen[1]).toEqual(VALIDATOR);
+    });
+
+    it("a 304 confirms every watched row without rewriting it", async () => {
+      // The story's acceptance line: a 304 produces no observation row but
+      // does advance verified_at, so a quiet healthy repository renders
+      // fresh rather than stale.
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      const alertBefore = store.currentByType("dependabot_alert")[0];
+      const repoBefore = store.currentByType("repository")[0];
+
+      github.orgAlertNotModified.add("no42-org");
+      const r = await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(r).toMatchObject({ outcome: "ok", alerts: 1 });
+      const alertAfter = store.currentByType("dependabot_alert")[0];
+      const repoAfter = store.currentByType("repository")[0];
+      // No observation row: observedAt stands. Confirmed: verifiedAt moved.
+      expect(alertAfter?.observedAt).toBe(alertBefore?.observedAt);
+      expect(alertAfter?.verifiedAt).not.toBe(alertBefore?.verifiedAt);
+      // The repository confirmation row moves with it, or the repo page
+      // would show a stale zero over a fresh alert list.
+      expect(repoAfter?.observedAt).toBe(repoBefore?.observedAt);
+      expect(repoAfter?.verifiedAt).not.toBe(repoBefore?.verifiedAt);
+      expect(store.latestRuns(1)[0]?.detail).toContain("not modified");
+    });
+
+    it("a 304 tombstones nothing", async () => {
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      // The fake's 304 returns no alerts, which a broken lane would read as
+      // "everything closed".
+      github.orgAlertNotModified.add("no42-org");
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(
+        store
+          .currentByType("dependabot_alert")
+          .filter((c) => c.state === "present"),
+      ).toHaveLength(1);
+    });
+
+    it("a 304 does not confirm a repository dropped from the allowlist", async () => {
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      const before = store.currentByType("dependabot_alert")[0];
+
+      watched.delete("no42-org/twiki");
+      github.orgAlertNotModified.add("no42-org");
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      // Out of scope, not confirmed: the row ages out on its own.
+      const after = store.currentByType("dependabot_alert")[0];
+      expect(after?.verifiedAt).toBe(before?.verifiedAt);
+    });
+
+    it("does not save a validator from a partial sweep", async () => {
+      // A 304 against it would confirm rows the sweep knew were incomplete.
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.unreadableByOrg.set("no42-org", 2);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(github.orgAlertCachedSeen[1]).toBeNull();
+    });
+
+    it("does not save a validator from a hot sweep", async () => {
+      // A hot sweep queried a subset; a 304 against its validator would
+      // confirm that subset as the whole answer.
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "hot");
+
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(github.orgAlertCachedSeen[1]).toBeNull();
+    });
+
+    it("fetches unconditionally when the listing spanned pages", async () => {
+      // No validator came back (multi-page listing), so nothing is cached
+      // and the next sweep pays full price rather than guessing.
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(github.orgAlertCachedSeen[1]).toBeNull();
+    });
+  });
 });

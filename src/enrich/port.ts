@@ -34,7 +34,37 @@ export interface KevCatalogue {
   unreadable: number;
 }
 
+/**
+ * HTTP validators for the conditional re-fetch (AD-25). No token generation:
+ * the KEV feed is unauthenticated, so rotation cannot invalidate these.
+ */
+export interface CachedValidator {
+  etag: string | null;
+  lastModified: string | null;
+}
+
+/**
+ * Either a full catalogue with the validators to cache, or the feed's own
+ * statement that nothing changed since the cached validator was captured.
+ *
+ * `not_modified` is a positive confirmation from the origin, not a guess:
+ * the caller may advance the stored catalogue's verified_at on it. It is the
+ * only shape here that carries no catalogue, so a caller cannot read one out
+ * of it by accident.
+ */
+export type KevFetchOutcome =
+  | { kind: "fresh"; catalogue: KevCatalogue; validator: CachedValidator }
+  | { kind: "not_modified"; validator: CachedValidator };
+
 export interface EnrichmentPort {
-  /** Throws rather than returning a catalogue it cannot vouch for. */
-  fetchKev(): Promise<KevCatalogue>;
+  /** The URL fetchKev will call. The validator cache is keyed on it (AD-25). */
+  endpoint(): string;
+  /**
+   * Throws rather than returning a catalogue it cannot vouch for.
+   *
+   * `cached` carries the validators from the previous successful fetch, or
+   * null for an unconditional fetch. A conditional fetch answering 304 comes
+   * back as `not_modified` and skips the 1.5MB download entirely.
+   */
+  fetchKev(cached: CachedValidator | null): Promise<KevFetchOutcome>;
 }

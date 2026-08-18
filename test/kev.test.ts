@@ -10,6 +10,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NOT_APPLICABLE } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
 import { HttpEnrichment, KEV_URL, parseKev } from "../src/enrich/kev.js";
+import type { KevFetchOutcome } from "../src/enrich/port.js";
+
+/** Unwrap a fresh outcome, failing legibly on a 304 the test did not expect. */
+function catalogueOf(outcome: KevFetchOutcome) {
+  if (outcome.kind !== "fresh") {
+    throw new Error(`expected a fresh catalogue, got ${outcome.kind}`);
+  }
+  return outcome.catalogue;
+}
+
 import { collectKev, KEV_INSTALLATION } from "../src/tricorder/collect/kev.js";
 import { kevSignal, loadKevIndex } from "../src/tricorder/kev-lookup.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
@@ -92,14 +102,68 @@ describe("fetching", () => {
       "http://x",
       async () => ({ ok: false, status: 503 }) as Response,
     );
-    await expect(port.fetchKev()).rejects.toThrow(/HTTP 503/);
+    await expect(port.fetchKev(null)).rejects.toThrow(/HTTP 503/);
   });
 
   it("returns a catalogue on success", async () => {
     const port = new HttpEnrichment("http://x", async () =>
       ok(payload(["CVE-2021-1111"])),
     );
-    expect((await port.fetchKev()).cveIds).toEqual(["CVE-2021-1111"]);
+    expect(catalogueOf(await port.fetchKev(null)).cveIds).toEqual([
+      "CVE-2021-1111",
+    ]);
+  });
+
+  it("sends both validators and answers not_modified on a 304", async () => {
+    const seen: Record<string, string>[] = [];
+    const port = new HttpEnrichment("http://x", async (_url, init) => {
+      seen.push({ ...(init?.headers as Record<string, string>) });
+      return { ok: false, status: 304 } as Response;
+    });
+
+    const outcome = await port.fetchKev({
+      etag: 'W/"abc"',
+      lastModified: "Mon, 17 Aug 2026 17:00:00 GMT",
+    });
+
+    expect(outcome.kind).toBe("not_modified");
+    // Both, because RFC 9110 prefers If-None-Match while a CDN honouring
+    // only Last-Modified still gets its chance to answer 304.
+    expect(seen[0]?.["if-none-match"]).toBe('W/"abc"');
+    expect(seen[0]?.["if-modified-since"]).toBe(
+      "Mon, 17 Aug 2026 17:00:00 GMT",
+    );
+  });
+
+  it("captures the response validators on a 200", async () => {
+    const port = new HttpEnrichment("http://x", async () => {
+      const res = ok(payload(["CVE-2021-1111"]));
+      return {
+        ...res,
+        headers: new Headers({
+          etag: 'W/"v2"',
+          "content-type": "application/json",
+          "last-modified": "Tue, 18 Aug 2026 06:00:00 GMT",
+        }),
+      } as Response;
+    });
+
+    const outcome = await port.fetchKev(null);
+    expect(outcome.kind).toBe("fresh");
+    expect(outcome.validator).toEqual({
+      etag: 'W/"v2"',
+      lastModified: "Tue, 18 Aug 2026 06:00:00 GMT",
+    });
+  });
+
+  it("refuses a 304 it never asked for", async () => {
+    // A broken proxy confirming a validator we never sent: honouring it
+    // would report not_modified with nothing to be unmodified relative to.
+    const port = new HttpEnrichment(
+      "http://x",
+      async () => ({ ok: false, status: 304 }) as Response,
+    );
+    await expect(port.fetchKev(null)).rejects.toThrow(/unconditional/);
   });
 });
 
@@ -226,13 +290,101 @@ describe("the KEV lane stores only what it can vouch for", () => {
   });
 });
 
+describe("the KEV conditional re-fetch (AD-25)", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "kevc-"));
+    store = SqliteStore.openForWrite(join(dir, "kc.db"));
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const depsFor = (p: FakeEnrichmentPort, now: string) => ({
+    enrichment: p,
+    store,
+    now: () => now,
+    log: () => {},
+  });
+
+  it("a 304 confirms the stored catalogue: fresh, intact, run ok", async () => {
+    const p = new FakeEnrichmentPort();
+    p.cveIds = ["CVE-2021-44228"];
+    await collectKev(depsFor(p, "2026-08-18T06:00:00.000Z"));
+    const before = store.current(KEV_SUBJECT);
+
+    p.notModified = true;
+    const r = await collectKev(depsFor(p, "2026-08-18T07:00:00.000Z"));
+
+    expect(r.outcome).toBe("ok");
+    expect(r.listed).toBe(1);
+    // The second fetch was conditional: it carried the stored validator.
+    expect(p.cachedSeen[1]).toEqual({ etag: 'W/"kev-1"', lastModified: null });
+    const after = store.current(KEV_SUBJECT);
+    // Catalogue intact, verified_at advanced: a quiet feed renders fresh
+    // rather than stale, with no observation row written (AD-3).
+    expect(after?.payload).toEqual(before?.payload);
+    expect(after?.observedAt).toBe(before?.observedAt);
+    expect(after?.verifiedAt).toBe("2026-08-18T07:00:00.000Z");
+    expect(store.latestRuns(1)[0]?.detail).toContain("not modified");
+  });
+
+  it("fetches unconditionally while no stored catalogue exists", async () => {
+    // A leftover validator with nothing behind it must not be sent: a 304
+    // would confirm a catalogue we do not hold, and the lane would finish ok
+    // holding nothing.
+    store.saveValidator(
+      KEV_INSTALLATION,
+      "https://fake.test/kev.json",
+      { etag: 'W/"stale"', lastModified: null, tokenGen: "none" },
+      "2026-08-17T00:00:00.000Z",
+    );
+    const p = new FakeEnrichmentPort();
+    p.cveIds = ["CVE-2021-44228"];
+    p.notModified = true; // would 304 if a validator were sent
+
+    const r = await collectKev(depsFor(p, "2026-08-18T06:00:00.000Z"));
+
+    expect(p.cachedSeen[0]).toBeNull();
+    expect(r).toMatchObject({ outcome: "ok", listed: 1 });
+  });
+
+  it("a degraded fetch leaves the validator alone with the catalogue", async () => {
+    // The feed changed (we read a new degraded body), so the old validator
+    // now misses: the next conditional fetch gets a 200 and a clean chance.
+    // Overwriting it with the degraded body's validator would 304-confirm a
+    // body we refused to store.
+    const p = new FakeEnrichmentPort();
+    p.cveIds = ["CVE-2021-44228"];
+    await collectKev(depsFor(p, "2026-08-18T06:00:00.000Z"));
+
+    p.unreadable = 3;
+    p.validator = { etag: 'W/"kev-2"', lastModified: null };
+    await collectKev(depsFor(p, "2026-08-18T07:00:00.000Z"));
+
+    expect(
+      store.loadValidator(KEV_INSTALLATION, "https://fake.test/kev.json"),
+    ).toEqual({ etag: 'W/"kev-1"', lastModified: null, tokenGen: "none" });
+  });
+});
+
 describe("the chain's first term", () => {
   let dir: string;
   let store: SqliteStore;
 
   const seed = async (ids: string[], at = NOW.toISOString()) => {
     await collectKev({
-      enrichment: { fetchKev: async () => parseKev(payload(ids)) },
+      enrichment: {
+        endpoint: () => "https://fake.test/kev.json",
+        fetchKev: async () => ({
+          kind: "fresh" as const,
+          catalogue: parseKev(payload(ids)),
+          validator: { etag: null, lastModified: null },
+        }),
+      },
       store,
       now: () => at,
       log: () => {},
@@ -465,7 +617,7 @@ describe("the constants that hold the guards in place", () => {
         }),
       256,
     );
-    await expect(port.fetchKev()).rejects.toThrow(/too large/);
+    await expect(port.fetchKev(null)).rejects.toThrow(/too large/);
   });
 
   it("still parses a streamed body under the cap", async () => {
@@ -479,7 +631,9 @@ describe("the constants that hold the guards in place", () => {
         }),
       1024 * 1024,
     );
-    expect((await port.fetchKev()).cveIds).toEqual(["CVE-2021-1111"]);
+    expect(catalogueOf(await port.fetchKev(null)).cveIds).toEqual([
+      "CVE-2021-1111",
+    ]);
   });
 
   it("refuses a body the declared length says is too large", async () => {
@@ -496,7 +650,7 @@ describe("the constants that hold the guards in place", () => {
           json: async () => payload(["CVE-2021-1111"]),
         }) as Response,
     );
-    await expect(port.fetchKev()).rejects.toThrow(/too large/);
+    await expect(port.fetchKev(null)).rejects.toThrow(/too large/);
   });
 
   it("pins the endpoint", () => {
@@ -518,7 +672,7 @@ describe("the constants that hold the guards in place", () => {
         json: async () => payload(["CVE-2021-1111"]),
       } as Response;
     });
-    await port.fetchKev();
+    await port.fetchKev(null);
 
     expect(
       seen?.signal,
@@ -541,7 +695,7 @@ describe("the constants that hold the guards in place", () => {
           json: async () => ({}),
         }) as Response,
     );
-    await expect(port.fetchKev()).rejects.toThrow(/not JSON/);
+    await expect(port.fetchKev(null)).rejects.toThrow(/not JSON/);
   });
 
   it("refuses a body CISA's own count says is truncated", async () => {
