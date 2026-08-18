@@ -68,6 +68,12 @@ describe("the backoff decision table (AD-24)", () => {
       backoffDecision(403, { "x-ratelimit-remaining": "42" }, false).kind,
     ).toBe("rethrow");
     expect(backoffDecision(undefined, {}, false).kind).toBe("rethrow");
+    // Only 403/429 are limit signals. A 500 that happens to carry
+    // retry-after is a server fault, and sleeping on it would dress an
+    // outage up as throttling.
+    expect(backoffDecision(500, { "retry-after": "5" }, false).kind).toBe(
+      "rethrow",
+    );
   });
 });
 
