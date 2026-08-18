@@ -281,6 +281,73 @@ describe("the queue page", () => {
     expect(html).toContain("KEV status ranks as unknown");
   });
 
+  it("judges the KEV index on its own daily cadence, not the sweep's", async () => {
+    // The view-model tests pass kevPolicy directly, so unwiring the fallback
+    // in createApp was invisible: a one-hour-old catalogue is stale on the
+    // sweep budget and fresh on the daily one, and only the page exercises the
+    // wiring.
+    const r = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T11:00:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-17T11:00:00.000Z", [
+      {
+        subject: KEV_SUBJECT,
+        payload: { version: "v", released: "x", cveIds: ["CVE-2026-0001"] },
+      },
+    ]);
+    const r2 = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T11:55:00.000Z",
+    });
+    store.recordObservations(r2, "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number: 1, cveId: "CVE-2026-0001" })),
+    ]);
+
+    const html = await (await app().request("/queue")).text();
+
+    expect(html).toContain("listed in CISA KEV");
+    expect(html).not.toContain("KEV status ranks as unknown");
+  });
+
+  it("applies the configured thresholds, not the defaults", async () => {
+    // Under the custom bands both items share an EPSS band and severity
+    // decides; under the defaults EPSS decides the other way. Unwiring
+    // rankPolicy in createApp silently reverts to the defaults.
+    const r = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number: 1, epssPercentage: 0.2, severity: "low" })),
+      normalise(
+        makeAlert({ number: 2, epssPercentage: 0.05, severity: "critical" }),
+      ),
+    ]);
+
+    const custom = createApp({
+      store,
+      watched: [{ owner: "no42-org", name: "twiki" }],
+      policy: SWEEP,
+      lanePolicies: { kev: DAILY },
+      rankPolicy: { epssBands: [0.5, 0.3, 0.01] },
+      now: () => NOW,
+    });
+    const html = await (await custom.request("/queue")).text();
+
+    const first = html.indexOf("no42-org/twiki#2");
+    const second = html.indexOf("no42-org/twiki#1");
+    expect(first).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(-1);
+    expect(first, "critical leads under the custom bands").toBeLessThan(second);
+  });
+
   it("links the two pages to each other", async () => {
     const queue = await (await app().request("/queue")).text();
     const home = await (await app().request("/")).text();

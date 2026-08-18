@@ -132,6 +132,11 @@ export function buildQueue(
     });
   }
 
+  // The key tiebreak cannot be observed through the store today, because
+  // currentByType already returns rows ORDER BY subject_key and this sort is
+  // stable. It stays as defence: that SQL clause is one edit away from
+  // disappearing, and a queue that reshuffles between refreshes on rank ties
+  // would look broken in a way no test of ordering-by-rank catches.
   items.sort(
     (a, b) =>
       compareRankings(a.ranking, b.ranking) || a.key.localeCompare(b.key),

@@ -475,6 +475,31 @@ describe("SqliteStore", () => {
     });
   });
 
+  describe("read ordering", () => {
+    it("returns currentByType rows ordered by key", () => {
+      // The queue's stable tie order and the repo page's row order both rest
+      // on this. It was provided by an ORDER BY nothing asserted, which is one
+      // edit away from a page that reshuffles between refreshes.
+      store.recordObservations(run, T1, [
+        {
+          subject: repositorySubject({ owner: "no42-org", name: "zzz" }),
+          payload: { a: 1 },
+        },
+        {
+          subject: repositorySubject({ owner: "no42-org", name: "aaa" }),
+          payload: { a: 2 },
+        },
+        {
+          subject: repositorySubject({ owner: "no42-org", name: "mmm" }),
+          payload: { a: 3 },
+        },
+      ]);
+      expect(
+        store.currentByType("repository").map((r) => r.subject.key),
+      ).toEqual(["no42-org/aaa", "no42-org/mmm", "no42-org/zzz"]);
+    });
+  });
+
   describe("trimming collection runs", () => {
     const runAt = (at: string, installation = "no42-org") => {
       const r = store.beginRun({
