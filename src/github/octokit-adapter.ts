@@ -25,11 +25,14 @@ import type {
   GitHubPort,
   GitHubReadPort,
   InstallationRef,
+  IssuePage,
   OrgAlertPage,
   RawDependabotAlert,
+  RawIssue,
   RawPullRequest,
   RawRepoMeta,
   RawUpdatePr,
+  RawUpdateStatus,
   UpdatePrPage,
 } from "./port.js";
 
@@ -216,6 +219,157 @@ export class OctokitGitHub implements GitHubPort {
       }
       cursor = page.search.pageInfo.endCursor;
     }
+  }
+
+  async listUntriagedIssues(org: string): Promise<IssuePage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listUntriagedIssues needs an org resolver; this client was built without one",
+      );
+    }
+    const gh = await this.orgOctokitFor(org);
+    const query = `org:${org} is:issue is:open no:assignee`;
+
+    const issues: RawIssue[] = [];
+    let unreadable = 0;
+    let cursor: string | null = null;
+    for (;;) {
+      const page: {
+        search: {
+          issueCount: number;
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          nodes: unknown[];
+        };
+      } = await gh.graphql(
+        `query ($q: String!, $cursor: String) {
+           search(type: ISSUE, query: $q, first: 100, after: $cursor) {
+             issueCount
+             pageInfo { hasNextPage endCursor }
+             nodes {
+               ... on Issue {
+                 id
+                 number
+                 title
+                 url
+                 createdAt
+                 author { login }
+                 repository { name owner { login } }
+               }
+             }
+           }
+         }`,
+        { q: query, cursor },
+      );
+      for (const node of page.search.nodes) {
+        const issue = node as {
+          id?: string;
+          number?: number;
+          title?: string;
+          url?: string;
+          createdAt?: string;
+          author?: { login?: string } | null;
+          repository?: { name?: string; owner?: { login?: string } } | null;
+        } | null;
+        if (
+          !issue?.id ||
+          typeof issue.number !== "number" ||
+          typeof issue.title !== "string" ||
+          !issue.repository?.owner?.login ||
+          !issue.repository.name
+        ) {
+          unreadable++;
+          continue;
+        }
+        issues.push({
+          nodeId: issue.id,
+          repo: {
+            owner: issue.repository.owner.login,
+            name: issue.repository.name,
+          },
+          number: issue.number,
+          title: issue.title,
+          author: issue.author?.login ?? "unknown",
+          htmlUrl: issue.url ?? "",
+          createdAt: issue.createdAt ?? "",
+        });
+      }
+      if (!page.search.pageInfo.hasNextPage) {
+        // The same 1000-result search ceiling as the PR search: hasNextPage
+        // goes false at the cap exactly as at a genuine end.
+        const collected = issues.length + unreadable;
+        return {
+          issues,
+          unreadable,
+          truncated: collected < page.search.issueCount,
+        };
+      }
+      cursor = page.search.pageInfo.endCursor;
+    }
+  }
+
+  async listDependabotUpdateStatuses(
+    repo: RepoRef,
+  ): Promise<RawUpdateStatus[]> {
+    const gh = await this.client(repo);
+    const out: RawUpdateStatus[] = [];
+    let cursor: string | null = null;
+    for (;;) {
+      const page: {
+        repository: {
+          vulnerabilityAlerts: {
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+            nodes: {
+              number?: number;
+              dependabotUpdate?: {
+                pullRequest?: { number?: number } | null;
+                error?: { title?: string; errorType?: string } | null;
+              } | null;
+            }[];
+          } | null;
+        } | null;
+      } = await gh.graphql(
+        `query ($owner: String!, $name: String!, $cursor: String) {
+           repository(owner: $owner, name: $name) {
+             vulnerabilityAlerts(states: OPEN, first: 100, after: $cursor) {
+               pageInfo { hasNextPage endCursor }
+               nodes {
+                 number
+                 dependabotUpdate {
+                   pullRequest { number }
+                   error { title errorType }
+                 }
+               }
+             }
+           }
+         }`,
+        { owner: repo.owner, name: repo.name, cursor },
+      );
+      const alerts = page.repository?.vulnerabilityAlerts;
+      if (!alerts) break;
+      for (const node of alerts.nodes) {
+        if (typeof node.number !== "number") continue;
+        const update = node.dependabotUpdate;
+        out.push({
+          repo,
+          alertNumber: node.number,
+          // dependabotUpdate null means GitHub is not attempting a fix, which
+          // is a different fact from an attempted fix with no error.
+          update: update
+            ? {
+                pullRequestNumber: update.pullRequest?.number ?? null,
+                error: update.error
+                  ? (update.error.title ??
+                    update.error.errorType ??
+                    "unknown error")
+                  : null,
+              }
+            : null,
+        });
+      }
+      if (!alerts.pageInfo.hasNextPage) break;
+      cursor = alerts.pageInfo.endCursor;
+    }
+    return out;
   }
 
   async listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]> {

@@ -18,11 +18,14 @@ import type {
   DependabotAccess,
   GitHubPort,
   GitHubReadPort,
+  IssuePage,
   OrgAlertPage,
   RawDependabotAlert,
+  RawIssue,
   RawPullRequest,
   RawRepoMeta,
   RawUpdatePr,
+  RawUpdateStatus,
   UpdatePrPage,
 } from "../src/github/port.js";
 import type { Advisor, AdvisorRepoInput } from "../src/twiki/advisor.js";
@@ -200,6 +203,34 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       unreadable: this.updatePrUnreadable.get(org) ?? 0,
       truncated: this.updatePrTruncated.has(org),
     };
+  }
+
+  /** Untriaged issues per org. */
+  issues = new Map<string, RawIssue[]>();
+  issueUnreadable = new Map<string, number>();
+  issueTruncated = new Set<string>();
+
+  async listUntriagedIssues(org: string): Promise<IssuePage> {
+    return {
+      issues: this.issues.get(org) ?? [],
+      unreadable: this.issueUnreadable.get(org) ?? 0,
+      truncated: this.issueTruncated.has(org),
+    };
+  }
+
+  /** dependabotUpdate statuses per `owner/name`. */
+  updateStatuses = new Map<string, RawUpdateStatus[]>();
+  /** Repos (lowercase `owner/name`) whose status read should fail. */
+  updateStatusFailing = new Set<string>();
+
+  async listDependabotUpdateStatuses(
+    repo: RepoRef,
+  ): Promise<RawUpdateStatus[]> {
+    const slug = repoSlug(repo).toLowerCase();
+    if (this.updateStatusFailing.has(slug)) {
+      throw new Error(`fake: ${slug} status read failed`);
+    }
+    return this.updateStatuses.get(slug) ?? [];
   }
 
   /** Repository metadata per org, for the coverage lane. */

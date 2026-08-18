@@ -24,6 +24,11 @@ export const SUBJECT_TYPES = [
   "code_scanning_alert",
   "secret_scanning_alert",
   "dependency_update_pr",
+  // What GraphQL's dependabotUpdate says about an alert: its own subject
+  // rather than a second writer on the alert row, because two lanes flipping
+  // one payload would fight in the projection's change detection and report
+  // the value as changing on every sweep.
+  "dependabot_update_status",
   "workflow_run",
   "issue",
 ] as const;
@@ -80,6 +85,17 @@ export function kevSubject(): Subject {
 
 /** Frozen, because every other subject in this file is produced fresh. */
 export const KEV_SUBJECT: Subject = Object.freeze(kevSubject());
+
+/** The update status for one Dependabot alert. Same key space as the alert. */
+export function updateStatusSubject(
+  repo: RepoRef,
+  alertNumber: number,
+): Subject {
+  return {
+    type: "dependabot_update_status",
+    key: `${subjectSlug(repo)}#${alertNumber}`,
+  };
+}
 
 export function alertSubject(
   type: "dependabot_alert" | "code_scanning_alert" | "secret_scanning_alert",
