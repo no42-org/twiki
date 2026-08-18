@@ -329,6 +329,32 @@ describe("SqliteStore", () => {
         store.loadValidator("no42-org", "https://example.invalid/x"),
       ).toBeNull();
     });
+
+    it("deletes a validator, and tolerates deleting a missing one", () => {
+      store.saveValidator(
+        "no42-org",
+        "https://api.github.com/orgs/no42-org/dependabot/alerts",
+        { etag: 'W/"abc"', lastModified: null, tokenGen: "gen-1" },
+        T1,
+      );
+
+      store.deleteValidator(
+        "no42-org",
+        "https://api.github.com/orgs/no42-org/dependabot/alerts",
+      );
+      expect(
+        store.loadValidator(
+          "no42-org",
+          "https://api.github.com/orgs/no42-org/dependabot/alerts",
+        ),
+      ).toBeNull();
+      // Idempotent: the delete is called on every 200 sweep that earned no
+      // fresh validator, most of which had nothing stored either.
+      store.deleteValidator(
+        "no42-org",
+        "https://api.github.com/orgs/no42-org/dependabot/alerts",
+      );
+    });
   });
 
   describe("read-only handle (AD-14, AD-26)", () => {

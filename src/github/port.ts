@@ -58,10 +58,52 @@ export interface RawDependabotAlert {
   createdAt: string | null;
 }
 
+/**
+ * HTTP validators for a conditional request (AD-25). Structurally identical
+ * to the store's Validator on purpose: the lane passes one straight through.
+ */
+export interface RequestValidator {
+  etag: string | null;
+  lastModified: string | null;
+  /**
+   * The installation-token generation the validator was captured under.
+   * GitHub's ETags vary with the Authorization header (undocumented, which is
+   * why the auth tests pin token reuse), so a validator from a previous token
+   * is a guaranteed miss and is treated as cold rather than sent.
+   */
+  tokenGen: string;
+}
+
+/**
+ * The validator-cache key for one organisation's alert listing (AD-25: keyed
+ * by installation and request URL). A naming convention, not the literal
+ * request: the adapter hard-codes the same parameters independently, so a
+ * parameter change there leaves this key describing the old query. That
+ * drift self-heals at runtime (the old ETag misses and the next sweep is a
+ * 200), which is why the two are not forced together the way the KEV lane's
+ * endpoint() is.
+ */
+export function orgAlertsUrl(org: string): string {
+  return `/orgs/${org.toLowerCase()}/dependabot/alerts?state=open&per_page=100`;
+}
+
 export interface OrgAlertPage {
   alerts: RawDependabotAlert[];
   /** Payloads the mapper could not read. Never silently discarded. */
   unreadable: number;
+  /**
+   * True when GitHub answered 304: the listing is byte-identical to the one
+   * the cached validator was captured from. `alerts` is empty then, and the
+   * caller confirms its stored rows instead of rewriting them.
+   */
+  notModified: boolean;
+  /**
+   * The validator to cache, or null when this response must not be
+   * revalidated against: a listing that spanned pages has no single validator
+   * (each page carries its own, and a 304 on page one says nothing about page
+   * two), so only a listing that fit in one page is cacheable.
+   */
+  validator: RequestValidator | null;
 }
 
 /**
@@ -136,8 +178,15 @@ export interface GitHubReadPort {
    * treat an empty result as authoritative without checking it: silently
    * dropping every alert and reporting zero is the confident-zero failure this
    * design exists to avoid.
+   *
+   * `cached` carries the validator from the previous sweep, or null for an
+   * unconditional fetch (AD-25). A validator from a different token
+   * generation is ignored, not sent.
    */
-  listOrgDependabotAlerts(org: string): Promise<OrgAlertPage>;
+  listOrgDependabotAlerts(
+    org: string,
+    cached?: RequestValidator | null,
+  ): Promise<OrgAlertPage>;
 }
 
 /** Mutating — executor only, enforce mode only. */

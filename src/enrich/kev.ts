@@ -4,7 +4,12 @@
  */
 
 import { CVE_ID } from "../core/cve.js";
-import type { EnrichmentPort, KevCatalogue } from "./port.js";
+import type {
+  CachedValidator,
+  EnrichmentPort,
+  KevCatalogue,
+  KevFetchOutcome,
+} from "./port.js";
 
 // CISA's Known Exploited Vulnerabilities catalogue.
 //
@@ -92,17 +97,38 @@ export class HttpEnrichment implements EnrichmentPort {
     return this.url;
   }
 
-  async fetchKev(): Promise<KevFetchResult> {
+  async fetchKev(cached: CachedValidator | null): Promise<KevFetchOutcome> {
     // A timeout, because this is the one dependency outside GitHub and a hung
     // response would otherwise stall the whole collection cycle.
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      // Public CDNs commonly throttle or reject the default Node agent.
+      "user-agent": "gitricorder (+https://github.com/no42-org/twiki)",
+    };
+    // Both validators when both exist: RFC 9110 says a server receiving both
+    // must prefer If-None-Match, and a CDN that only honours one still gets
+    // its chance to answer 304 (AD-25).
+    if (cached?.etag) headers["if-none-match"] = cached.etag;
+    if (cached?.lastModified)
+      headers["if-modified-since"] = cached.lastModified;
+    // Whether a validator actually went on the wire. NOT `cached !== null`:
+    // an all-null validator is truthy but adds no header, and accepting a
+    // 304 for it would confirm a catalogue against nothing, forever - the
+    // self-sustaining freeze this lane's history warns about.
+    const conditional =
+      "if-none-match" in headers || "if-modified-since" in headers;
     const res = await this.fetchImpl(this.url, {
       signal: AbortSignal.timeout(60_000),
-      headers: {
-        accept: "application/json",
-        // Public CDNs commonly throttle or reject the default Node agent.
-        "user-agent": "gitricorder (+https://github.com/no42-org/twiki)",
-      },
+      headers,
     });
+    if (res.status === 304) {
+      if (!conditional || !cached) {
+        // A 304 answers a conditional request. We did not make one, so the
+        // origin (or a broken proxy) is confirming a validator we never sent.
+        throw new Error("KEV fetch answered 304 to an unconditional request");
+      }
+      return { kind: "not_modified", validator: cached };
+    }
     if (!res.ok) {
       throw new Error(`KEV fetch failed: HTTP ${res.status}`);
     }
@@ -116,7 +142,14 @@ export class HttpEnrichment implements EnrichmentPort {
     if (Number.isFinite(declared) && declared > this.maxBodyBytes) {
       throw new Error(`KEV response too large: ${declared} bytes`);
     }
-    return parseKev(await this.readJson(res));
+    return {
+      kind: "fresh",
+      catalogue: parseKev(await this.readJson(res)),
+      validator: {
+        etag: res.headers?.get?.("etag") ?? null,
+        lastModified: res.headers?.get?.("last-modified") ?? null,
+      },
+    };
   }
 
   /**

@@ -8,7 +8,11 @@ import { redact } from "../../core/redact.js";
 import { worstSeverity } from "../../core/severity.js";
 import { alertSubject, repositorySubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
-import type { GitHubReadPort, RawDependabotAlert } from "../../github/port.js";
+import {
+  type GitHubReadPort,
+  orgAlertsUrl,
+  type RawDependabotAlert,
+} from "../../github/port.js";
 import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
 
 // The REST org-level lane, for Dependabot alerts.
@@ -164,7 +168,70 @@ export async function collectOrgAlerts(
       startedAt: deps.now(),
     });
 
-    const page = await deps.github.listOrgDependabotAlerts(installation);
+    const url = orgAlertsUrl(installation);
+    // Conditional only while every watched repository has a confirmation row
+    // (AD-25 meets AD-10). A repository newly added to repos.yaml has none,
+    // and its alerts sat in the very listing the cached ETag describes,
+    // filtered out by the old allowlist - so a 304 would keep it invisible
+    // for as long as the rest of the org stayed quiet. One unconditional
+    // sweep writes its rows, then the cache resumes.
+    const confirmedRepos = new Set(
+      deps.store
+        .currentByTypeForOwner("repository", installation)
+        .filter((c) => c.state === "present")
+        .map((c) => c.subject.key),
+    );
+    const unconfirmed = deps
+      .watchedIn(installation)
+      .map(watchKey)
+      .filter((slug) => !confirmedRepos.has(slug));
+    if (unconfirmed.length > 0) {
+      // Normally one sweep long: the confirmation pass below writes a row
+      // for every watched repository on the next full ok sweep. Logged
+      // anyway, because if this ever persists (full sweeps failing, scope
+      // never full) the cache is silently off for the whole organisation,
+      // and the line names exactly which repositories are holding it off.
+      log(
+        `${LANE} ${installation}: conditional sweep off, unconfirmed: ${unconfirmed.join(", ")}`,
+      );
+    }
+    const page = await deps.github.listOrgDependabotAlerts(
+      installation,
+      unconfirmed.length === 0
+        ? deps.store.loadValidator(installation, url)
+        : null,
+    );
+
+    if (page.notModified) {
+      // GitHub's own statement that the listing is unchanged since the sweep
+      // that stored these rows. Confirm them rather than rewrite them: no
+      // observation rows land (AD-3's log stays change-only), verified_at
+      // advances so a quiet healthy repository renders fresh, and nothing is
+      // tombstoned because nothing was observed absent. Rows outside the
+      // allowlist age out on their own, exactly as on a 200 sweep.
+      const confirmed = [
+        ...deps.store.currentByTypeForOwner("dependabot_alert", installation),
+        ...deps.store.currentByTypeForOwner("repository", installation),
+      ]
+        .filter((c) => c.state === "present")
+        .filter((c) => deps.isWatched(repoOfKey(c.subject.key)))
+        .map((c) => c.subject);
+      deps.store.touchVerified(confirmed, deps.now());
+      // Same gate as the 200 path's save. Unreachable today (the entrypoint
+      // only runs full sweeps) and the refreshed validator is value-identical
+      // to the stored one, but an adapter change returning a fresh validator
+      // on 304 must not slip past the guard the 200 path enforces.
+      if (scope === "full" && page.validator) {
+        deps.store.saveValidator(installation, url, page.validator, deps.now());
+      }
+      deps.store.finishRun(run, "ok", deps.now(), "not modified (304)");
+      const alerts = confirmed.filter(
+        (s) => s.type === "dependabot_alert",
+      ).length;
+      log(`${LANE} ${installation}: not modified, ${alerts} alerts confirmed`);
+      return { installation, outcome: "ok", alerts, unreadable: 0 };
+    }
+
     const watched = page.alerts.filter((a) => deps.isWatched(a.repo));
     const observations = watched.map(normalise);
 
@@ -228,6 +295,25 @@ export async function collectOrgAlerts(
         deps.store.recordTombstones(run, deps.now(), gone);
         log(`${LANE} ${installation}: ${gone.length} alerts resolved`);
       }
+    }
+
+    // The validator is saved under the same guards as the confirmations and
+    // tombstones, because a 304 against it asserts exactly what they assert:
+    // "the stored rows are the complete answer". A partial sweep's validator
+    // would let the next sweep confirm rows it knows are incomplete, and a
+    // hot sweep's would let one confirm rows it never tombstone-reconciled.
+    //
+    // When a 200 stored rows WITHOUT earning a fresh validator (multi-page
+    // listing, partial sweep), the stored validator must go: it describes the
+    // pre-rewrite listing, and if the listing later reverts byte-identical to
+    // that old body, a 304 against it would confirm every present row -
+    // including alerts the listing no longer contains - and skip the tombstone
+    // pass a 200 would have run. A fixed alert would render current forever
+    // (AD-23).
+    if (scope === "full" && outcome === "ok" && page.validator) {
+      deps.store.saveValidator(installation, url, page.validator, deps.now());
+    } else {
+      deps.store.deleteValidator(installation, url);
     }
 
     deps.store.finishRun(run, outcome, deps.now(), detail);

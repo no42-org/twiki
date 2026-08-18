@@ -18,6 +18,7 @@ import {
   installationOctokit,
   loadAppAuthFromEnv,
 } from "./auth.js";
+import { installationTokenGen, withRequestDiscipline } from "./discipline.js";
 import type {
   AppIdentity,
   DependabotAccess,
@@ -33,6 +34,7 @@ import type {
   RawRepoMeta,
   RawUpdatePr,
   RawUpdateStatus,
+  RequestValidator,
   UpdatePrPage,
 } from "./port.js";
 
@@ -64,6 +66,30 @@ export type OrgOctokitResolver = (org: string) => Promise<Octokit>;
  */
 export const SEARCH_QUERY_MAX = 256;
 const ISSUE_SEARCH_BASE = "is:issue is:open no:assignee";
+
+/** Pagination sanity cap: 50 pages is 5,000 open alerts in one org. */
+export const MAX_ALERT_PAGES = 50;
+
+/**
+ * The rel="next" target from a Link header, or null.
+ *
+ * Parsed per RFC 8288 shape rather than one regex over the whole header,
+ * exported so the parsing is testable on its own. Three traps a naive split
+ * falls into, each of which silently truncates the listing at the current
+ * page - and page one's validator then gets cached for an incomplete
+ * listing: a comma inside a bracketed URL (legal in query strings), an
+ * unquoted `rel=next`, and a list-valued `rel="next last"`.
+ */
+export function nextLink(header: string): string | null {
+  for (const m of header.matchAll(/<([^>]*)>((?:[^,<"]|"[^"]*")*)/g)) {
+    const url = m[1];
+    const params = m[2] ?? "";
+    const rel = params.match(/\brel\s*=\s*(?:"([^"]*)"|([^\s;,]+))/);
+    const tokens = (rel?.[1] ?? rel?.[2] ?? "").toLowerCase().split(/\s+/);
+    if (tokens.includes("next") && url) return url;
+  }
+  return null;
+}
 
 export function issueSearchQueries(repos: readonly RepoRef[]): string[] {
   const queries: string[] = [];
@@ -592,18 +618,125 @@ export class OctokitGitHub implements GitHubPort {
     }
   }
 
-  async listOrgDependabotAlerts(org: string): Promise<OrgAlertPage> {
+  async listOrgDependabotAlerts(
+    org: string,
+    cached: RequestValidator | null = null,
+  ): Promise<OrgAlertPage> {
     if (!this.orgOctokitFor) {
       throw new Error(
         "listOrgDependabotAlerts needs an org resolver; this client was built without one",
       );
     }
     const gh = await this.orgOctokitFor(org);
-    const raw = await gh.paginate(gh.dependabot.listAlertsForOrg, {
-      org,
-      state: "open",
-      per_page: 100,
-    });
+
+    // A validator from a previous token generation is a guaranteed miss:
+    // GitHub's ETags vary with the Authorization header. Cold, not sent. An
+    // all-null validator is not a validator: sending nothing while treating
+    // the request as conditional is how an unsolicited 304 gets honoured.
+    // A null generation (auth carried no expiry) fails closed on both sides:
+    // nothing is sent and nothing is cached, because a generation that
+    // cannot be compared would otherwise compare equal across rotations.
+    const tokenGen = await installationTokenGen(gh);
+    const send =
+      cached &&
+      tokenGen !== null &&
+      cached.tokenGen === tokenGen &&
+      (cached.etag || cached.lastModified)
+        ? cached
+        : null;
+    // Both headers when both exist, same rationale as the KEV path: RFC 9110
+    // prefers If-None-Match, and a proxy honouring only Last-Modified still
+    // gets its chance to answer 304 (AD-25).
+    const conditionalHeaders: Record<string, string> = {};
+    if (send?.etag) conditionalHeaders["if-none-match"] = send.etag;
+    if (send?.lastModified) {
+      conditionalHeaders["if-modified-since"] = send.lastModified;
+    }
+
+    // Paginated by link header rather than gh.paginate: the conditional
+    // request needs the first page's response headers (etag, 304), which
+    // paginate does not expose.
+    const raw: unknown[] = [];
+    let pages = 0;
+    let firstEtag: string | null = null;
+    let firstLastModified: string | null = null;
+    let next: string | null = null;
+    for (;;) {
+      pages++;
+      let res: {
+        data: unknown;
+        headers: Record<string, string | number | undefined>;
+      };
+      try {
+        res = next
+          ? await gh.request(`GET ${next}`)
+          : await gh.request("GET /orgs/{org}/dependabot/alerts", {
+              org,
+              state: "open",
+              per_page: 100,
+              headers: conditionalHeaders,
+            });
+      } catch (err) {
+        if ((err as { status?: number }).status === 304) {
+          if (send && pages === 1) {
+            // Byte-identical to the listing the validator came from. No
+            // pages to walk: a single-page listing is the only kind we cache
+            // for. The send guard already proved send.tokenGen === tokenGen,
+            // so the cached validator goes back as it came.
+            return {
+              alerts: [],
+              unreadable: 0,
+              notModified: true,
+              validator: { ...send },
+            };
+          }
+          // Same posture as the KEV path, same legible message: a broken
+          // proxy confirming a validator we never sent, not an empty page.
+          throw new Error(
+            `alert listing for ${org} answered 304 to an unconditional request`,
+          );
+        }
+        throw err;
+      }
+      if (pages === 1) {
+        firstEtag =
+          typeof res.headers.etag === "string" ? res.headers.etag : null;
+        firstLastModified =
+          typeof res.headers["last-modified"] === "string"
+            ? res.headers["last-modified"]
+            : null;
+      }
+      if (!Array.isArray(res.data)) {
+        // A proxy error page or unexpected object: spreading it would either
+        // throw an illegible TypeError or spread a string character by
+        // character into a nonsense unreadable count.
+        throw new Error(
+          `alert listing for ${org} returned a non-array body (page ${pages})`,
+        );
+      }
+      raw.push(...(res.data as unknown[]));
+      const link = typeof res.headers.link === "string" ? res.headers.link : "";
+      next = nextLink(link);
+      if (!next) break;
+      // The cap is judged on the CLAIM of more pages, after the link parse:
+      // a listing that genuinely ends at page MAX is served in full, while a
+      // proxy echoing a self-referential Link header cannot loop this lane
+      // forever. Hitting the cap is a fault, and a fault must not look like
+      // the end of the listing.
+      if (pages >= MAX_ALERT_PAGES) {
+        throw new Error(
+          `alert listing for ${org} claims more than ${MAX_ALERT_PAGES} pages; refusing to loop`,
+        );
+      }
+      // The next URL is followed with the installation token attached, so it
+      // must stay on GitHub's API origin: a proxy-injected Link header must
+      // not be able to point the Authorization header at another host.
+      if (!next.startsWith("https://api.github.com/")) {
+        throw new Error(
+          `alert listing for ${org} carried a cross-origin next link; refusing to follow it`,
+        );
+      }
+    }
 
     // Deliberately unfiltered. Which repositories are watched is AD-10's rule
     // and belongs to the lane. This adapter's allowlist guard exists to stop
@@ -617,7 +750,21 @@ export class OctokitGitHub implements GitHubPort {
       if (alert === null) unreadable++;
       else alerts.push(alert);
     }
-    return { alerts, unreadable };
+    return {
+      alerts,
+      unreadable,
+      notModified: false,
+      // Only a listing that fit in one page gets a validator: each page
+      // carries its own ETag, and a 304 on page one says nothing about the
+      // pages behind it.
+      // A validator earns caching only when it can make a request
+      // conditional: an all-null one would count as "cached" while sending
+      // no header, the unsolicited-304 state guarded against above.
+      validator:
+        pages === 1 && (firstEtag || firstLastModified) && tokenGen !== null
+          ? { etag: firstEtag, lastModified: firstLastModified, tokenGen }
+          : null,
+    };
   }
 
   async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
@@ -788,6 +935,8 @@ export class OctokitGitHubApp implements GitHubAppPort {
   constructor(
     private readonly app: Octokit,
     private readonly auth: AppAuthConfig,
+    /** Test seam, threaded to the per-installation clients built below. */
+    private readonly fetchImpl?: typeof fetch,
   ) {}
 
   async identity(): Promise<AppIdentity> {
@@ -828,7 +977,18 @@ export class OctokitGitHubApp implements GitHubAppPort {
     if (!client) {
       // Cached: building one re-reads the private key from disk and mints a
       // fresh installation token, and a diagnosis walks every installation.
-      client = installationOctokit(this.auth, installationId);
+      // Disciplined like every other collector client (AD-24): these hit
+      // installation buckets, and an undisciplined one here would be the
+      // only requests in the system with no retry-after handling.
+      client = withRequestDiscipline(
+        this.fetchImpl
+          ? new Octokit({
+              authStrategy: createAppAuth,
+              auth: { ...this.auth, installationId },
+              request: { fetch: this.fetchImpl },
+            })
+          : installationOctokit(this.auth, installationId),
+      );
       this.clients.set(installationId, client);
     }
     const repos = await client.paginate(
@@ -840,11 +1000,26 @@ export class OctokitGitHubApp implements GitHubAppPort {
 }
 
 /** Build the App-level client for gitricorder's read-only App (AD-21). */
-export function createTricorderAppFromEnv(env = process.env): GitHubAppPort {
+export function createTricorderAppFromEnv(
+  env = process.env,
+  /** Test seam only, like createTricorderReadPort's: it exists so a test
+   * can prove the discipline hook rides the client THIS factory builds. */
+  fetchImpl?: typeof fetch,
+): GitHubAppPort {
   const auth = loadAppAuthFromEnv(env, "TRICORDER");
   return new OctokitGitHubApp(
-    new Octokit({ authStrategy: createAppAuth, auth }),
+    // Disciplined like the installation clients (AD-24): listInstallations
+    // runs at startup and again on every resolver miss, and those are
+    // collector requests too, on the App's own JWT bucket.
+    withRequestDiscipline(
+      new Octokit({
+        authStrategy: createAppAuth,
+        auth,
+        ...(fetchImpl ? { request: { fetch: fetchImpl } } : {}),
+      }),
+    ),
     auth,
+    fetchImpl,
   );
 }
 
@@ -868,6 +1043,13 @@ export async function createTricorderReadPort(
   /** repos.yaml is the entire universe (AD-10); the adapter enforces it too. */
   isAllowed: (repo: RepoRef) => boolean,
   env: NodeJS.ProcessEnv = process.env,
+  /**
+   * Test seam only: the transport handed to each installation Octokit. It
+   * exists so a test can prove the discipline hook is attached to the
+   * clients THIS factory builds - the wrapper was deletable with a green
+   * suite, because every discipline test constructed its own client.
+   */
+  fetchImpl?: typeof fetch,
 ): Promise<GitHubReadPort> {
   const auth = loadAppAuthFromEnv(env, "TRICORDER");
   const verbose = (env.TRICORDER_VERBOSE ?? "").trim() !== "";
@@ -887,11 +1069,16 @@ export async function createTricorderReadPort(
   const clientFor = (id: number): Octokit => {
     let c = clients.get(id);
     if (!c) {
-      c = new Octokit({
-        authStrategy: createAppAuth,
-        auth: { ...auth, installationId: id },
-        log: quiet,
-      });
+      // Every collector request flows through the discipline hook (AD-24):
+      // honour retry-after once, fail fast and legibly on primary exhaustion.
+      c = withRequestDiscipline(
+        new Octokit({
+          authStrategy: createAppAuth,
+          auth: { ...auth, installationId: id },
+          log: quiet,
+          ...(fetchImpl ? { request: { fetch: fetchImpl } } : {}),
+        }),
+      );
       clients.set(id, c);
     }
     return c;

@@ -355,6 +355,15 @@ export class SqliteStore implements StorePort {
       );
   }
 
+  deleteValidator(installation: string, requestUrl: string): void {
+    this.assertWritable("deleteValidator");
+    this.db
+      .prepare(
+        "DELETE FROM validator WHERE installation = ? AND request_url = ?",
+      )
+      .run(installation, requestUrl);
+  }
+
   trimObservations(olderThan: string): number {
     this.assertWritable("trimObservations");
     // DELETE reports its own row count; two COUNT(*) scans of the one table
