@@ -133,7 +133,10 @@ function readIssue(payload: unknown): IssueObservation | null {
   const i = payload as IssueObservation | null | undefined;
   if (!i || typeof i !== "object") return null;
   if (typeof i.number !== "number" || typeof i.repo !== "string") return null;
-  if (typeof i.title !== "string" || typeof i.author !== "string") return null;
+  // Only the fields the page consumes: rejecting a row over a field nothing
+  // renders (author, createdAt) would hide a real issue behind the
+  // "items not shown" banner for no reader-visible reason.
+  if (typeof i.title !== "string") return null;
   if (typeof i.htmlUrl !== "string") return null;
   return i;
 }
@@ -177,7 +180,10 @@ export function buildQueue(
   // the alert itself, and a status naming a PR number is the precise
   // alert-to-PR link the package heuristic only approximates.
   const statusByAlertKey = new Map<string, UpdateStatusObservation>();
-  const alertKeysByPr = new Map<string, string[]>();
+  const linksByPr = new Map<
+    string,
+    { alertKey: string; error: string | null }[]
+  >();
   for (const row of store.currentByType("dependabot_update_status")) {
     if (row.state !== "present") continue;
     const status = readStatus(row.payload);
@@ -185,9 +191,13 @@ export function buildQueue(
     statusByAlertKey.set(row.subject.key, status);
     if (status.update?.pullRequestNumber != null) {
       const prKey = `${status.repo.toLowerCase()}|${status.update.pullRequestNumber}`;
-      const list = alertKeysByPr.get(prKey) ?? [];
-      list.push(row.subject.key);
-      alertKeysByPr.set(prKey, list);
+      const list = linksByPr.get(prKey) ?? [];
+      // The error rides along: a status can carry BOTH a PR and an error
+      // (the PR opened, a later update attempt failed), and the PR row must
+      // agree with the alert row about it rather than say "prepared
+      // normally" one line away from "could not prepare".
+      list.push({ alertKey: row.subject.key, error: status.update.error });
+      linksByPr.set(prKey, list);
     }
   }
 
@@ -301,16 +311,18 @@ export function buildQueue(
 
     // The precise join first: a status row naming this PR's number is
     // GitHub's own statement of which alert the PR fixes, so when one exists
-    // it wins over the title-parsed package heuristic. It also settles the
-    // stuck term: an update whose PR we are looking at was prepared.
-    const linkedKeys =
-      alertKeysByPr.get(`${pr.repo.toLowerCase()}|${pr.number}`) ?? [];
-    const linked = linkedKeys
-      .map((key) => alertsByKey.get(key))
+    // it wins over the title-parsed package heuristic, INCLUDING when the
+    // named alert row cannot be read: falling back to the heuristic there
+    // would re-inherit a different alert's risk, the exact wrong-alert
+    // inheritance the join exists to fix. The stuck term comes from the
+    // linked statuses' own error fields, not from the PR's existence.
+    const links = linksByPr.get(`${pr.repo.toLowerCase()}|${pr.number}`) ?? [];
+    const linked = links
+      .map((link) => alertsByKey.get(link.alertKey))
       .filter((terms): terms is AlertTerms => terms !== undefined);
 
     const candidates =
-      linked.length > 0
+      links.length > 0
         ? linked
         : pr.packageName === null
           ? []
@@ -321,7 +333,10 @@ export function buildQueue(
             (alertsByPackage.get(
               `${pr.repo.toLowerCase()}|${pr.packageName.toLowerCase()}`,
             ) ?? []);
-    const prStuck = linked.length > 0 ? false : NOT_APPLICABLE;
+    const prStuck =
+      links.length === 0
+        ? NOT_APPLICABLE
+        : links.some((link) => link.error !== null);
 
     // A PR with candidates takes its terms from them, even when a candidate
     // happens to tie the all-n/a baseline: seeding from the baseline and
@@ -331,12 +346,16 @@ export function buildQueue(
     let advisory: string | null;
     let kevListed: boolean;
     if (candidates.length === 0) {
-      // No open alert for the package: a plain update.
+      // Two different absences (AD-20). A status names an alert we could not
+      // read: there IS an advisory, we failed to see it, so the security
+      // terms are unknown. No link and no package match: a plain update, and
+      // its security terms are facts of absence.
+      const linkedButUnreadable = links.length > 0;
       best = rank(
         {
-          kev: NOT_APPLICABLE,
-          epss: NOT_APPLICABLE,
-          severity: NOT_APPLICABLE,
+          kev: linkedButUnreadable ? null : NOT_APPLICABLE,
+          epss: linkedButUnreadable ? null : NOT_APPLICABLE,
+          severity: linkedButUnreadable ? null : NOT_APPLICABLE,
           bump: pr.bump,
           stuck: prStuck,
         },

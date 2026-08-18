@@ -9,6 +9,7 @@ import { nodeSubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import type { GitHubReadPort, RawIssue } from "../../github/port.js";
 import type { RunScope, StorePort } from "../store/port.js";
+import { nodeTombstones } from "./node-reconcile.js";
 
 // The untriaged-issue lane (CAP-2): open issues nobody has picked up.
 //
@@ -30,6 +31,8 @@ export interface IssueObservation {
 export interface IssueDeps {
   github: GitHubReadPort;
   store: StorePort;
+  /** The repositories the search is scoped to: exactly the watched set. */
+  watchedIn: (installation: string) => readonly RepoRef[];
   isWatched: (repo: RepoRef) => boolean;
   now: () => string;
   log: (msg: string) => void;
@@ -77,7 +80,12 @@ export async function collectIssues(
       startedAt: deps.now(),
     });
 
-    const page = await deps.github.listUntriagedIssues(installation);
+    const page = await deps.github.listUntriagedIssues(
+      deps.watchedIn(installation),
+    );
+    // The search already asks only for watched repositories; this second
+    // filter is the write-path defence, so a renamed or transferred repo the
+    // search echoes back under another name cannot slip into the store.
     const watched = page.issues.filter((issue) => deps.isWatched(issue.repo));
     const observations = watched.map(normaliseIssue);
 
@@ -95,21 +103,13 @@ export async function collectIssues(
 
     if (scope === "full" && outcome === "ok") {
       const seen = new Set(observations.map((o) => o.subject.key));
-      const gone = deps.store
-        .currentByType("issue")
-        .filter((c) => c.state === "present")
-        .filter((c) => !seen.has(c.subject.key))
-        .filter((c) => {
-          // Node-id keys carry no owner, so scope and allowlist are judged
-          // from the payload. A row whose payload cannot answer is left alone:
-          // a wrong tombstone silently wipes real state (AD-23).
-          const repo = (c.payload as IssueObservation | undefined)?.repo;
-          if (typeof repo !== "string") return false;
-          const [owner = "", name = ""] = repo.split("/");
-          if (owner.toLowerCase() !== installation.toLowerCase()) return false;
-          return deps.isWatched({ owner, name });
-        })
-        .map((c) => c.subject);
+      const gone = nodeTombstones(
+        deps.store,
+        "issue",
+        seen,
+        installation,
+        deps.isWatched,
+      );
       if (gone.length > 0) {
         deps.store.recordTombstones(run, deps.now(), gone);
         log(`${LANE} ${installation}: ${gone.length} issues dealt with`);

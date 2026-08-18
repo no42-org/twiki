@@ -634,7 +634,9 @@ describe("the stuck flag and untriaged issues (CAP-2, CAP-3)", () => {
     );
     expect(items[1]?.explanation).toContain("stuck state unknown");
     expect(items[2]?.explanation).toContain("update prepared normally");
-    expect(items[3]?.explanation).toContain("no automated fix attempted");
+    expect(items[3]?.explanation).toContain(
+      "no Dependabot fix attempt on record",
+    );
   });
 
   it("lets stuck break ties only, never overturn a higher term", () => {
@@ -701,6 +703,58 @@ describe("the stuck flag and untriaged issues (CAP-2, CAP-3)", () => {
     expect(pr?.kevListed).toBe(false);
   });
 
+  it("marks a PR stuck when its status carries both a PR number and an error", () => {
+    // A status can name a PR AND an error: the PR opened, a later update
+    // attempt failed. The alert row says "could not prepare", and the PR row
+    // one line away must not say "prepared normally" about the same update.
+    seedKev(["CVE-0000-0000"]);
+    seedAlert(1, { packageName: "left-pad" });
+    seedStatus(1, { pullRequestNumber: 60, error: "update_not_possible" });
+    seedPr("PR_both", { number: 60, packageName: "left-pad" });
+
+    const items = buildQueue(store, NOW, DEPS).items;
+    const pr = items.find((i) => i.kind === "update_pr");
+    const alert = items.find((i) => i.kind === "alert");
+
+    expect(pr?.explanation).toContain("GitHub could not prepare this update");
+    expect(alert?.explanation).toContain(
+      "GitHub could not prepare this update",
+    );
+  });
+
+  it("does not fall back to the package heuristic when the linked alert is unreadable", () => {
+    // The status names WHICH alert the PR fixes. If that row cannot be read,
+    // the honest answer is unknown, not the terms of a different alert that
+    // happens to share the package name: that is the wrong-alert inheritance
+    // the precise join exists to prevent.
+    seedKev(["CVE-2021-44228"]);
+    seedAlert(1, {
+      packageName: "log4j",
+      cveId: "CVE-2021-44228",
+      severity: "critical",
+    });
+    // Alert 2 is what the status names, and it is malformed.
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "dependabot_alert", key: "no42-org/twiki#2" },
+        payload: { number: 2, repo: "no42-org/twiki", cveId: 42 },
+      },
+    ]);
+    seedStatus(2, { pullRequestNumber: 70, error: null });
+    seedPr("PR_ghost", { number: 70, packageName: "log4j" });
+
+    const pr = buildQueue(store, NOW, DEPS).items.find(
+      (i) => i.kind === "update_pr",
+    );
+
+    // Not the KEV-listed critical from alert 1, and not a plain update either:
+    // there IS an advisory, we failed to read it, so the terms are unknown.
+    expect(pr?.kevListed).toBe(false);
+    expect(pr?.advisory).toBeNull();
+    expect(pr?.explanation).toContain("KEV status unknown");
+    expect(pr?.explanation).toContain("update prepared normally");
+  });
+
   it("degrades a malformed status row to unknown, not to a crash or a zero", () => {
     seedKev(["CVE-0000-0000"]);
     seedAlert(1);
@@ -745,9 +799,12 @@ describe("the stuck flag and untriaged issues (CAP-2, CAP-3)", () => {
     seedIssue("I_bad_title", { title: 42 });
     // The one that detonates: htmlUrl gets .startsWith() called on it.
     seedIssue("I_bad_url", { htmlUrl: 42 });
+    // A field NOTHING renders must not hide the row: only the fields the
+    // page consumes are validated.
+    seedIssue("I_odd_author", { author: 42, number: 6 });
 
     const queue = buildQueue(store, NOW, DEPS);
-    expect(queue.items.filter((i) => i.kind === "issue")).toHaveLength(1);
+    expect(queue.items.filter((i) => i.kind === "issue")).toHaveLength(2);
     expect(queue.unreadable).toBe(3);
   });
 

@@ -205,12 +205,15 @@ export class FakeGitHubReadPort implements GitHubReadPort {
     };
   }
 
-  /** Untriaged issues per org. */
+  /** Untriaged issues per org, and the repo lists each call asked for. */
   issues = new Map<string, RawIssue[]>();
   issueUnreadable = new Map<string, number>();
   issueTruncated = new Set<string>();
+  issueQueries: { repos: readonly RepoRef[] }[] = [];
 
-  async listUntriagedIssues(org: string): Promise<IssuePage> {
+  async listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage> {
+    this.issueQueries.push({ repos });
+    const org = repos[0]?.owner.toLowerCase() ?? "";
     return {
       issues: this.issues.get(org) ?? [],
       unreadable: this.issueUnreadable.get(org) ?? 0,

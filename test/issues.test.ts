@@ -7,6 +7,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  issueSearchQueries,
+  SEARCH_QUERY_MAX,
+} from "../src/github/octokit-adapter.js";
 import type { RawIssue } from "../src/github/port.js";
 import { collectIssues, LANE } from "../src/tricorder/collect/issues.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
@@ -34,6 +38,13 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   const deps = () => ({
     github,
     store,
+    watchedIn: (installation: string) =>
+      [...watched]
+        .map((slug) => {
+          const [owner = "", name = ""] = slug.split("/");
+          return { owner, name };
+        })
+        .filter((r) => r.owner.toLowerCase() === installation),
     isWatched: (repo: { owner: string; name: string }) =>
       watched.has(`${repo.owner}/${repo.name}`.toLowerCase()),
     now: () => new Date(Date.UTC(2026, 7, 18, 12, clock++)).toISOString(),
@@ -193,5 +204,44 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   it("writes run rows under its own lane name", async () => {
     await collectIssues(deps(), "no42-org", "full");
     expect(store.latestRuns(1)[0]?.lane).toBe(LANE);
+  });
+
+  it("scopes the search to the watched repositories, not the whole org", async () => {
+    // `org:` matches only organization accounts, so an org-wide query reads
+    // as a confident zero on a personal-account installation, and it spends
+    // the 1000-result ceiling on unwatched repositories.
+    watched.add("no42-org/other");
+    await collectIssues(deps(), "no42-org", "full");
+
+    expect(github.issueQueries).toHaveLength(1);
+    expect(
+      github.issueQueries[0]?.repos.map((r) => `${r.owner}/${r.name}`).sort(),
+    ).toEqual(["no42-org/other", "no42-org/twiki"]);
+  });
+});
+
+describe("packing repositories into search queries", () => {
+  it("keeps every query under GitHub's length cap with the base qualifiers", () => {
+    const repos = Array.from({ length: 30 }, (_, i) => ({
+      owner: "no42-org",
+      name: `repository-with-a-long-name-${i}`,
+    }));
+    const queries = issueSearchQueries(repos);
+
+    expect(queries.length).toBeGreaterThan(1);
+    for (const q of queries) {
+      expect(q.length).toBeLessThanOrEqual(SEARCH_QUERY_MAX);
+      expect(q).toContain("is:issue is:open no:assignee");
+    }
+    // Every repository lands in exactly one query: a dropped repo is a
+    // confident zero for that repo, a doubled one double-counts.
+    const mentions = queries.join(" ").match(/repo:\S+/g) ?? [];
+    expect(mentions.sort()).toEqual(
+      repos.map((r) => `repo:${r.owner}/${r.name}`).sort(),
+    );
+  });
+
+  it("answers no queries for no repositories", () => {
+    expect(issueSearchQueries([])).toEqual([]);
   });
 });

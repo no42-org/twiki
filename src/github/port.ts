@@ -89,13 +89,16 @@ export interface GitHubReadPort {
   ): Promise<UpdatePrPage>;
 
   /**
-   * Open issues in the organisation that nobody has picked up.
+   * Open issues in the given repositories that nobody has picked up.
    *
    * Search with explicit qualifiers, never @me: an installation token has no
    * user identity, and the whole-account issue endpoints are excluded from
-   * installation tokens entirely.
+   * installation tokens entirely. Scoped per repository, not `org:`, because
+   * `org:` matches only organization accounts (a personal-account
+   * installation would read as a confident zero) and an org-wide result set
+   * spends the 1000-result search ceiling on unwatched repositories.
    */
-  listUntriagedIssues(org: string): Promise<IssuePage>;
+  listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage>;
 
   /**
    * What dependabotUpdate reports per open alert of one repository.

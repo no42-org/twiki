@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { OctokitGitHub } from "../src/github/octokit-adapter.js";
 import type { RawUpdateStatus } from "../src/github/port.js";
 import {
   collectUpdateStatuses,
@@ -214,5 +215,43 @@ describe("the update-status lane (CAP-3's stuck criterion)", () => {
   it("writes run rows under its own lane name", async () => {
     await collectUpdateStatuses(deps(), "no42-org", "full");
     expect(store.latestRuns(1)[0]?.lane).toBe(LANE);
+  });
+});
+
+describe("the adapter's null-container guard", () => {
+  it("treats a missing vulnerabilityAlerts container as a failure, not an empty list", async () => {
+    // GraphQL can resolve repository:null without throwing (access lost,
+    // repository renamed mid-run). Returning [] there hands the lane a clean
+    // "ok" sweep whose reconciliation tombstones every stored status for the
+    // repository.
+    const stub = {
+      graphql: async () => ({ repository: null }),
+    } as unknown as import("@octokit/rest").Octokit;
+    const adapter = new OctokitGitHub(
+      async () => stub,
+      () => true,
+    );
+
+    await expect(
+      adapter.listDependabotUpdateStatuses({ owner: "no42-org", name: "x" }),
+    ).rejects.toThrow(/no container/);
+  });
+
+  it("treats a missing search container the same way", async () => {
+    const stub = {
+      graphql: async () => ({ search: null }),
+    } as unknown as import("@octokit/rest").Octokit;
+    const adapter = new OctokitGitHub(
+      async () => stub,
+      () => true,
+      async () => stub,
+    );
+
+    await expect(
+      adapter.listUntriagedIssues([{ owner: "no42-org", name: "x" }]),
+    ).rejects.toThrow(/no result container/);
+    await expect(
+      adapter.listOpenUpdatePRs("no42-org", ["app/dependabot"]),
+    ).rejects.toThrow(/no result container/);
   });
 });

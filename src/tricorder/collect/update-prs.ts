@@ -10,6 +10,7 @@ import { nodeSubject } from "../../core/subject.js";
 import type { BumpLevel, RepoRef } from "../../core/types.js";
 import type { GitHubReadPort, RawUpdatePr } from "../../github/port.js";
 import type { RunScope, StorePort } from "../store/port.js";
+import { nodeTombstones } from "./node-reconcile.js";
 
 // The dependency-update PR lane (CAP-3).
 //
@@ -136,21 +137,13 @@ export async function collectUpdatePRs(
 
     if (scope === "full" && outcome === "ok") {
       const seen = new Set(observations.map((o) => o.subject.key));
-      const gone = deps.store
-        .currentByType("dependency_update_pr")
-        .filter((c) => c.state === "present")
-        .filter((c) => !seen.has(c.subject.key))
-        .filter((c) => {
-          // Node-id keys carry no owner, so scope and allowlist are judged
-          // from the payload. A row whose payload cannot answer is left alone:
-          // a wrong tombstone silently wipes real state (AD-23).
-          const repo = (c.payload as UpdatePrObservation | undefined)?.repo;
-          if (typeof repo !== "string") return false;
-          const [owner = "", name = ""] = repo.split("/");
-          if (owner.toLowerCase() !== installation.toLowerCase()) return false;
-          return deps.isWatched({ owner, name });
-        })
-        .map((c) => c.subject);
+      const gone = nodeTombstones(
+        deps.store,
+        "dependency_update_pr",
+        seen,
+        installation,
+        deps.isWatched,
+      );
       if (gone.length > 0) {
         deps.store.recordTombstones(run, deps.now(), gone);
         log(`${LANE} ${installation}: ${gone.length} PRs closed`);
