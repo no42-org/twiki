@@ -358,6 +358,31 @@ describe("the PR search across chunks", () => {
     expect(page.truncated).toBe(true);
   });
 
+  it("reports the repositories it could not search onto the page", async () => {
+    // The count has to reach the lane through the page, not just exist in
+    // the plan: it is what degrades the sweep to partial and stops the
+    // tombstone pass.
+    const { gh, queries } = stubGh([{ issueCount: 1, nodes: [node(1)] }]);
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+    const huge = { owner: "no42-org", name: "x".repeat(100) };
+    const bots = Array.from({ length: 8 }, (_, i) => `app/bot-number-${i}`);
+
+    const page = await adapter.listOpenUpdatePRs(
+      [{ owner: "no42-org", name: "twiki" }, huge],
+      bots,
+    );
+
+    expect(page.unsearchable).toBe(1);
+    // The searchable one was still collected: setting a repository aside
+    // must not cost the others.
+    expect(queries.join(" ")).toContain("repo:no42-org/twiki");
+    expect(page.prs.map((p) => p.number)).toEqual([1]);
+  });
+
   it("resolves no client at all when no repositories are watched", async () => {
     // Not merely "asks nothing": resolving a client needs an owner, and the
     // only owner available is repos[0], which does not exist. The real
