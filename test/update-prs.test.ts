@@ -126,6 +126,9 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     // AD-19's functional pin: whatever the operator writes is what the search
     // asks for. No default exists in source, so an arbitrary actor working
     // proves nothing is injected around it.
+    // Two watched repositories, so a lane that passed only the first would
+    // be visible: with one, any truncation of the list looks identical.
+    watched.add("no42-org/second");
     await collectUpdatePRs(
       deps(["app/custom-bot", "some-user"]),
       "no42-org",
@@ -141,8 +144,10 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     // `org:` matches only organisation accounts, so a personal-account
     // installation would answer nothing at all.
     expect(
-      github.updatePrQueries[0]?.repos.map((r) => `${r.owner}/${r.name}`),
-    ).toEqual(["no42-org/twiki"]);
+      github.updatePrQueries[0]?.repos
+        .map((r) => `${r.owner}/${r.name}`)
+        .sort(),
+    ).toEqual(["no42-org/second", "no42-org/twiki"]);
   });
 
   it("drops PRs outside the allowlist", async () => {
@@ -316,10 +321,13 @@ describe("the PR search across chunks", () => {
     // One capped chunk means the whole result set is incomplete. Reporting
     // the merge as complete would let the lane tombstone every PR the
     // capped chunk could not return.
+    // The capped chunk is FIRST and a clean chunk follows it: taking the
+    // last chunk's flag (rather than OR-ing) would answer "complete" here,
+    // which a truncated-chunk-last fixture cannot catch.
     const { gh, queries } = stubGh([
-      { issueCount: 1, nodes: [node(1)] },
-      // Second chunk hit the 1000-result ceiling: fewer nodes than matched.
-      { issueCount: 5000, nodes: [node(2)] },
+      // First chunk hit the 1000-result ceiling: fewer nodes than matched.
+      { issueCount: 5000, nodes: [node(1)] },
+      { issueCount: 1, nodes: [node(2)] },
     ]);
     const adapter = new OctokitGitHub(
       async () => gh,
@@ -334,17 +342,23 @@ describe("the PR search across chunks", () => {
     expect(page.truncated).toBe(true);
   });
 
-  it("asks for nothing when no repositories are watched", async () => {
-    const { gh, queries } = stubGh([]);
+  it("resolves no client at all when no repositories are watched", async () => {
+    // Not merely "asks nothing": resolving a client needs an owner, and the
+    // only owner available is repos[0], which does not exist. The real
+    // resolver would fail with "the App is not installed on ", blaming an
+    // account nobody named.
     const adapter = new OctokitGitHub(
-      async () => gh,
+      async () => {
+        throw new Error("resolver must not be called");
+      },
       () => true,
-      async () => gh,
+      async () => {
+        throw new Error("resolver must not be called");
+      },
     );
 
     const page = await adapter.listOpenUpdatePRs([], ["app/dependabot"]);
 
-    expect(queries).toEqual([]);
     expect(page).toEqual({ prs: [], unreadable: 0, truncated: false });
   });
 });
