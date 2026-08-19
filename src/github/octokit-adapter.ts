@@ -408,12 +408,11 @@ export class OctokitGitHub implements GitHubPort {
       return { issues: [], unreadable: 0, truncated: false };
     const gh = await this.orgOctokitFor(repos[0]?.owner ?? "");
 
-    // One search per query chunk. Scoped by repo: qualifiers, not org:, for
-    // two reasons: `org:` matches only organization accounts, so a
-    // personal-account installation would get a confident-empty "ok" sweep
-    // every time; and an org-wide query counts every unwatched repository's
-    // issues against the 1000-result ceiling, which can starve the watched
-    // repositories out of the window entirely while still looking complete.
+    // One search per query chunk, scoped by repo: qualifiers rather than
+    // org:, so the 1000-result ceiling is spent only on repositories
+    // somebody watches: an org-wide query counts every unwatched
+    // repository's issues against it and can starve the watched ones out of
+    // the window entirely while still looking complete.
     const issues: RawIssue[] = [];
     let unreadable = 0;
     let truncated = false;

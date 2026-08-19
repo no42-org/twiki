@@ -208,9 +208,10 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   });
 
   it("scopes the search to the watched repositories, not the whole org", async () => {
-    // `org:` matches only organization accounts, so an org-wide query reads
-    // as a confident zero on a personal-account installation, and it spends
-    // the 1000-result ceiling on unwatched repositories.
+    // Not because `org:` fails on a personal account: measured 2026-08-19,
+    // `org:<user>` and `user:<user>` return identical results. The reason
+    // is the 1000-result ceiling, which an org-wide query spends on
+    // repositories nobody is watching.
     watched.add("no42-org/other");
     await collectIssues(deps(), "no42-org", "full");
 

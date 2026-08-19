@@ -132,10 +132,14 @@ export interface GitHubReadPort {
    * through verbatim: no bot login literal exists in source, and an empty list
    * is the caller's problem to refuse before it gets here.
    *
-   * Scoped per repository, not `org:`, for the same two reasons as the issue
-   * search: `org:` matches only organisation accounts (a personal-account
-   * installation would read as a confident zero) and an org-wide result set
-   * spends the 1000-result ceiling on unwatched repositories.
+   * Scoped per repository, not `org:`, for the same reason as the issue
+   * search. MEASURED 2026-08-19, not assumed: `org:<user>` and `user:<user>` return
+   * the SAME 37 results on a personal account, so the org-scoped search was
+   * never the confident zero an earlier comment here claimed. What the
+   * repo-scoped search actually buys is spending the 1000-result ceiling
+   * only on watched repositories: the same live account returned 37 PRs
+   * org-wide against 3 in the allowlist, so 34 results of ceiling went to
+   * repositories nobody is watching.
    */
   listOpenUpdatePRs(
     repos: readonly RepoRef[],
@@ -147,10 +151,14 @@ export interface GitHubReadPort {
    *
    * Search with explicit qualifiers, never @me: an installation token has no
    * user identity, and the whole-account issue endpoints are excluded from
-   * installation tokens entirely. Scoped per repository, not `org:`, because
-   * `org:` matches only organization accounts (a personal-account
-   * installation would read as a confident zero) and an org-wide result set
-   * spends the 1000-result search ceiling on unwatched repositories.
+   * installation tokens entirely. Scoped per repository, not `org:`:
+   * MEASURED 2026-08-19, not assumed: `org:<user>` and `user:<user>` return
+   * the SAME 37 results on a personal account, so the org-scoped search was
+   * never the confident zero an earlier comment here claimed. What the
+   * repo-scoped search actually buys is spending the 1000-result ceiling
+   * only on watched repositories: the same live account returned 37 PRs
+   * org-wide against 3 in the allowlist, so 34 results of ceiling went to
+   * repositories nobody is watching.
    */
   listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage>;
 

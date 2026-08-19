@@ -140,9 +140,10 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
       "app/custom-bot",
       "some-user",
     ]);
-    // And the search is scoped to the watched repositories, not the org:
-    // `org:` matches only organisation accounts, so a personal-account
-    // installation would answer nothing at all.
+    // And the search is scoped to the watched repositories, not the org,
+    // so the 1000-result ceiling is spent on repositories somebody watches.
+    // (Measured: an org-wide query on a live personal account returned 37
+    // bot PRs against 3 in the allowlist.)
     expect(
       github.updatePrQueries[0]?.repos
         .map((r) => `${r.owner}/${r.name}`)
