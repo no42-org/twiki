@@ -214,6 +214,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   updatePrs = new Map<string, RawUpdatePr[]>();
   updatePrUnreadable = new Map<string, number>();
   updatePrTruncated = new Set<string>();
+  updatePrUnsearchable = new Map<string, number>();
   updatePrQueries: {
     repos: readonly RepoRef[];
     authors: readonly string[];
@@ -229,6 +230,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       prs: this.updatePrs.get(org) ?? [],
       unreadable: this.updatePrUnreadable.get(org) ?? 0,
       truncated: this.updatePrTruncated.has(org),
+      unsearchable: this.updatePrUnsearchable.get(org) ?? 0,
     };
   }
 
@@ -245,6 +247,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       issues: this.issues.get(org) ?? [],
       unreadable: this.issueUnreadable.get(org) ?? 0,
       truncated: this.issueTruncated.has(org),
+      unsearchable: 0,
     };
   }
 

@@ -134,12 +134,20 @@ export async function collectUpdatePRs(
     // Truncation degrades the run exactly as unreadable nodes do: both mean
     // the result set is incomplete, and a tombstone pass over an incomplete
     // set concludes that every PR it did not see was closed.
-    const outcome = page.unreadable > 0 || page.truncated ? "partial" : "ok";
+    // Three ways the result set can be incomplete, all of which must stop
+    // the tombstone pass: unreadable nodes, GitHub's search ceiling, and a
+    // repository whose qualifier could not fit in any query at all.
+    const outcome =
+      page.unreadable > 0 || page.truncated || page.unsearchable > 0
+        ? "partial"
+        : "ok";
     const detail = page.truncated
       ? "search results truncated at GitHub's ceiling; nothing tombstoned"
-      : page.unreadable > 0
-        ? `${page.unreadable} PR nodes could not be read`
-        : undefined;
+      : page.unsearchable > 0
+        ? `${page.unsearchable} repositories could not be searched under the configured query; nothing tombstoned`
+        : page.unreadable > 0
+          ? `${page.unreadable} PR nodes could not be read`
+          : undefined;
 
     deps.store.recordObservations(run, deps.now(), observations);
 

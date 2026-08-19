@@ -230,6 +230,21 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     expect(current()).toHaveLength(1);
   });
 
+  it("does not tombstone when a repository could not be searched at all", async () => {
+    // Its qualifier did not fit in any query, so nothing was learned about
+    // it. Absence from a sweep that never asked means nothing (AD-23).
+    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    await collectUpdatePRs(deps(), "no42-org", "full");
+
+    github.updatePrs.set("no42-org", []);
+    github.updatePrUnsearchable.set("no42-org", 1);
+    const r = await collectUpdatePRs(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    expect(current()).toHaveLength(1);
+    expect(store.latestRuns(1)[0]?.detail).toContain("could not be searched");
+  });
+
   it("does not tombstone when the search hit GitHub's result ceiling", async () => {
     // Search caps at 1000 results and reports it only through issueCount:
     // hasNextPage goes false exactly as at a genuine end. A capped sweep that
@@ -360,7 +375,12 @@ describe("the PR search across chunks", () => {
 
     const page = await adapter.listOpenUpdatePRs([], ["app/dependabot"]);
 
-    expect(page).toEqual({ prs: [], unreadable: 0, truncated: false });
+    expect(page).toEqual({
+      prs: [],
+      unreadable: 0,
+      truncated: false,
+      unsearchable: 0,
+    });
   });
 });
 

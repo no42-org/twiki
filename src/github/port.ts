@@ -289,6 +289,13 @@ export interface UpdatePrPage {
   /** Nodes the mapper could not read. Never silently discarded. */
   unreadable: number;
   /**
+   * Repositories that could not be searched at all, because their own
+   * `repo:` qualifier does not fit alongside the query base (a long slug
+   * against a base grown by many configured bot logins). Counted so the
+   * sweep is incomplete rather than quietly missing a repository.
+   */
+  unsearchable: number;
+  /**
    * True when GitHub returned fewer results than the query matched.
    *
    * Search hard-caps at 1000 results and reports the truncation only through
@@ -315,6 +322,13 @@ export interface IssuePage {
   issues: RawIssue[];
   /** Nodes the mapper could not read. Never silently discarded. */
   unreadable: number;
+  /**
+   * Repositories that could not be searched at all, because their own
+   * `repo:` qualifier does not fit alongside the query base (a long slug
+   * against a base grown by many configured bot logins). Counted so the
+   * sweep is incomplete rather than quietly missing a repository.
+   */
+  unsearchable: number;
   /** True when GitHub returned fewer results than the query matched. */
   truncated: boolean;
 }
