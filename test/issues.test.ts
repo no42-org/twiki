@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   issueSearchQueries,
   SEARCH_QUERY_MAX,
+  searchQueries,
 } from "../src/github/octokit-adapter.js";
 import type { RawIssue } from "../src/github/port.js";
 import { collectIssues, LANE } from "../src/tricorder/collect/issues.js";
@@ -207,9 +208,10 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   });
 
   it("scopes the search to the watched repositories, not the whole org", async () => {
-    // `org:` matches only organization accounts, so an org-wide query reads
-    // as a confident zero on a personal-account installation, and it spends
-    // the 1000-result ceiling on unwatched repositories.
+    // Not because `org:` fails on a personal account: measured 2026-08-19,
+    // `org:<user>` and `user:<user>` return identical results. The reason
+    // is the 1000-result ceiling, which an org-wide query spends on
+    // repositories nobody is watching.
     watched.add("no42-org/other");
     await collectIssues(deps(), "no42-org", "full");
 
@@ -226,9 +228,10 @@ describe("packing repositories into search queries", () => {
       owner: "no42-org",
       name: `repository-with-a-long-name-${i}`,
     }));
-    const queries = issueSearchQueries(repos);
+    const { queries, unsearchable } = issueSearchQueries(repos);
 
     expect(queries.length).toBeGreaterThan(1);
+    expect(unsearchable).toEqual([]);
     for (const q of queries) {
       expect(q.length).toBeLessThanOrEqual(SEARCH_QUERY_MAX);
       expect(q).toContain("is:issue is:open no:assignee");
@@ -242,6 +245,66 @@ describe("packing repositories into search queries", () => {
   });
 
   it("answers no queries for no repositories", () => {
-    expect(issueSearchQueries([])).toEqual([]);
+    expect(issueSearchQueries([])).toEqual({ queries: [], unsearchable: [] });
+  });
+});
+
+describe("packing repositories under a caller's own base", () => {
+  const repos = Array.from({ length: 12 }, (_, i) => ({
+    owner: "no42-org",
+    name: `repository-number-${i}`,
+  }));
+
+  it("carries the base on every chunk and each repo exactly once", () => {
+    // The PR search's base grows with the configured bot list, so unlike
+    // the issue search it is not a constant: every chunk must still carry
+    // the full base or that chunk searches for the wrong thing.
+    const base = "is:pr is:open author:app/dependabot author:app/renovate";
+    const { queries, unsearchable } = searchQueries(base, repos);
+
+    expect(queries.length).toBeGreaterThan(1);
+    expect(unsearchable).toEqual([]);
+    for (const q of queries) {
+      expect(q.length).toBeLessThanOrEqual(SEARCH_QUERY_MAX);
+      expect(q.startsWith(base)).toBe(true);
+    }
+    const mentions = queries.join(" ").match(/repo:\S+/g) ?? [];
+    expect(mentions.sort()).toEqual(
+      repos.map((r) => `repo:${r.owner}/${r.name}`).sort(),
+    );
+  });
+
+  it("sets aside only the repositories that cannot fit, and keeps the rest", () => {
+    // The case that matters is MIXED lengths: one 100-character repository
+    // name (GitHub's maximum) against a base grown by many configured bot
+    // logins. Judging against the longest qualifier refused the whole
+    // sweep, so one unlucky slug stopped the other nine from being
+    // collected at all; judged per repository, nine are still searched and
+    // the tenth is counted rather than silently dropped.
+    const base = `is:pr is:open ${Array.from(
+      { length: 8 },
+      (_, i) => `author:app/bot-number-${i}`,
+    ).join(" ")}`;
+    const huge = { owner: "no42-org", name: "x".repeat(100) };
+    const plan = searchQueries(base, [...repos, huge]);
+
+    expect(plan.unsearchable).toEqual([huge]);
+    expect(plan.queries.length).toBeGreaterThan(0);
+    for (const q of plan.queries) {
+      expect(q.length).toBeLessThanOrEqual(SEARCH_QUERY_MAX);
+    }
+    const mentions = plan.queries.join(" ").match(/repo:\S+/g) ?? [];
+    expect(mentions.sort()).toEqual(
+      repos.map((r) => `repo:${r.owner}/${r.name}`).sort(),
+    );
+  });
+
+  it("searches nothing when the base cannot carry any repository", () => {
+    // Every repository set aside, no query built: the caller reports a
+    // partial sweep with nothing tombstoned rather than a confident zero.
+    const base = `is:pr is:open ${"author:a-very-long-bot-login ".repeat(10)}`;
+    const plan = searchQueries(base, repos);
+    expect(plan.queries).toEqual([]);
+    expect(plan.unsearchable).toEqual(repos);
   });
 });

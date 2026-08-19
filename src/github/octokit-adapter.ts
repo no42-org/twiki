@@ -99,20 +99,63 @@ export function nextLink(header: string): string | null {
   return null;
 }
 
-export function issueSearchQueries(repos: readonly RepoRef[]): string[] {
+export interface SearchPlan {
+  queries: string[];
+  /**
+   * Repositories whose own qualifier cannot fit alongside the base, so no
+   * chunking can include them. Counted, never dropped: a repository we did
+   * not search must not be indistinguishable from one we searched and found
+   * clean, and its presence makes the sweep incomplete.
+   */
+  unsearchable: RepoRef[];
+}
+
+/**
+ * Spread `repos` over as many `repo:`-qualified queries as the length cap
+ * allows, each carrying `base`.
+ *
+ * Repo-scoped rather than `org:`-scoped to keep the 1000-result search
+ * ceiling for repositories somebody is actually watching. Measured on a live
+ * personal account 2026-08-19: 37 open bot PRs org-wide against 3 in the
+ * allowlist, so 34 results of ceiling went to repositories nobody watches,
+ * and a busy account could push the watched ones out of the window entirely
+ * while the sweep still reported ok.
+ *
+ * NOT because `org:` fails on personal accounts. An earlier version of this
+ * comment claimed that and it is false: `org:<user>` and `user:<user>`
+ * return the same 37 results, measured the same day.
+ */
+export function searchQueries(
+  base: string,
+  repos: readonly RepoRef[],
+): SearchPlan {
   const queries: string[] = [];
-  let current = ISSUE_SEARCH_BASE;
+  const unsearchable: RepoRef[] = [];
+  let current = base;
   for (const repo of repos) {
     const qualifier = ` repo:${repo.owner}/${repo.name}`;
+    if (base.length + qualifier.length > SEARCH_QUERY_MAX) {
+      // This ONE repository cannot be searched under this base, however the
+      // rest are packed. Judged per repository rather than against the
+      // longest: an earlier version refused the whole sweep when any single
+      // slug was too long, so one 100-character repository name stopped the
+      // other nine from being collected at all.
+      unsearchable.push(repo);
+      continue;
+    }
     if (current.length + qualifier.length > SEARCH_QUERY_MAX) {
       queries.push(current);
-      current = ISSUE_SEARCH_BASE + qualifier;
+      current = base + qualifier;
     } else {
       current += qualifier;
     }
   }
-  if (current !== ISSUE_SEARCH_BASE) queries.push(current);
-  return queries;
+  if (current !== base) queries.push(current);
+  return { queries, unsearchable };
+}
+
+export function issueSearchQueries(repos: readonly RepoRef[]): SearchPlan {
+  return searchQueries(ISSUE_SEARCH_BASE, repos);
 }
 
 /**
@@ -338,7 +381,7 @@ export class OctokitGitHub implements GitHubPort {
   }
 
   async listOpenUpdatePRs(
-    org: string,
+    repos: readonly RepoRef[],
     authors: readonly string[],
   ): Promise<UpdatePrPage> {
     if (!this.orgOctokitFor) {
@@ -346,22 +389,34 @@ export class OctokitGitHub implements GitHubPort {
         "listOpenUpdatePRs needs an org resolver; this client was built without one",
       );
     }
-    const gh = await this.orgOctokitFor(org);
+    if (repos.length === 0) {
+      return { prs: [], unreadable: 0, truncated: false, unsearchable: 0 };
+    }
+    const gh = await this.orgOctokitFor(repos[0]?.owner ?? "");
     // Search with explicit logins, never @me: an installation token has no
     // user identity, and the whole-account issue endpoints are excluded from
     // installation tokens entirely. Multiple author qualifiers OR together.
-    const query = [
-      `org:${org}`,
+    const base = [
       "is:pr",
       "is:open",
       ...authors.map((a) => `author:${a}`),
     ].join(" ");
 
-    const page = await runNodeSearch(gh, "PullRequest", query);
+    const plan = searchQueries(base, repos);
+    const prs: RawUpdatePr[] = [];
+    let unreadable = 0;
+    let truncated = false;
+    for (const query of plan.queries) {
+      const page = await runNodeSearch(gh, "PullRequest", query);
+      prs.push(...page.items);
+      unreadable += page.unreadable;
+      truncated = truncated || page.truncated;
+    }
     return {
-      prs: page.items,
-      unreadable: page.unreadable,
-      truncated: page.truncated,
+      prs,
+      unreadable,
+      truncated,
+      unsearchable: plan.unsearchable.length,
     };
   }
 
@@ -372,25 +427,30 @@ export class OctokitGitHub implements GitHubPort {
       );
     }
     if (repos.length === 0)
-      return { issues: [], unreadable: 0, truncated: false };
+      return { issues: [], unreadable: 0, truncated: false, unsearchable: 0 };
     const gh = await this.orgOctokitFor(repos[0]?.owner ?? "");
 
-    // One search per query chunk. Scoped by repo: qualifiers, not org:, for
-    // two reasons: `org:` matches only organization accounts, so a
-    // personal-account installation would get a confident-empty "ok" sweep
-    // every time; and an org-wide query counts every unwatched repository's
-    // issues against the 1000-result ceiling, which can starve the watched
-    // repositories out of the window entirely while still looking complete.
+    // One search per query chunk, scoped by repo: qualifiers rather than
+    // org:, so the 1000-result ceiling is spent only on repositories
+    // somebody watches: an org-wide query counts every unwatched
+    // repository's issues against it and can starve the watched ones out of
+    // the window entirely while still looking complete.
+    const plan = issueSearchQueries(repos);
     const issues: RawIssue[] = [];
     let unreadable = 0;
     let truncated = false;
-    for (const query of issueSearchQueries(repos)) {
+    for (const query of plan.queries) {
       const page = await runNodeSearch(gh, "Issue", query);
       issues.push(...page.items);
       unreadable += page.unreadable;
       truncated = truncated || page.truncated;
     }
-    return { issues, unreadable, truncated };
+    return {
+      issues,
+      unreadable,
+      truncated,
+      unsearchable: plan.unsearchable.length,
+    };
   }
 
   async listDependabotUpdateStatuses(

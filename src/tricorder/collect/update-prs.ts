@@ -45,6 +45,8 @@ export interface UpdatePrDeps {
   store: StorePort;
   /** Search-qualifier logins from configuration. Never a literal (AD-19). */
   bots: readonly string[];
+  /** The repositories the search is scoped to: exactly the watched set. */
+  watchedIn: (installation: string) => readonly RepoRef[];
   isWatched: (repo: RepoRef) => boolean;
   now: () => string;
   log: (msg: string) => void;
@@ -119,19 +121,33 @@ export async function collectUpdatePRs(
       startedAt: deps.now(),
     });
 
-    const page = await deps.github.listOpenUpdatePRs(installation, deps.bots);
+    const page = await deps.github.listOpenUpdatePRs(
+      deps.watchedIn(installation),
+      deps.bots,
+    );
+    // The search already asks only for watched repositories; this second
+    // filter is the write-path defence, so a renamed or transferred repo the
+    // search echoes back under another name cannot slip into the store.
     const watched = page.prs.filter((pr) => deps.isWatched(pr.repo));
     const observations = watched.map(normalisePr);
 
     // Truncation degrades the run exactly as unreadable nodes do: both mean
     // the result set is incomplete, and a tombstone pass over an incomplete
     // set concludes that every PR it did not see was closed.
-    const outcome = page.unreadable > 0 || page.truncated ? "partial" : "ok";
+    // Three ways the result set can be incomplete, all of which must stop
+    // the tombstone pass: unreadable nodes, GitHub's search ceiling, and a
+    // repository whose qualifier could not fit in any query at all.
+    const outcome =
+      page.unreadable > 0 || page.truncated || page.unsearchable > 0
+        ? "partial"
+        : "ok";
     const detail = page.truncated
       ? "search results truncated at GitHub's ceiling; nothing tombstoned"
-      : page.unreadable > 0
-        ? `${page.unreadable} PR nodes could not be read`
-        : undefined;
+      : page.unsearchable > 0
+        ? `${page.unsearchable} repositories could not be searched under the configured query; nothing tombstoned`
+        : page.unreadable > 0
+          ? `${page.unreadable} PR nodes could not be read`
+          : undefined;
 
     deps.store.recordObservations(run, deps.now(), observations);
 

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/core/config.js";
+import { OctokitGitHub } from "../src/github/octokit-adapter.js";
 import type { RawUpdatePr } from "../src/github/port.js";
 import {
   bumpFromTitle,
@@ -73,6 +74,13 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     github,
     store,
     bots,
+    watchedIn: (installation: string) =>
+      [...watched]
+        .map((slug) => {
+          const [owner = "", name = ""] = slug.split("/");
+          return { owner, name };
+        })
+        .filter((r) => r.owner.toLowerCase() === installation),
     isWatched: (repo: { owner: string; name: string }) =>
       watched.has(`${repo.owner}/${repo.name}`.toLowerCase()),
     now: () => new Date(Date.UTC(2026, 7, 17, 12, clock++)).toISOString(),
@@ -118,15 +126,29 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     // AD-19's functional pin: whatever the operator writes is what the search
     // asks for. No default exists in source, so an arbitrary actor working
     // proves nothing is injected around it.
+    // Two watched repositories, so a lane that passed only the first would
+    // be visible: with one, any truncation of the list looks identical.
+    watched.add("no42-org/second");
     await collectUpdatePRs(
       deps(["app/custom-bot", "some-user"]),
       "no42-org",
       "full",
     );
 
-    expect(github.updatePrQueries).toEqual([
-      { org: "no42-org", authors: ["app/custom-bot", "some-user"] },
+    expect(github.updatePrQueries).toHaveLength(1);
+    expect(github.updatePrQueries[0]?.authors).toEqual([
+      "app/custom-bot",
+      "some-user",
     ]);
+    // And the search is scoped to the watched repositories, not the org,
+    // so the 1000-result ceiling is spent on repositories somebody watches.
+    // (Measured: an org-wide query on a live personal account returned 37
+    // bot PRs against 3 in the allowlist.)
+    expect(
+      github.updatePrQueries[0]?.repos
+        .map((r) => `${r.owner}/${r.name}`)
+        .sort(),
+    ).toEqual(["no42-org/second", "no42-org/twiki"]);
   });
 
   it("drops PRs outside the allowlist", async () => {
@@ -208,6 +230,21 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     expect(current()).toHaveLength(1);
   });
 
+  it("does not tombstone when a repository could not be searched at all", async () => {
+    // Its qualifier did not fit in any query, so nothing was learned about
+    // it. Absence from a sweep that never asked means nothing (AD-23).
+    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    await collectUpdatePRs(deps(), "no42-org", "full");
+
+    github.updatePrs.set("no42-org", []);
+    github.updatePrUnsearchable.set("no42-org", 1);
+    const r = await collectUpdatePRs(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    expect(current()).toHaveLength(1);
+    expect(store.latestRuns(1)[0]?.detail).toContain("could not be searched");
+  });
+
   it("does not tombstone when the search hit GitHub's result ceiling", async () => {
     // Search caps at 1000 results and reports it only through issueCount:
     // hasNextPage goes false exactly as at a genuine end. A capped sweep that
@@ -257,6 +294,118 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     );
     expect(r.outcome).toBe("ok");
     expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
+  });
+});
+
+describe("the PR search across chunks", () => {
+  /** A stub standing in for one installation's Octokit GraphQL. */
+  function stubGh(pages: { issueCount: number; nodes: unknown[] }[]) {
+    const queries: string[] = [];
+    let call = 0;
+    const gh = {
+      graphql: async (_q: string, vars: { q: string }) => {
+        queries.push(vars.q);
+        const page = pages[call++] ?? { issueCount: 0, nodes: [] };
+        return {
+          search: {
+            issueCount: page.issueCount,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: page.nodes,
+          },
+        };
+      },
+    } as unknown as import("@octokit/rest").Octokit;
+    return { gh, queries };
+  }
+
+  const node = (n: number) => ({
+    id: `PR_${n}`,
+    number: n,
+    title: "Bump x from 1.0.0 to 1.0.1",
+    url: `https://github.com/no42-org/twiki/pull/${n}`,
+    createdAt: "2026-08-19T00:00:00.000Z",
+    author: { login: "dependabot" },
+    repository: { name: "twiki", owner: { login: "no42-org" } },
+  });
+
+  const manyRepos = Array.from({ length: 12 }, (_, i) => ({
+    owner: "no42-org",
+    name: `repository-number-${i}`,
+  }));
+
+  it("merges every chunk's results and ORs their truncation", async () => {
+    // One capped chunk means the whole result set is incomplete. Reporting
+    // the merge as complete would let the lane tombstone every PR the
+    // capped chunk could not return.
+    // The capped chunk is FIRST and a clean chunk follows it: taking the
+    // last chunk's flag (rather than OR-ing) would answer "complete" here,
+    // which a truncated-chunk-last fixture cannot catch.
+    const { gh, queries } = stubGh([
+      // First chunk hit the 1000-result ceiling: fewer nodes than matched.
+      { issueCount: 5000, nodes: [node(1)] },
+      { issueCount: 1, nodes: [node(2)] },
+    ]);
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    const page = await adapter.listOpenUpdatePRs(manyRepos, ["app/dependabot"]);
+
+    expect(queries.length).toBeGreaterThan(1);
+    expect(page.prs.map((p) => p.number).sort()).toEqual([1, 2]);
+    expect(page.truncated).toBe(true);
+  });
+
+  it("reports the repositories it could not search onto the page", async () => {
+    // The count has to reach the lane through the page, not just exist in
+    // the plan: it is what degrades the sweep to partial and stops the
+    // tombstone pass.
+    const { gh, queries } = stubGh([{ issueCount: 1, nodes: [node(1)] }]);
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+    const huge = { owner: "no42-org", name: "x".repeat(100) };
+    const bots = Array.from({ length: 8 }, (_, i) => `app/bot-number-${i}`);
+
+    const page = await adapter.listOpenUpdatePRs(
+      [{ owner: "no42-org", name: "twiki" }, huge],
+      bots,
+    );
+
+    expect(page.unsearchable).toBe(1);
+    // The searchable one was still collected: setting a repository aside
+    // must not cost the others.
+    expect(queries.join(" ")).toContain("repo:no42-org/twiki");
+    expect(page.prs.map((p) => p.number)).toEqual([1]);
+  });
+
+  it("resolves no client at all when no repositories are watched", async () => {
+    // Not merely "asks nothing": resolving a client needs an owner, and the
+    // only owner available is repos[0], which does not exist. The real
+    // resolver would fail with "the App is not installed on ", blaming an
+    // account nobody named.
+    const adapter = new OctokitGitHub(
+      async () => {
+        throw new Error("resolver must not be called");
+      },
+      () => true,
+      async () => {
+        throw new Error("resolver must not be called");
+      },
+    );
+
+    const page = await adapter.listOpenUpdatePRs([], ["app/dependabot"]);
+
+    expect(page).toEqual({
+      prs: [],
+      unreadable: 0,
+      truncated: false,
+      unsearchable: 0,
+    });
   });
 });
 

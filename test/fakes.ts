@@ -214,17 +214,23 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   updatePrs = new Map<string, RawUpdatePr[]>();
   updatePrUnreadable = new Map<string, number>();
   updatePrTruncated = new Set<string>();
-  updatePrQueries: { org: string; authors: readonly string[] }[] = [];
+  updatePrUnsearchable = new Map<string, number>();
+  updatePrQueries: {
+    repos: readonly RepoRef[];
+    authors: readonly string[];
+  }[] = [];
 
   async listOpenUpdatePRs(
-    org: string,
+    repos: readonly RepoRef[],
     authors: readonly string[],
   ): Promise<UpdatePrPage> {
-    this.updatePrQueries.push({ org, authors });
+    this.updatePrQueries.push({ repos, authors });
+    const org = repos[0]?.owner.toLowerCase() ?? "";
     return {
       prs: this.updatePrs.get(org) ?? [],
       unreadable: this.updatePrUnreadable.get(org) ?? 0,
       truncated: this.updatePrTruncated.has(org),
+      unsearchable: this.updatePrUnsearchable.get(org) ?? 0,
     };
   }
 
@@ -241,6 +247,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       issues: this.issues.get(org) ?? [],
       unreadable: this.issueUnreadable.get(org) ?? 0,
       truncated: this.issueTruncated.has(org),
+      unsearchable: 0,
     };
   }
 

@@ -125,14 +125,24 @@ export interface GitHubReadPort {
   probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess>;
 
   /**
-   * Open pull requests in the organisation authored by any of `authors`.
+   * Open pull requests in the given repositories authored by any of
+   * `authors`.
    *
    * The authors are search-qualifier logins from configuration (AD-19), passed
    * through verbatim: no bot login literal exists in source, and an empty list
    * is the caller's problem to refuse before it gets here.
+   *
+   * Scoped per repository, not `org:`, for the same reason as the issue
+   * search. MEASURED 2026-08-19, not assumed: `org:<user>` and `user:<user>` return
+   * the SAME 37 results on a personal account, so the org-scoped search was
+   * never the confident zero an earlier comment here claimed. What the
+   * repo-scoped search actually buys is spending the 1000-result ceiling
+   * only on watched repositories: the same live account returned 37 PRs
+   * org-wide against 3 in the allowlist, so 34 results of ceiling went to
+   * repositories nobody is watching.
    */
   listOpenUpdatePRs(
-    org: string,
+    repos: readonly RepoRef[],
     authors: readonly string[],
   ): Promise<UpdatePrPage>;
 
@@ -141,10 +151,14 @@ export interface GitHubReadPort {
    *
    * Search with explicit qualifiers, never @me: an installation token has no
    * user identity, and the whole-account issue endpoints are excluded from
-   * installation tokens entirely. Scoped per repository, not `org:`, because
-   * `org:` matches only organization accounts (a personal-account
-   * installation would read as a confident zero) and an org-wide result set
-   * spends the 1000-result search ceiling on unwatched repositories.
+   * installation tokens entirely. Scoped per repository, not `org:`:
+   * MEASURED 2026-08-19, not assumed: `org:<user>` and `user:<user>` return
+   * the SAME 37 results on a personal account, so the org-scoped search was
+   * never the confident zero an earlier comment here claimed. What the
+   * repo-scoped search actually buys is spending the 1000-result ceiling
+   * only on watched repositories: the same live account returned 37 PRs
+   * org-wide against 3 in the allowlist, so 34 results of ceiling went to
+   * repositories nobody is watching.
    */
   listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage>;
 
@@ -275,6 +289,13 @@ export interface UpdatePrPage {
   /** Nodes the mapper could not read. Never silently discarded. */
   unreadable: number;
   /**
+   * Repositories that could not be searched at all, because their own
+   * `repo:` qualifier does not fit alongside the query base (a long slug
+   * against a base grown by many configured bot logins). Counted so the
+   * sweep is incomplete rather than quietly missing a repository.
+   */
+  unsearchable: number;
+  /**
    * True when GitHub returned fewer results than the query matched.
    *
    * Search hard-caps at 1000 results and reports the truncation only through
@@ -301,6 +322,13 @@ export interface IssuePage {
   issues: RawIssue[];
   /** Nodes the mapper could not read. Never silently discarded. */
   unreadable: number;
+  /**
+   * Repositories that could not be searched at all, because their own
+   * `repo:` qualifier does not fit alongside the query base (a long slug
+   * against a base grown by many configured bot logins). Counted so the
+   * sweep is incomplete rather than quietly missing a repository.
+   */
+  unsearchable: number;
   /** True when GitHub returned fewer results than the query matched. */
   truncated: boolean;
 }
