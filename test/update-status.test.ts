@@ -251,7 +251,10 @@ describe("the adapter's null-container guard", () => {
       adapter.listUntriagedIssues([{ owner: "no42-org", name: "x" }]),
     ).rejects.toThrow(/no result container/);
     await expect(
-      adapter.listOpenUpdatePRs("no42-org", ["app/dependabot"]),
+      adapter.listOpenUpdatePRs(
+        [{ owner: "no42-org", name: "x" }],
+        ["app/dependabot"],
+      ),
     ).rejects.toThrow(/no result container/);
   });
 });

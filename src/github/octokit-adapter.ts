@@ -99,20 +99,47 @@ export function nextLink(header: string): string | null {
   return null;
 }
 
-export function issueSearchQueries(repos: readonly RepoRef[]): string[] {
+/**
+ * Spread `repos` over as many `repo:`-qualified queries as the length cap
+ * allows, each carrying `base`.
+ *
+ * Repo-scoped rather than `org:`-scoped for two reasons, both measured:
+ * `org:` matches ONLY organisation accounts, so a personal-account
+ * installation silently answers nothing (a confident zero on a lane whose
+ * whole job is noticing things), and an org-wide query spends the
+ * 1000-result ceiling on repositories nobody is watching.
+ */
+export function searchQueries(
+  base: string,
+  repos: readonly RepoRef[],
+): string[] {
+  const qualifiers = repos.map((r) => ` repo:${r.owner}/${r.name}`);
+  const longest = Math.max(0, ...qualifiers.map((q) => q.length));
+  if (base.length + longest > SEARCH_QUERY_MAX) {
+    // Unresolvable by chunking: no query can carry the base and even one
+    // repository. Said plainly here rather than sent for GitHub to reject,
+    // because the lane would otherwise record a failed run whose detail
+    // blames the API for a configuration that cannot work.
+    throw new Error(
+      `search base is too long to carry a repository qualifier (${base.length} + ${longest} > ${SEARCH_QUERY_MAX}): ${base}`,
+    );
+  }
   const queries: string[] = [];
-  let current = ISSUE_SEARCH_BASE;
-  for (const repo of repos) {
-    const qualifier = ` repo:${repo.owner}/${repo.name}`;
+  let current = base;
+  for (const qualifier of qualifiers) {
     if (current.length + qualifier.length > SEARCH_QUERY_MAX) {
       queries.push(current);
-      current = ISSUE_SEARCH_BASE + qualifier;
+      current = base + qualifier;
     } else {
       current += qualifier;
     }
   }
-  if (current !== ISSUE_SEARCH_BASE) queries.push(current);
+  if (current !== base) queries.push(current);
   return queries;
+}
+
+export function issueSearchQueries(repos: readonly RepoRef[]): string[] {
+  return searchQueries(ISSUE_SEARCH_BASE, repos);
 }
 
 /**
@@ -338,7 +365,7 @@ export class OctokitGitHub implements GitHubPort {
   }
 
   async listOpenUpdatePRs(
-    org: string,
+    repos: readonly RepoRef[],
     authors: readonly string[],
   ): Promise<UpdatePrPage> {
     if (!this.orgOctokitFor) {
@@ -346,23 +373,29 @@ export class OctokitGitHub implements GitHubPort {
         "listOpenUpdatePRs needs an org resolver; this client was built without one",
       );
     }
-    const gh = await this.orgOctokitFor(org);
+    if (repos.length === 0) {
+      return { prs: [], unreadable: 0, truncated: false };
+    }
+    const gh = await this.orgOctokitFor(repos[0]?.owner ?? "");
     // Search with explicit logins, never @me: an installation token has no
     // user identity, and the whole-account issue endpoints are excluded from
     // installation tokens entirely. Multiple author qualifiers OR together.
-    const query = [
-      `org:${org}`,
+    const base = [
       "is:pr",
       "is:open",
       ...authors.map((a) => `author:${a}`),
     ].join(" ");
 
-    const page = await runNodeSearch(gh, "PullRequest", query);
-    return {
-      prs: page.items,
-      unreadable: page.unreadable,
-      truncated: page.truncated,
-    };
+    const prs: RawUpdatePr[] = [];
+    let unreadable = 0;
+    let truncated = false;
+    for (const query of searchQueries(base, repos)) {
+      const page = await runNodeSearch(gh, "PullRequest", query);
+      prs.push(...page.items);
+      unreadable += page.unreadable;
+      truncated = truncated || page.truncated;
+    }
+    return { prs, unreadable, truncated };
   }
 
   async listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage> {

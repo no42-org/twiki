@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   issueSearchQueries,
   SEARCH_QUERY_MAX,
+  searchQueries,
 } from "../src/github/octokit-adapter.js";
 import type { RawIssue } from "../src/github/port.js";
 import { collectIssues, LANE } from "../src/tricorder/collect/issues.js";
@@ -243,5 +244,38 @@ describe("packing repositories into search queries", () => {
 
   it("answers no queries for no repositories", () => {
     expect(issueSearchQueries([])).toEqual([]);
+  });
+});
+
+describe("packing repositories under a caller's own base", () => {
+  const repos = Array.from({ length: 12 }, (_, i) => ({
+    owner: "no42-org",
+    name: `repository-number-${i}`,
+  }));
+
+  it("carries the base on every chunk and each repo exactly once", () => {
+    // The PR search's base grows with the configured bot list, so unlike
+    // the issue search it is not a constant: every chunk must still carry
+    // the full base or that chunk searches for the wrong thing.
+    const base = "is:pr is:open author:app/dependabot author:app/renovate";
+    const queries = searchQueries(base, repos);
+
+    expect(queries.length).toBeGreaterThan(1);
+    for (const q of queries) {
+      expect(q.length).toBeLessThanOrEqual(SEARCH_QUERY_MAX);
+      expect(q.startsWith(base)).toBe(true);
+    }
+    const mentions = queries.join(" ").match(/repo:\S+/g) ?? [];
+    expect(mentions.sort()).toEqual(
+      repos.map((r) => `repo:${r.owner}/${r.name}`).sort(),
+    );
+  });
+
+  it("refuses a base that cannot carry even one repository", () => {
+    // Enough configured bots and no chunking can help. Said here rather
+    // than sent for GitHub to reject, so the run's detail names the real
+    // cause instead of blaming the API.
+    const base = `is:pr is:open ${"author:a-very-long-bot-login ".repeat(10)}`;
+    expect(() => searchQueries(base, repos)).toThrow(/too long/);
   });
 });

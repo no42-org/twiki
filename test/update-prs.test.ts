@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/core/config.js";
+import { OctokitGitHub } from "../src/github/octokit-adapter.js";
 import type { RawUpdatePr } from "../src/github/port.js";
 import {
   bumpFromTitle,
@@ -73,6 +74,13 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     github,
     store,
     bots,
+    watchedIn: (installation: string) =>
+      [...watched]
+        .map((slug) => {
+          const [owner = "", name = ""] = slug.split("/");
+          return { owner, name };
+        })
+        .filter((r) => r.owner.toLowerCase() === installation),
     isWatched: (repo: { owner: string; name: string }) =>
       watched.has(`${repo.owner}/${repo.name}`.toLowerCase()),
     now: () => new Date(Date.UTC(2026, 7, 17, 12, clock++)).toISOString(),
@@ -124,9 +132,17 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
       "full",
     );
 
-    expect(github.updatePrQueries).toEqual([
-      { org: "no42-org", authors: ["app/custom-bot", "some-user"] },
+    expect(github.updatePrQueries).toHaveLength(1);
+    expect(github.updatePrQueries[0]?.authors).toEqual([
+      "app/custom-bot",
+      "some-user",
     ]);
+    // And the search is scoped to the watched repositories, not the org:
+    // `org:` matches only organisation accounts, so a personal-account
+    // installation would answer nothing at all.
+    expect(
+      github.updatePrQueries[0]?.repos.map((r) => `${r.owner}/${r.name}`),
+    ).toEqual(["no42-org/twiki"]);
   });
 
   it("drops PRs outside the allowlist", async () => {
@@ -257,6 +273,79 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     );
     expect(r.outcome).toBe("ok");
     expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
+  });
+});
+
+describe("the PR search across chunks", () => {
+  /** A stub standing in for one installation's Octokit GraphQL. */
+  function stubGh(pages: { issueCount: number; nodes: unknown[] }[]) {
+    const queries: string[] = [];
+    let call = 0;
+    const gh = {
+      graphql: async (_q: string, vars: { q: string }) => {
+        queries.push(vars.q);
+        const page = pages[call++] ?? { issueCount: 0, nodes: [] };
+        return {
+          search: {
+            issueCount: page.issueCount,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: page.nodes,
+          },
+        };
+      },
+    } as unknown as import("@octokit/rest").Octokit;
+    return { gh, queries };
+  }
+
+  const node = (n: number) => ({
+    id: `PR_${n}`,
+    number: n,
+    title: "Bump x from 1.0.0 to 1.0.1",
+    url: `https://github.com/no42-org/twiki/pull/${n}`,
+    createdAt: "2026-08-19T00:00:00.000Z",
+    author: { login: "dependabot" },
+    repository: { name: "twiki", owner: { login: "no42-org" } },
+  });
+
+  const manyRepos = Array.from({ length: 12 }, (_, i) => ({
+    owner: "no42-org",
+    name: `repository-number-${i}`,
+  }));
+
+  it("merges every chunk's results and ORs their truncation", async () => {
+    // One capped chunk means the whole result set is incomplete. Reporting
+    // the merge as complete would let the lane tombstone every PR the
+    // capped chunk could not return.
+    const { gh, queries } = stubGh([
+      { issueCount: 1, nodes: [node(1)] },
+      // Second chunk hit the 1000-result ceiling: fewer nodes than matched.
+      { issueCount: 5000, nodes: [node(2)] },
+    ]);
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    const page = await adapter.listOpenUpdatePRs(manyRepos, ["app/dependabot"]);
+
+    expect(queries.length).toBeGreaterThan(1);
+    expect(page.prs.map((p) => p.number).sort()).toEqual([1, 2]);
+    expect(page.truncated).toBe(true);
+  });
+
+  it("asks for nothing when no repositories are watched", async () => {
+    const { gh, queries } = stubGh([]);
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    const page = await adapter.listOpenUpdatePRs([], ["app/dependabot"]);
+
+    expect(queries).toEqual([]);
+    expect(page).toEqual({ prs: [], unreadable: 0, truncated: false });
   });
 });
 

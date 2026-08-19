@@ -45,6 +45,8 @@ export interface UpdatePrDeps {
   store: StorePort;
   /** Search-qualifier logins from configuration. Never a literal (AD-19). */
   bots: readonly string[];
+  /** The repositories the search is scoped to: exactly the watched set. */
+  watchedIn: (installation: string) => readonly RepoRef[];
   isWatched: (repo: RepoRef) => boolean;
   now: () => string;
   log: (msg: string) => void;
@@ -119,7 +121,13 @@ export async function collectUpdatePRs(
       startedAt: deps.now(),
     });
 
-    const page = await deps.github.listOpenUpdatePRs(installation, deps.bots);
+    const page = await deps.github.listOpenUpdatePRs(
+      deps.watchedIn(installation),
+      deps.bots,
+    );
+    // The search already asks only for watched repositories; this second
+    // filter is the write-path defence, so a renamed or transferred repo the
+    // search echoes back under another name cannot slip into the store.
     const watched = page.prs.filter((pr) => deps.isWatched(pr.repo));
     const observations = watched.map(normalisePr);
 

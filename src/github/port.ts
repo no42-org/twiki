@@ -125,14 +125,20 @@ export interface GitHubReadPort {
   probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess>;
 
   /**
-   * Open pull requests in the organisation authored by any of `authors`.
+   * Open pull requests in the given repositories authored by any of
+   * `authors`.
    *
    * The authors are search-qualifier logins from configuration (AD-19), passed
    * through verbatim: no bot login literal exists in source, and an empty list
    * is the caller's problem to refuse before it gets here.
+   *
+   * Scoped per repository, not `org:`, for the same two reasons as the issue
+   * search: `org:` matches only organisation accounts (a personal-account
+   * installation would read as a confident zero) and an org-wide result set
+   * spends the 1000-result ceiling on unwatched repositories.
    */
   listOpenUpdatePRs(
-    org: string,
+    repos: readonly RepoRef[],
     authors: readonly string[],
   ): Promise<UpdatePrPage>;
 

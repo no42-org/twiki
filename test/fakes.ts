@@ -214,13 +214,17 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   updatePrs = new Map<string, RawUpdatePr[]>();
   updatePrUnreadable = new Map<string, number>();
   updatePrTruncated = new Set<string>();
-  updatePrQueries: { org: string; authors: readonly string[] }[] = [];
+  updatePrQueries: {
+    repos: readonly RepoRef[];
+    authors: readonly string[];
+  }[] = [];
 
   async listOpenUpdatePRs(
-    org: string,
+    repos: readonly RepoRef[],
     authors: readonly string[],
   ): Promise<UpdatePrPage> {
-    this.updatePrQueries.push({ org, authors });
+    this.updatePrQueries.push({ repos, authors });
+    const org = repos[0]?.owner.toLowerCase() ?? "";
     return {
       prs: this.updatePrs.get(org) ?? [],
       unreadable: this.updatePrUnreadable.get(org) ?? 0,
