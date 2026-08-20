@@ -20,6 +20,7 @@ import {
 } from "./auth.js";
 import { installationTokenGen, withRequestDiscipline } from "./discipline.js";
 import type {
+  AccountKind,
   AppIdentity,
   DependabotAccess,
   GitHubAppPort,
@@ -59,6 +60,11 @@ export type OctokitResolver = (repo: RepoRef) => Promise<Octokit>;
  * one, so its wiring does not need to supply this.
  */
 export type OrgOctokitResolver = (org: string) => Promise<Octokit>;
+/**
+ * What kind of account an installation is on. Supplied by the factory from
+ * the installation payload, so nothing here has to probe or guess.
+ */
+export type AccountKindResolver = (login: string) => AccountKind;
 
 /**
  * GitHub caps search queries at 256 characters, so the watched repositories
@@ -310,6 +316,67 @@ export function validatorFrom(
   return { etag, lastModified, tokenGen };
 }
 
+interface PageResponse {
+  data: unknown;
+  headers: Record<string, string | number | undefined>;
+}
+
+/**
+ * Walk a Link-header-paginated listing under the guards this codebase has
+ * already paid for, rather than handing the job to gh.paginate.
+ *
+ * Three of them are load-bearing and none of them are octokit's: the page
+ * cap, which stops a proxy echoing a self-referential Link header from
+ * looping a lane forever; the origin check, because the next URL is followed
+ * with the installation token attached and a proxy-injected header must not
+ * point that token at another host; and the array check, because a proxy
+ * error page would otherwise spread character by character into a nonsense
+ * count. Truncating at the cap is reported rather than thrown, so what was
+ * read is still ingested and the caller degrades to partial (AD-23).
+ *
+ * Shared because the org path and the per-repository fan-out are the same
+ * walk, and the first version of the fan-out reached for gh.paginate and
+ * silently dropped all three.
+ */
+async function walkLinkedPages(
+  label: string,
+  first: () => Promise<PageResponse>,
+  followUp: (url: string) => Promise<PageResponse>,
+): Promise<{
+  items: unknown[];
+  firstPage: PageResponse;
+  pages: number;
+  truncated: boolean;
+}> {
+  const items: unknown[] = [];
+  let pages = 0;
+  let truncated = false;
+  let next: string | null = null;
+  let firstPage: PageResponse | null = null;
+  for (;;) {
+    pages++;
+    const res: PageResponse = next ? await followUp(next) : await first();
+    if (firstPage === null) firstPage = res;
+    if (!Array.isArray(res.data)) {
+      throw new Error(`${label} returned a non-array body (page ${pages})`);
+    }
+    items.push(...(res.data as unknown[]));
+    const link = typeof res.headers.link === "string" ? res.headers.link : "";
+    next = nextLink(link);
+    if (!next) break;
+    if (pages >= MAX_ALERT_PAGES) {
+      truncated = true;
+      break;
+    }
+    if (!next.startsWith("https://api.github.com/")) {
+      throw new Error(
+        `${label} carried a cross-origin next link; refusing to follow it`,
+      );
+    }
+  }
+  return { items, firstPage, pages, truncated };
+}
+
 /**
  * GitHubPort backed by Octokit. Scoped to the allowlist: every call asserts the
  * repo is permitted before touching the API (defense in depth — run.ts already
@@ -320,6 +387,9 @@ export class OctokitGitHub implements GitHubPort {
     private readonly octokitFor: OctokitResolver,
     private readonly isAllowed: (repo: RepoRef) => boolean,
     private readonly orgOctokitFor?: OrgOctokitResolver,
+    /** Defaults to treating every account as an organisation, which is what
+     * this adapter did before user accounts were handled at all. */
+    private readonly accountKindFor: AccountKindResolver = () => "organization",
   ) {}
 
   private async client(repo: RepoRef): Promise<Octokit> {
@@ -337,11 +407,33 @@ export class OctokitGitHub implements GitHubPort {
         "listOrgRepos needs an org resolver; this client was built without one",
       );
     }
+    // Resolved BEFORE the kind is read: the kind map is filled by the same
+    // resolver's lazy re-resolve, so asking first returns "unknown" for an
+    // installation created since startup and silently routes it down the
+    // organisation path.
     const client = await this.orgOctokitFor(org);
-    const repos = await client.paginate(client.repos.listForOrg, {
-      org,
-      per_page: 100,
-    });
+    // A user account has no /orgs listing at all: it answers 404, which the
+    // coverage lane records as a failed run every cycle, leaving every
+    // personal repository's coverage permanently unknown.
+    //
+    // NOT /users/{login}/repos, which measurement rules out: it returned
+    // 223 repositories against the installation's 240 on the live account,
+    // every one of the 17 private ones missing. Coverage would then find no
+    // metadata for a watched private repository, never report it archived,
+    // and fall through to the probe - promising "covered" for a repository
+    // that is archived, which is the false promise the archived branch
+    // exists to prevent. The installation's own listing carries all of
+    // them, and is the honest universe anyway: it is exactly what this App
+    // can see.
+    const repos =
+      this.accountKindFor(org) === "user"
+        ? await client.paginate(client.apps.listReposAccessibleToInstallation, {
+            per_page: 100,
+          })
+        : await client.paginate(client.repos.listForOrg, {
+            org,
+            per_page: 100,
+          });
     return repos.map(
       (r: {
         owner: { login: string };
@@ -740,16 +832,92 @@ export class OctokitGitHub implements GitHubPort {
     }
   }
 
-  async listOrgDependabotAlerts(
+  /**
+   * The per-repository fallback. One call each, and a 403 saying alerts are
+   * switched off is NOT a failure: it is the same fact the coverage probe
+   * records, and counting it as unreadable would degrade every sweep of an
+   * account that simply does not use Dependabot everywhere. Anything else
+   * unreadable does count, so the sweep goes partial and tombstones
+   * nothing (AD-23).
+   */
+  private async listDependabotAlertsPerRepo(
+    repos: readonly RepoRef[],
+  ): Promise<OrgAlertPage> {
+    const alerts: RawDependabotAlert[] = [];
+    let unreadable = 0;
+    let unreachable = 0;
+    let truncated = false;
+    for (const repo of repos) {
+      const slug = repoSlug(repo);
+      let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
+      try {
+        const gh = await this.client(repo);
+        // The same guarded walk the org path uses. gh.paginate would drop
+        // the page cap, the origin check and the array guard, all of which
+        // this lane already paid for.
+        walked = await walkLinkedPages(
+          `alert listing for ${slug}`,
+          () =>
+            gh.request("GET /repos/{owner}/{repo}/dependabot/alerts", {
+              owner: repo.owner,
+              repo: repo.name,
+              state: "open",
+              per_page: 100,
+            }),
+          (url) => gh.request(`GET ${url}`),
+        );
+      } catch (err) {
+        // Alerts switched off is a FACT, the same one the coverage probe
+        // records, and most repositories on a personal account answer it.
+        // Counting it would make every sweep partial forever.
+        if (translateDependabotProbe(err) === "alerts_disabled") continue;
+        unreachable++;
+        continue;
+      }
+      truncated = truncated || walked.truncated;
+      for (const item of walked.items) {
+        const alert = toDependabotAlert(item, repo);
+        if (alert === null) unreadable++;
+        else alerts.push(alert);
+      }
+    }
+    // No validator: each repository carries its own ETag, and one cached
+    // value cannot describe a set of them. The next sweep pays full price
+    // rather than revalidating against a listing that does not exist.
+    return {
+      alerts,
+      unreadable,
+      unreachable,
+      notModified: false,
+      truncated,
+      validator: null,
+    };
+  }
+
+  async listDependabotAlerts(
     org: string,
+    repos: readonly RepoRef[] = [],
     cached: RequestValidator | null = null,
   ): Promise<OrgAlertPage> {
     if (!this.orgOctokitFor) {
       throw new Error(
-        "listOrgDependabotAlerts needs an org resolver; this client was built without one",
+        "listDependabotAlerts needs an org resolver; this client was built without one",
       );
     }
+    // Resolved first, deliberately: the kind map is filled by this same
+    // resolver's lazy re-resolve, so reading the kind before resolving
+    // returns "unknown" for an installation created since the process
+    // started, routes it to the org endpoint, and fails the lane every
+    // cycle until someone restarts the container.
     const gh = await this.orgOctokitFor(org);
+    // A user account has no org-level alert endpoint - `/orgs/{login}/...`
+    // answers 404 - so there is nothing to collapse and the only route is
+    // one call per watched repository. The spine prices this: 36 calls plus
+    // three per allowlisted personal-account repository, of which this lane
+    // is one.
+    if (this.accountKindFor(org) === "user") {
+      return this.listDependabotAlertsPerRepo(repos);
+    }
 
     // A validator from a previous token generation is a guaranteed miss:
     // GitHub's ETags vary with the Authorization header. Cold, not sent. An
@@ -762,96 +930,58 @@ export class OctokitGitHub implements GitHubPort {
     const send = sendableValidator(cached, tokenGen);
     const conditionalHeaders = conditionalHeadersFor(send);
 
-    // Paginated by link header rather than gh.paginate: the conditional
-    // request needs the first page's response headers (etag, 304), which
-    // paginate does not expose.
-    const raw: unknown[] = [];
-    let pages = 0;
-    let truncated = false;
-    let firstEtag: string | null = null;
-    let firstLastModified: string | null = null;
-    let next: string | null = null;
-    for (;;) {
-      pages++;
-      let res: {
-        data: unknown;
-        headers: Record<string, string | number | undefined>;
-      };
-      try {
-        res = next
-          ? await gh.request(`GET ${next}`)
-          : await gh.request("GET /orgs/{org}/dependabot/alerts", {
-              org,
-              state: "open",
-              per_page: 100,
-              headers: conditionalHeaders,
-            });
-      } catch (err) {
-        if ((err as { status?: number }).status === 304) {
-          if (send && pages === 1) {
-            // Byte-identical to the listing the validator came from. No
-            // pages to walk: a single-page listing is the only kind we cache
-            // for. The send guard already proved send.tokenGen === tokenGen,
-            // so the cached validator goes back as it came.
-            return {
-              alerts: [],
-              unreadable: 0,
-              notModified: true,
-              truncated: false,
-              validator: { ...send },
-            };
-          }
-          // Same posture as the KEV path, same legible message: a broken
-          // proxy confirming a validator we never sent, not an empty page.
-          throw new Error(
-            `alert listing for ${org} answered 304 to an unconditional request`,
-          );
+    // The same guarded walk the per-repository fan-out uses, not
+    // gh.paginate: the cap, the origin check and the array guard all live
+    // there, and a second copy of them is a second thing to forget.
+    // Conditional handling stays here because only this path has a single
+    // listing to revalidate.
+    let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
+    try {
+      walked = await walkLinkedPages(
+        `alert listing for ${org}`,
+        () =>
+          gh.request("GET /orgs/{org}/dependabot/alerts", {
+            org,
+            state: "open",
+            per_page: 100,
+            headers: conditionalHeaders,
+          }),
+        (url) => gh.request(`GET ${url}`),
+      );
+    } catch (err) {
+      if ((err as { status?: number }).status === 304) {
+        if (send) {
+          // Byte-identical to the listing the validator came from. The send
+          // guard already proved send.tokenGen === tokenGen, so the cached
+          // validator goes back as it came.
+          return {
+            alerts: [],
+            unreadable: 0,
+            unreachable: 0,
+            notModified: true,
+            truncated: false,
+            validator: { ...send },
+          };
         }
-        throw err;
-      }
-      if (pages === 1) {
-        firstEtag =
-          typeof res.headers.etag === "string" ? res.headers.etag : null;
-        firstLastModified =
-          typeof res.headers["last-modified"] === "string"
-            ? res.headers["last-modified"]
-            : null;
-      }
-      if (!Array.isArray(res.data)) {
-        // A proxy error page or unexpected object: spreading it would either
-        // throw an illegible TypeError or spread a string character by
-        // character into a nonsense unreadable count.
+        // Same posture as the KEV path, same legible message: a broken
+        // proxy confirming a validator we never sent, not an empty page.
         throw new Error(
-          `alert listing for ${org} returned a non-array body (page ${pages})`,
+          `alert listing for ${org} answered 304 to an unconditional request`,
         );
       }
-      raw.push(...(res.data as unknown[]));
-      const link = typeof res.headers.link === "string" ? res.headers.link : "";
-      next = nextLink(link);
-      if (!next) break;
-      // The cap is judged on the CLAIM of more pages, after the link parse:
-      // a listing that genuinely ends at page MAX is served in full, while a
-      // proxy echoing a self-referential Link header cannot loop this lane
-      // forever. Hitting the cap is a fault, and a fault must not look like
-      // the end of the listing.
-      if (pages >= MAX_ALERT_PAGES) {
-        // TRUNCATE, do not throw: what we read is real and worth ingesting,
-        // and the flag makes the caller degrade to partial so nothing is
-        // tombstoned against an incomplete set. Throwing would ingest
-        // nothing at all, every sweep, for an organisation whose alert
-        // count cannot shrink without this lane.
-        truncated = true;
-        break;
-      }
-      // The next URL is followed with the installation token attached, so it
-      // must stay on GitHub's API origin: a proxy-injected Link header must
-      // not be able to point the Authorization header at another host.
-      if (!next.startsWith("https://api.github.com/")) {
-        throw new Error(
-          `alert listing for ${org} carried a cross-origin next link; refusing to follow it`,
-        );
-      }
+      throw err;
     }
+    const raw = walked.items;
+    const pages = walked.pages;
+    const truncated = walked.truncated;
+    const firstEtag =
+      typeof walked.firstPage.headers.etag === "string"
+        ? walked.firstPage.headers.etag
+        : null;
+    const firstLastModified =
+      typeof walked.firstPage.headers["last-modified"] === "string"
+        ? walked.firstPage.headers["last-modified"]
+        : null;
 
     // Deliberately unfiltered. Which repositories are watched is AD-10's rule
     // and belongs to the lane. This adapter's allowlist guard exists to stop
@@ -868,6 +998,9 @@ export class OctokitGitHub implements GitHubPort {
     return {
       alerts,
       unreadable,
+      // The org path reads one listing or none, so there is no such thing
+      // as an unreachable repository here.
+      unreachable: 0,
       notModified: false,
       truncated,
       // Only a listing that fit in one page gets a validator: each page
@@ -1118,7 +1251,11 @@ export function createGitHubFromEnv(
  * has grown over time (EPSS is a recent addition) and a field the installed
  * Octokit types do not know about would otherwise be dropped silently.
  */
-function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
+function toDependabotAlert(
+  raw: unknown,
+  /** The repository the caller asked about, when the payload cannot say. */
+  knownRepo?: RepoRef,
+): RawDependabotAlert | null {
   const a = raw as {
     number?: number;
     state?: string;
@@ -1137,8 +1274,14 @@ function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
       epss?: { percentage?: number; percentile?: number } | null;
     };
   };
-  const owner = a.repository?.owner?.login;
-  const name = a.repository?.name;
+  // The org-level listing names the repository on every alert; the
+  // per-repository listing does NOT - measured 2026-08-21, `repository` is
+  // absent from that payload entirely, because the URL already said which
+  // repository it is. Without the fallback every alert from the
+  // personal-account fan-out failed to map, and the lane reported 31
+  // unreadable payloads and zero alerts for repositories that had them.
+  const owner = a.repository?.owner?.login ?? knownRepo?.owner;
+  const name = a.repository?.name ?? knownRepo?.name;
   if (typeof a.number !== "number" || !owner || !name) return null;
 
   return {
@@ -1199,13 +1342,24 @@ export class OctokitGitHubApp implements GitHubAppPort {
       // fallback that can never match a real owner is worse than saying so: it
       // would silently orphan every repository under that account.
       const account = i.account as
-        | { login?: string; slug?: string }
+        | { login?: string; slug?: string; type?: string }
         | null
         | undefined;
+      // Read, never inferred. Anything unrecognised stays `unknown`, which
+      // the adapter treats as an organisation: that is what it did before
+      // user accounts existed here, so an unfamiliar account type cannot
+      // silently change how an installation is swept.
+      const type = account?.type;
       return {
         id: i.id,
         account: account?.login ?? account?.slug ?? null,
         repositorySelection: i.repository_selection ?? "unknown",
+        accountKind:
+          type === "User"
+            ? ("user" as const)
+            : type === "Organization"
+              ? ("organization" as const)
+              : ("unknown" as const),
       };
     });
   }
@@ -1299,8 +1453,12 @@ export async function createTricorderReadPort(
   };
 
   const byAccount = new Map<string, number>();
+  const kindByAccount = new Map<string, AccountKind>();
   for (const i of await appPort.listInstallations()) {
-    if (i.account) byAccount.set(i.account.toLowerCase(), i.id);
+    if (i.account) {
+      byAccount.set(i.account.toLowerCase(), i.id);
+      kindByAccount.set(i.account.toLowerCase(), i.accountKind);
+    }
   }
 
   const clients = new Map<number, Octokit>();
@@ -1333,7 +1491,10 @@ export async function createTricorderReadPort(
       // container, with nothing in the log suggesting that.
       resolved = true;
       for (const i of await appPort.listInstallations()) {
-        if (i.account) byAccount.set(i.account.toLowerCase(), i.id);
+        if (i.account) {
+          byAccount.set(i.account.toLowerCase(), i.id);
+          kindByAccount.set(i.account.toLowerCase(), i.accountKind);
+        }
       }
       clients.clear();
       id = byAccount.get(account.toLowerCase());
@@ -1355,5 +1516,10 @@ export async function createTricorderReadPort(
     async (repo) => forAccount(repo.owner),
     isAllowed,
     forAccount,
+    // Unknown until the installations resolve, and unknown is treated as an
+    // organisation: that is the behaviour every account had before user
+    // accounts were handled, so an unfamiliar type cannot quietly change
+    // how an installation is swept.
+    (login) => kindByAccount.get(login.toLowerCase()) ?? "unknown",
   );
 }

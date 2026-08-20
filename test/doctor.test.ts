@@ -45,10 +45,16 @@ function fakeApp(over: {
   };
 }
 
-const inst = (id: number, account: string, selection = "selected") => ({
+const inst = (
+  id: number,
+  account: string,
+  selection = "selected",
+  accountKind: "user" | "organization" | "unknown" = "organization",
+) => ({
   id,
   account,
   repositorySelection: selection,
+  accountKind,
 });
 
 describe("App permissions (AD-21)", () => {
@@ -235,7 +241,12 @@ describe("reachability of the watched set", () => {
       fakeApp({
         installations: [
           inst(1, "no42-org"),
-          { id: 7, account: null, repositorySelection: "all" },
+          {
+            id: 7,
+            account: null,
+            repositorySelection: "all",
+            accountKind: "unknown" as const,
+          },
         ],
         repos: { 1: [twiki] },
       }),

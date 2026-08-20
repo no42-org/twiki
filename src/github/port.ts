@@ -92,6 +92,16 @@ export interface OrgAlertPage {
   /** Payloads the mapper could not read. Never silently discarded. */
   unreadable: number;
   /**
+   * Whole repositories that could not be read, on the per-repository path.
+   *
+   * Counted apart from `unreadable` because they are a different fact and
+   * the operator-facing detail says which: folding three unreachable
+   * repositories into "3 alert payloads could not be read" points the
+   * reader at a mapper bug that does not exist. Zero on the org path,
+   * which reads one listing or none.
+   */
+  unreachable: number;
+  /**
    * True when GitHub answered 304: the listing is byte-identical to the one
    * the cached validator was captured from. `alerts` is empty then, and the
    * caller confirms its stored rows instead of rewriting them.
@@ -119,7 +129,11 @@ export interface OrgAlertPage {
  * fail independently.
  */
 export interface GitHubReadPort {
-  /** Every repository in the organisation, with the states the listing carries. */
+  /**
+   * Every repository the account owns, with the states the listing carries.
+   * Organisations and user accounts have different endpoints for this, and
+   * the org one 404s on a user account.
+   */
   listOrgRepos(org: string): Promise<RawRepoMeta[]>;
   /** Is Dependabot actually watching this repository? One call. */
   probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess>;
@@ -221,8 +235,14 @@ export interface GitHubReadPort {
    * unconditional fetch (AD-25). A validator from a different token
    * generation is ignored, not sent.
    */
-  listOrgDependabotAlerts(
-    org: string,
+  /**
+   * `repos` is the watched set for this installation, used only when the
+   * account has no org-level endpoint to collapse into: a user account
+   * costs one call per repository, an organisation still costs one call.
+   */
+  listDependabotAlerts(
+    installation: string,
+    repos: readonly RepoRef[],
     cached?: RequestValidator | null,
   ): Promise<OrgAlertPage>;
 }
@@ -256,12 +276,26 @@ export interface AppIdentity {
   permissions: Record<string, string> | null;
 }
 
+/**
+ * What kind of account an installation is on.
+ *
+ * Load-bearing, not descriptive: a GitHub App on a USER account has no
+ * org-level endpoints at all. `/orgs/{login}/dependabot/alerts` and
+ * `/orgs/{login}/repos` both answer 404 there, so the lanes that collapse an
+ * organisation into one call must fan out per repository instead. Measured
+ * 2026-08-21: the installation payload carries this, so nothing has to be
+ * probed or guessed.
+ */
+export type AccountKind = "user" | "organization" | "unknown";
+
 export interface InstallationRef {
   id: number;
   /** The org or user login, or an enterprise slug. Null when neither is present. */
   account: string | null;
   /** `all` or `selected`, as GitHub reports it. */
   repositorySelection: string;
+  /** Unknown when GitHub reported something this build does not recognise. */
+  accountKind: AccountKind;
 }
 
 export interface GitHubAppPort {

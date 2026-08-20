@@ -195,8 +195,11 @@ export async function collectOrgAlerts(
         `${LANE} ${installation}: conditional sweep off, unconfirmed: ${unconfirmed.join(", ")}`,
       );
     }
-    const page = await deps.github.listOrgDependabotAlerts(
+    const page = await deps.github.listDependabotAlerts(
       installation,
+      // Used only when the account has no org-level endpoint to collapse
+      // into. An organisation ignores this and still costs one call.
+      deps.watchedIn(installation),
       unconfirmed.length === 0
         ? deps.store.loadValidator(installation, url)
         : null,
@@ -241,12 +244,26 @@ export async function collectOrgAlerts(
     // result set is incomplete, and every guard below keys off `ok`, so a
     // truncated sweep confirms nothing, tombstones nothing and caches no
     // validator.
-    const outcome = page.unreadable > 0 || page.truncated ? "partial" : "ok";
-    const detail = page.truncated
-      ? "alert listing truncated at the pagination cap; nothing tombstoned"
-      : page.unreadable > 0
+    // Three distinct ways the answer can be incomplete, reported as three
+    // distinct things. Folding unreachable REPOSITORIES into "alert
+    // payloads could not be read" points the operator at a mapper bug that
+    // does not exist, and the fan-out makes that the common case.
+    const outcome =
+      page.unreadable > 0 || page.unreachable > 0 || page.truncated
+        ? "partial"
+        : "ok";
+    const notes = [
+      page.truncated
+        ? "alert listing truncated at the pagination cap; nothing tombstoned"
+        : null,
+      page.unreachable > 0
+        ? `${page.unreachable} repositories could not be read`
+        : null,
+      page.unreadable > 0
         ? `${page.unreadable} alert payloads could not be read`
-        : undefined;
+        : null,
+    ].filter((n): n is string => n !== null);
+    const detail = notes.length > 0 ? notes.join("; ") : undefined;
 
     // One confirmation per watched repository in this installation, including
     // the ones with nothing to report. This is what makes a real zero
