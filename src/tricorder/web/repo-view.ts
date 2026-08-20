@@ -264,7 +264,15 @@ export function buildRepoView(
       unreadable++;
       continue;
     }
-    if (alert.repo.toLowerCase() !== slug) continue;
+    if (alert.repo.toLowerCase() !== slug) {
+      // The key says this repository and the payload says another. Both are
+      // written from the same RepoRef at ingest (AD-22), so they cannot
+      // disagree on anything this system wrote: the row is corrupt. Counted
+      // rather than skipped, because a row we refuse to believe is exactly
+      // the kind of thing a page must not hide.
+      unreadable++;
+      continue;
+    }
     alerts.push({
       number: alert.number,
       severity: alert.severity,

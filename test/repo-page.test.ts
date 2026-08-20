@@ -309,6 +309,26 @@ describe("the per-repository view (CAP-7)", () => {
     ).toBe(1);
   });
 
+  it("counts an alert whose key and payload disagree", () => {
+    // Both are written from one RepoRef at ingest, so a disagreement is
+    // corruption. Skipping it silently would hide a row we refuse to
+    // believe; it is counted instead.
+    seed("rest-org-dependabot", [
+      {
+        subject: { type: "dependabot_alert", key: "no42-org/twiki#3" },
+        payload: {
+          ...(normalise(makeAlert({ number: 3 })).payload as object),
+          repo: "no42-org/somewhere-else",
+        },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.alerts).toEqual([]);
+    expect(view.unreadable).toBe(1);
+  });
+
   it("suppresses the alert count for a repository that is not covered", () => {
     seed("coverage", [
       {
