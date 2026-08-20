@@ -38,6 +38,21 @@ describe("the per-repository view (CAP-7)", () => {
     return r;
   };
 
+  const seedAt = (
+    lane: string,
+    at: string,
+    payloads: { subject: never; payload: never }[],
+  ) => {
+    const r = store.beginRun({
+      lane,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: at,
+    });
+    store.recordObservations(r, at, payloads);
+    store.finishRun(r, "ok", at);
+  };
+
   const seed = (
     lane: string,
     payloads: { subject: never; payload: never }[],
@@ -243,6 +258,57 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.runs[0]?.status).toBe("in_progress");
   });
 
+  it("does not read a stale coverage attestation as loss of coverage", () => {
+    // `unknown` is what a stale attestation degrades to, not evidence that
+    // GitHub stopped watching. Treating it as not-covered would let one dead
+    // coverage lane blank correct counts off every page in the estate.
+    seedAt("coverage", "2026-08-18T00:00:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", state: "covered" },
+      },
+    ] as never[]);
+    seed("rest-org-dependabot", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          openAlerts: 3,
+          worstSeverity: "high",
+        },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, {
+      policy: SWEEP,
+      coveragePolicy: { cadenceMs: 24 * 60 * 60_000 },
+    });
+
+    expect(view.coverage).toBe("unknown");
+    expect(view.notCovered).toBe(false);
+    expect(view.summary.openAlerts).toBe(3);
+  });
+
+  it("attributes an unreadable alert by its key, not the whole installation", () => {
+    // Alert keys are owner/name#number, so a row too malformed to read still
+    // says whose it is. Counting before that check made one corrupt row in a
+    // sibling repository mark every page in the org incomplete.
+    seed("rest-org-dependabot", [
+      {
+        subject: { type: "dependabot_alert", key: "no42-org/other#9" },
+        payload: { number: "nine", repo: 42 },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.unreadable).toBe(0);
+    expect(
+      buildRepoView(store, { owner: "no42-org", name: "other" }, NOW, DEPS)
+        .unreadable,
+    ).toBe(1);
+  });
+
   it("suppresses the alert count for a repository that is not covered", () => {
     seed("coverage", [
       {
@@ -308,10 +374,84 @@ describe("the per-repository page", () => {
     expect(html).toContain("no42-org/twiki");
     expect(html).toContain("#7");
     expect(html).toContain("critical");
-    // The lanes that never ran say so, rather than showing empty tables.
-    expect(html).toContain("no lane has vouched for this yet");
+    // The lanes that never ran say so, rather than showing empty tables -
+    // and say it without claiming more than the store can support.
+    expect(html).toContain("not confirmed by any completed sweep");
     // And the capability with no lane at all is named outright.
     expect(html).toContain("no lane collects review requests yet");
+  });
+
+  it("does not list alerts under a header saying it has no count", async () => {
+    // Coverage withdrawn while the alert lane is failing, so its rows are
+    // still present. Printing "no count" and then twelve alerts beneath it
+    // has each half contradicting the other (AD-28).
+    const r = store.beginRun({
+      lane: "coverage",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", state: "alerts_disabled" },
+      },
+      normalise(makeAlert({ number: 7 })),
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const html = await (await app().request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain("not covered");
+    expect(html).toContain("no count and no list");
+    // The stale row is not listed beneath the suppression.
+    expect(html).not.toContain("#7");
+  });
+
+  it("does not claim never-collected over rows it is showing", async () => {
+    // A clean sweep yesterday, a partial one today: the rows stand, but the
+    // latest sweep did not confirm them. "No lane has vouched for this" over
+    // a table of three issues is simply false.
+    const ok = store.beginRun({
+      lane: "graphql-issues",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:50:00.000Z",
+    });
+    store.recordObservations(ok, "2026-08-20T11:50:00.000Z", [
+      {
+        subject: { type: "issue", key: "I_1" },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 5,
+          title: "Crash on startup",
+          author: "someone",
+          htmlUrl: "https://github.com/no42-org/twiki/issues/5",
+          createdAt: "2026-08-20T00:00:00.000Z",
+        },
+      },
+    ] as never[]);
+    store.finishRun(ok, "ok", "2026-08-20T11:50:00.000Z");
+    const partial = store.beginRun({
+      lane: "graphql-issues",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:56:00.000Z",
+    });
+    store.finishRun(partial, "partial", "2026-08-20T11:56:00.000Z", "degraded");
+
+    const html = await (await app().request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain("#5");
+    // Scoped to the issues section: other sections on this page genuinely
+    // have no completed sweep, and asserting over the whole document would
+    // pass on their text instead of this one's.
+    const section = html.slice(
+      html.indexOf("Untriaged issues"),
+      html.indexOf("Review requests"),
+    );
+    expect(section).toContain("the latest sweep did not confirm them");
+    expect(section).not.toContain("not confirmed by any completed sweep");
   });
 
   it("answers 404 for a repository outside the watched set", async () => {

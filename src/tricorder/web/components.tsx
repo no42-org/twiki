@@ -310,8 +310,19 @@ const Section: FC<{
         <FreshnessBadge freshness={state.freshness} age={state.age} />{" "}
         {count === 0 ? empty : `${count} shown`}
       </>
+    ) : count > 0 ? (
+      // Rows collected by an earlier sweep, which the latest one did not
+      // confirm. Saying "never collected" over a table of them would be
+      // false; the rows carry their own freshness in the table below.
+      <span class="stale">
+        {count} collected earlier; the latest sweep did not confirm them
+      </span>
     ) : (
-      <span class="never">not collected: no lane has vouched for this yet</span>
+      // No rows AND no clean sweep. Deliberately not "never collected": the
+      // store keeps only the latest run per lane, so an earlier clean sweep
+      // cannot be ruled out from here. What is certain is that nothing
+      // currently vouches for this section.
+      <span class="never">not confirmed by any completed sweep</span>
     )}
   </p>
 );
@@ -327,7 +338,7 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
   <Layout title={`gitricorder · ${view.slug}`}>
     <h1>{view.slug}</h1>
     <p class="sub">
-      {view.coverage !== null && view.coverage !== "covered" ? (
+      {view.notCovered ? (
         <span class="uncovered">
           not covered{view.coverageReason ? `: ${view.coverageReason}` : ""}
         </span>
@@ -351,21 +362,36 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
 
     {view.unreadable > 0 || view.unattributable > 0 ? (
       <p class="failed">
-        {view.unreadable} stored row(s) for this repository could not be read
-        {view.unattributable > 0
-          ? `, and ${view.unattributable} more could not be attributed to any repository`
+        {view.unreadable > 0
+          ? `${view.unreadable} stored row(s) for this repository could not be read. `
           : ""}
-        . This page is incomplete.
+        {view.unattributable > 0
+          ? `${view.unattributable} stored row(s) could not be read at all, so whether they belong to this repository is unknown. `
+          : ""}
+        This page may be incomplete.
       </p>
     ) : null}
 
-    <Section
-      title="Security alerts"
-      state={view.summary}
-      count={view.alerts.length}
-      empty="none open"
-    />
-    {view.alerts.length > 0 ? (
+    {view.notCovered ? (
+      // Suppressed as a whole, not just the count. Rows collected before
+      // coverage was withdrawn would otherwise be listed directly beneath a
+      // header saying we have no count to give, each contradicting the
+      // other (AD-28).
+      <p class="sub">
+        <strong>Security alerts</strong>{" "}
+        <span class="uncovered">
+          no count and no list: {view.coverageReason ?? "not covered"}
+        </span>
+      </p>
+    ) : (
+      <Section
+        title="Security alerts"
+        state={view.summary}
+        count={view.alerts.length}
+        empty="none open"
+      />
+    )}
+    {!view.notCovered && view.alerts.length > 0 ? (
       <table>
         <thead>
           <tr>

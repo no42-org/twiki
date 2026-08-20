@@ -87,6 +87,13 @@ export interface RepoView {
   slug: string;
   coverage: CoverageState | null;
   coverageReason: string | null;
+  /**
+   * GitHub is positively known not to be watching this repository, so it has
+   * no count to be fresh or stale about and none is rendered (AD-28). False
+   * for `unknown`, which means the coverage attestation went stale rather
+   * than that coverage was withdrawn.
+   */
+  notCovered: boolean;
   /** The alert-lane confirmation: counts, and whether they are current. */
   summary: SectionState & {
     openAlerts: number | null;
@@ -105,10 +112,13 @@ export interface RepoView {
    */
   unreadable: number;
   /**
-   * Node-keyed rows (pull requests, issues, workflow runs) that could not be
-   * read at all. Their repository lives in the payload, so a malformed one
-   * cannot be attributed to this page or excluded from it, and the page says
-   * so rather than quietly leaving them out.
+   * Node-keyed rows (pull requests, issues, workflow runs) anywhere in the
+   * store that could not be read at all.
+   *
+   * Deliberately NOT scoped to this repository, because it cannot be: their
+   * repository lives in the payload, and the payload is what failed to read.
+   * Such a row might belong here or anywhere else, so the page reports it as
+   * exactly that rather than either claiming it or quietly dropping it.
    */
   unattributable: number;
 }
@@ -226,8 +236,14 @@ export function buildRepoView(
       ? (coverageValue.payload as CoverageObservation).state
       : "unknown"
     : null;
-  const known =
-    coverage === null || isCovered(coverage) || coverage === "unknown";
+  // Positive evidence of non-coverage, and nothing else. `unknown` is not
+  // such evidence: it is what a stale coverage attestation degrades to, and
+  // blanking on it would let one dead coverage lane wipe correct counts off
+  // every page in the estate (AD-28). Decided here, once, so the renderer
+  // cannot reach a different conclusion from the same data.
+  const notCovered =
+    coverage !== null && !isCovered(coverage) && coverage !== "unknown";
+  const known = !notCovered;
 
   const alertValues = store.currentByTypeForOwner(
     "dependabot_alert",
@@ -236,6 +252,13 @@ export function buildRepoView(
   const alerts: RepoAlertRow[] = [];
   for (const value of alertValues) {
     if (value.state !== "present") continue;
+    // Attributed by SUBJECT KEY, not payload: alert keys are
+    // `owner/name#number` (AD-22), so a row too malformed to read still says
+    // which repository it belongs to. Counting unreadable rows before this
+    // check made one corrupt row in a sibling repository mark every page in
+    // the organisation incomplete.
+    const keyRepo = value.subject.key.split("#")[0]?.toLowerCase() ?? "";
+    if (keyRepo !== slug) continue;
     const alert = readAlert(value.payload);
     if (alert === null) {
       unreadable++;
@@ -309,6 +332,7 @@ export function buildRepoView(
     slug,
     coverage,
     coverageReason: coverage === null ? null : coverageReason(coverage),
+    notCovered,
     summary: {
       // Suppressed on positive evidence of non-coverage only: a number beside
       // "not covered" invites the reader to believe it (AD-28).
