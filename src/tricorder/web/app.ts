@@ -8,10 +8,12 @@ import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import type { RepoRef } from "../../core/types.js";
 import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
 import { LANE as KEV_LANE } from "../collect/kev.js";
+import { LANE as ACTIONS_LANE } from "../collect/workflow-runs.js";
 import type { StorePort } from "../store/port.js";
-import { Page, QueuePage } from "./components.js";
+import { Page, QueuePage, RepoPage, UnknownRepoPage } from "./components.js";
 import type { FreshnessPolicy } from "./freshness.js";
 import { buildQueue } from "./queue.js";
+import { buildRepoView } from "./repo-view.js";
 import { buildCollectionHealth, buildRepoRows } from "./view.js";
 
 // Routes read through StorePort only: no SQL, no table name, no predicate
@@ -72,6 +74,34 @@ export function createApp(deps: AppDeps): Hono {
     });
     const body = QueuePage({ queue, generatedAt: now.toISOString() });
     c.header("Cache-Control", "no-store");
+    return c.html(`<!DOCTYPE html>${body}`);
+  });
+
+  app.get("/repo/:owner/:name", (c) => {
+    const now = deps.now();
+    const owner = c.req.param("owner");
+    const name = c.req.param("name");
+    // repos.yaml is the entire universe (AD-10), so an unwatched repository
+    // has no page: rendering empty sections for one would be a dashboard
+    // full of confident nothings about a repository nobody collects.
+    // Matched case-insensitively, because subject keys are folded and a
+    // reader may well type the casing GitHub displays.
+    const repo = deps.watched.find(
+      (r) =>
+        r.owner.toLowerCase() === owner.toLowerCase() &&
+        r.name.toLowerCase() === name.toLowerCase(),
+    );
+    c.header("Cache-Control", "no-store");
+    if (!repo) {
+      const body = UnknownRepoPage({ slug: `${owner}/${name}` });
+      return c.html(`<!DOCTYPE html>${body}`, 404);
+    }
+    const view = buildRepoView(deps.store, repo, now, {
+      policy: deps.policy,
+      coveragePolicy: deps.lanePolicies?.[COVERAGE_LANE],
+      actionsPolicy: deps.lanePolicies?.[ACTIONS_LANE],
+    });
+    const body = RepoPage({ view, generatedAt: now.toISOString() });
     return c.html(`<!DOCTYPE html>${body}`);
   });
 
