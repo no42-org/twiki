@@ -94,6 +94,17 @@ export const KEV_RETRY_MS = 60 * 60_000;
  * them render stale instead of zero.
  */
 export const ACTIONS_CADENCE_MS = 60 * 60_000;
+/**
+ * The bound on the Actions lane per CYCLE, shared across installations.
+ *
+ * Per cycle, not per installation: the scheduler runs installations
+ * serially, so a per-installation bound multiplies by their number - at the
+ * thirteen this system is sized for, a degraded cycle would sit in this one
+ * lane for nearly nine hours, blocking the fifteen-minute lanes behind it
+ * and blowing through the hourly cadence it is supposed to fit inside.
+ * Each installation gets an equal share; whatever a share does not reach is
+ * picked up by the next cycle, in order.
+ */
 export const ACTIONS_SWEEP_BOUND_MS = 40 * 60_000;
 /**
  * Leave this much core budget for the lanes with no cheaper route. The
@@ -437,7 +448,15 @@ async function main(): Promise<void> {
       env.TRICORDER_ACTIONS_INSTALLATION,
       installations,
     );
-    const actionsInstallations = envFlag(env.TRICORDER_ACTIONS ?? "on")
+    // Trimmed-empty is UNSET, not "off". `??` fires only on undefined, but
+    // compose's pass-through form (`environment: - TRICORDER_ACTIONS`), a
+    // bare `TRICORDER_ACTIONS=` line and a k8s `value: ""` all deliver "",
+    // and envFlag reads that as false - silently disabling the lane this
+    // story exists to enable, while the log blamed an operator who switched
+    // nothing off. Every neighbouring parser here treats empty as unset.
+    const actionsInstallations = envFlag(
+      (env.TRICORDER_ACTIONS ?? "").trim() || "on",
+    )
       ? actionsOne
         ? [actionsOne]
         : installations
@@ -487,9 +506,13 @@ async function main(): Promise<void> {
             installations: actionsInstallations,
             run: (installation) =>
               collectWorkflowRuns(laneDeps, installation, "full", {
-                // Computed per sweep, from the same clock the lane reads.
+                // An equal share of the cycle's bound, so the lane's total
+                // wall-clock stays inside it however many installations
+                // there are.
                 deadlineAt: new Date(
-                  Date.now() + ACTIONS_SWEEP_BOUND_MS,
+                  Date.now() +
+                    ACTIONS_SWEEP_BOUND_MS /
+                      Math.max(1, actionsInstallations.length),
                 ).toISOString(),
                 budgetFloor: ACTIONS_BUDGET_FLOOR,
               }),

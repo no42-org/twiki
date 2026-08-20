@@ -320,6 +320,27 @@ export function buildRepoView(
   const actionsConfirmation = store
     .currentByType("repository_actions")
     .find((v) => v.state === "present" && v.subject.key === slug);
+  // Three things have to hold before this section counts as vouched for,
+  // and each was a real failure without it: the sweep reached this
+  // repository, it could actually read what it found (null workflows means
+  // it reached and could not), and the confirmation is still current. The
+  // last is the same rule the coverage lookup above applies, for the same
+  // reason: a lane that died days ago must not keep badging its last word
+  // as though it were this hour's (AD-28). Failing any of them, the
+  // section falls back to the lane's own standing, which says "collected
+  // earlier, not confirmed since" rather than asserting a count.
+  const actionsPayload = actionsConfirmation?.payload as
+    | { workflows: number | null }
+    | undefined;
+  const actionsVouched =
+    actionsConfirmation !== undefined &&
+    actionsPayload?.workflows !== null &&
+    actionsPayload?.workflows !== undefined &&
+    freshness(
+      actionsConfirmation.verifiedAt,
+      now,
+      deps.actionsPolicy ?? deps.policy,
+    ) === "fresh";
 
   const runResult = forRepo(
     store.currentByType("workflow_run"),
@@ -377,9 +398,15 @@ export function buildRepoView(
     // lane-wide verdict would mark every repository unconfirmed because one
     // was missed - or worse, confirm one the sweep never reached. Falls
     // back to the lane while no per-repository confirmation exists yet.
+    // A confirmation for this repository, once one exists, is the whole
+    // answer: falling back to the lane's verdict when the confirmation is
+    // unreadable or stale would re-assert precisely what the per-repository
+    // check just refused. The lane is consulted only while no confirmation
+    // exists at all, which is the state before this repository's first
+    // sweep.
     actionsSection: actionsConfirmation
       ? {
-          attested: true,
+          attested: actionsVouched,
           freshness: freshness(
             actionsConfirmation.verifiedAt,
             now,

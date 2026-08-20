@@ -50,8 +50,22 @@ export interface WorkflowRunObservation {
  */
 export interface ActionsRepoObservation {
   repo: string;
-  workflows: number;
-  failing: number;
+  /**
+   * Workflows seen, or NULL when the sweep reached this repository but
+   * could not vouch for what it found - the read threw, or its payloads did
+   * not map.
+   *
+   * Null rather than zero, and written rather than omitted, because the two
+   * halves solve different problems. Zero would be a confident zero stated
+   * with a fresh badge, which is worse than the ambiguity it replaced
+   * (AD-28). Omitting the row entirely would leave a deterministically
+   * failing repository - Actions disabled, a permissions 403 - permanently
+   * least-recently-confirmed, so it would head every bounded sweep forever
+   * and starve the repositories behind it: the exact failure the ordering
+   * exists to prevent, moved from a fixed prefix to a failing one.
+   */
+  workflows: number | null;
+  failing: number | null;
 }
 
 export interface ActionsDeps {
@@ -317,13 +331,21 @@ export async function collectWorkflowRuns(
         }
 
         reached++;
+        // Vouched for only when every payload mapped. `page.runs` excludes
+        // what could not be read, so counting it on a page with unreadable
+        // payloads would publish "no runs recorded", freshly badged, for a
+        // repository whose runs we simply failed to parse.
         confirmations.push({
           subject: actionsSubject(repo),
-          payload: {
-            repo: slug,
-            workflows: latest.length,
-            failing: latest.filter((r) => r.conclusion === "failure").length,
-          } satisfies ActionsRepoObservation,
+          payload:
+            page.unreadable === 0
+              ? {
+                  repo: slug,
+                  workflows: latest.length,
+                  failing: latest.filter((r) => r.conclusion === "failure")
+                    .length,
+                }
+              : { repo: slug, workflows: null, failing: null },
         });
 
         // Save-or-purge, exactly as the alert lane (AD-25): a 200 that
@@ -337,6 +359,15 @@ export async function collectWorkflowRuns(
         // The repository's stored rows were not rewritten, so its stored
         // validator still describes stored state: left alone, like the rows.
         failedRepos++;
+        reached++;
+        // Reached, and nothing learned. The row advances this repository's
+        // place in the sweep order without vouching for anything, so a
+        // repository that fails every time cannot camp at the head of a
+        // bounded sweep and starve the ones behind it.
+        confirmations.push({
+          subject: actionsSubject(repo),
+          payload: { repo: slug, workflows: null, failing: null },
+        });
         log(
           `${LANE} ${installation}: ${slug} failed, ${redact(
             err instanceof Error ? err.message : String(err),
@@ -391,13 +422,17 @@ export async function collectWorkflowRuns(
     const watchedCount = order.length;
     const outcome =
       failedRepos > 0 || unreadable > 0 || yielded ? "partial" : "ok";
-    const detail = yielded
-      ? `yielded after ${reached} of ${watchedCount} repositories; the rest keep ageing`
-      : failedRepos > 0
-        ? `${failedRepos} repositories failed`
-        : unreadable > 0
-          ? `${unreadable} run payloads could not be read`
-          : undefined;
+    // Composed, not chosen. A degraded sweep is exactly the one likely to
+    // yield AND fail repositories, and reporting only the yield would leave
+    // the failures visible nowhere but a log line nobody kept.
+    const notes = [
+      yielded
+        ? `yielded after ${reached} of ${watchedCount} repositories; the rest keep ageing`
+        : null,
+      failedRepos > 0 ? `${failedRepos} repositories failed` : null,
+      unreadable > 0 ? `${unreadable} run payloads could not be read` : null,
+    ].filter((n): n is string => n !== null);
+    const detail = notes.length > 0 ? notes.join("; ") : undefined;
     deps.store.finishRun(run, outcome, deps.now(), detail);
 
     const runsSeen = observations.length + confirmed.length;

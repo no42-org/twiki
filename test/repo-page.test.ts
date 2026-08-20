@@ -125,6 +125,41 @@ describe("the per-repository view (CAP-7)", () => {
     expect(missed.actionsSection.attested).toBe(false);
   });
 
+  it("does not vouch for Actions on a confirmation it could not read", () => {
+    // The sweep reached this repository and could not read what it found.
+    // Rendering that as a fresh "no runs recorded" would be a confident
+    // zero stated with more confidence than before the confirmation
+    // existed (AD-28).
+    seed("rest-actions-runs", [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: null, failing: null },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.actionsSection.attested).toBe(false);
+  });
+
+  it("does not keep badging a stale Actions confirmation as vouched for", () => {
+    // Same rule the coverage lookup applies: a lane that died days ago must
+    // not keep presenting its last word as though it were this hour's.
+    seedAt("rest-actions-runs", "2026-08-18T00:00:00.000Z", [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: 2, failing: 0 },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, {
+      policy: SWEEP,
+      actionsPolicy: { cadenceMs: 60 * 60_000 },
+    });
+
+    expect(view.actionsSection.attested).toBe(false);
+  });
+
   it("refuses to call a partial run an attestation", () => {
     // A partial sweep skipped something, and it may have been exactly this
     // repository: its silence proves nothing.

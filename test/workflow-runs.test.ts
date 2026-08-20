@@ -427,6 +427,72 @@ describe("the Actions lane (story 15)", () => {
     expect(after?.payload).toMatchObject({ workflows: 1 });
   });
 
+  it("refuses to vouch for a repository whose payloads it could not read", async () => {
+    // page.runs excludes what did not map, so counting it would publish
+    // "no runs recorded" with a fresh badge for a repository whose runs we
+    // merely failed to parse - a confident zero stated more confidently
+    // than the ambiguity it replaced (AD-28).
+    github.workflowRuns.set("no42-org/packyard", []);
+    github.workflowRunUnreadable.set("no42-org/packyard", 3);
+
+    const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
+      { workflows: null, failing: null },
+    );
+  });
+
+  it("records a failed repository so it cannot camp at the head of the sweep", async () => {
+    // A repository that fails deterministically (Actions off, a 403) would
+    // otherwise stay least-recently-confirmed forever and head every
+    // bounded sweep, starving the ones behind it - the failure the ordering
+    // exists to prevent, moved to a failing prefix.
+    // Sweep 1: only twiki is watched, and it is confirmed.
+    watched = [{ owner: "no42-org", name: "twiki" }];
+    github.workflowRuns.set("no42-org/twiki", [
+      makeRun({ nodeId: "WFR_t", repo: { owner: "no42-org", name: "twiki" } }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    // Sweep 2: a permanently failing repository joins. Never confirmed, so
+    // it goes first, which is right - nothing has tried it yet.
+    watched.push({ owner: "no42-org", name: "packyard" });
+    github.workflowRunFailing.add("no42-org/packyard");
+    github.workflowRunCachedSeen = [];
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(github.workflowRunCachedSeen[0]?.repo).toBe("no42-org/packyard");
+
+    const failed = store
+      .currentByType("repository_actions")
+      .find((c) => c.subject.key === "no42-org/packyard");
+    // Reached, ordering advanced, nothing vouched for.
+    expect(failed?.payload).toMatchObject({ workflows: null });
+
+    // Sweep 3: it no longer outranks a repository confirmed longer ago.
+    // Without the row it would head every sweep from here to forever.
+    github.workflowRunCachedSeen = [];
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(github.workflowRunCachedSeen[0]?.repo).toBe("no42-org/twiki");
+  });
+
+  it("reports a yield and the failures alongside it, not one or the other", async () => {
+    // A degraded sweep is exactly the one likely to do both, and reporting
+    // only the yield leaves the failures nowhere but a transient log line.
+    watched.push({ owner: "no42-org", name: "twiki" });
+    watched.push({ owner: "no42-org", name: "third" });
+    github.workflowRunFailing.add("no42-org/packyard");
+
+    const r = await collectWorkflowRuns(deps(), "no42-org", "full", {
+      deadlineAt: new Date(Date.UTC(2026, 7, 18, 20, 3)).toISOString(),
+    });
+
+    expect(r.yielded).toBe(true);
+    const detail = store.latestRuns(1)[0]?.detail ?? "";
+    expect(detail).toContain("yielded after");
+    expect(detail).toContain("1 repositories failed");
+  });
+
   it("counts failing workflows in the confirmation", async () => {
     github.workflowRuns.set("no42-org/packyard", [
       makeRun({ nodeId: "WFR_1", conclusion: "failure" }),
