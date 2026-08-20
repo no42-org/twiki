@@ -930,97 +930,58 @@ export class OctokitGitHub implements GitHubPort {
     const send = sendableValidator(cached, tokenGen);
     const conditionalHeaders = conditionalHeadersFor(send);
 
-    // Paginated by link header rather than gh.paginate: the conditional
-    // request needs the first page's response headers (etag, 304), which
-    // paginate does not expose.
-    const raw: unknown[] = [];
-    let pages = 0;
-    let truncated = false;
-    let firstEtag: string | null = null;
-    let firstLastModified: string | null = null;
-    let next: string | null = null;
-    for (;;) {
-      pages++;
-      let res: {
-        data: unknown;
-        headers: Record<string, string | number | undefined>;
-      };
-      try {
-        res = next
-          ? await gh.request(`GET ${next}`)
-          : await gh.request("GET /orgs/{org}/dependabot/alerts", {
-              org,
-              state: "open",
-              per_page: 100,
-              headers: conditionalHeaders,
-            });
-      } catch (err) {
-        if ((err as { status?: number }).status === 304) {
-          if (send && pages === 1) {
-            // Byte-identical to the listing the validator came from. No
-            // pages to walk: a single-page listing is the only kind we cache
-            // for. The send guard already proved send.tokenGen === tokenGen,
-            // so the cached validator goes back as it came.
-            return {
-              alerts: [],
-              unreadable: 0,
-              unreachable: 0,
-              notModified: true,
-              truncated: false,
-              validator: { ...send },
-            };
-          }
-          // Same posture as the KEV path, same legible message: a broken
-          // proxy confirming a validator we never sent, not an empty page.
-          throw new Error(
-            `alert listing for ${org} answered 304 to an unconditional request`,
-          );
+    // The same guarded walk the per-repository fan-out uses, not
+    // gh.paginate: the cap, the origin check and the array guard all live
+    // there, and a second copy of them is a second thing to forget.
+    // Conditional handling stays here because only this path has a single
+    // listing to revalidate.
+    let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
+    try {
+      walked = await walkLinkedPages(
+        `alert listing for ${org}`,
+        () =>
+          gh.request("GET /orgs/{org}/dependabot/alerts", {
+            org,
+            state: "open",
+            per_page: 100,
+            headers: conditionalHeaders,
+          }),
+        (url) => gh.request(`GET ${url}`),
+      );
+    } catch (err) {
+      if ((err as { status?: number }).status === 304) {
+        if (send) {
+          // Byte-identical to the listing the validator came from. The send
+          // guard already proved send.tokenGen === tokenGen, so the cached
+          // validator goes back as it came.
+          return {
+            alerts: [],
+            unreadable: 0,
+            unreachable: 0,
+            notModified: true,
+            truncated: false,
+            validator: { ...send },
+          };
         }
-        throw err;
-      }
-      if (pages === 1) {
-        firstEtag =
-          typeof res.headers.etag === "string" ? res.headers.etag : null;
-        firstLastModified =
-          typeof res.headers["last-modified"] === "string"
-            ? res.headers["last-modified"]
-            : null;
-      }
-      if (!Array.isArray(res.data)) {
-        // A proxy error page or unexpected object: spreading it would either
-        // throw an illegible TypeError or spread a string character by
-        // character into a nonsense unreadable count.
+        // Same posture as the KEV path, same legible message: a broken
+        // proxy confirming a validator we never sent, not an empty page.
         throw new Error(
-          `alert listing for ${org} returned a non-array body (page ${pages})`,
+          `alert listing for ${org} answered 304 to an unconditional request`,
         );
       }
-      raw.push(...(res.data as unknown[]));
-      const link = typeof res.headers.link === "string" ? res.headers.link : "";
-      next = nextLink(link);
-      if (!next) break;
-      // The cap is judged on the CLAIM of more pages, after the link parse:
-      // a listing that genuinely ends at page MAX is served in full, while a
-      // proxy echoing a self-referential Link header cannot loop this lane
-      // forever. Hitting the cap is a fault, and a fault must not look like
-      // the end of the listing.
-      if (pages >= MAX_ALERT_PAGES) {
-        // TRUNCATE, do not throw: what we read is real and worth ingesting,
-        // and the flag makes the caller degrade to partial so nothing is
-        // tombstoned against an incomplete set. Throwing would ingest
-        // nothing at all, every sweep, for an organisation whose alert
-        // count cannot shrink without this lane.
-        truncated = true;
-        break;
-      }
-      // The next URL is followed with the installation token attached, so it
-      // must stay on GitHub's API origin: a proxy-injected Link header must
-      // not be able to point the Authorization header at another host.
-      if (!next.startsWith("https://api.github.com/")) {
-        throw new Error(
-          `alert listing for ${org} carried a cross-origin next link; refusing to follow it`,
-        );
-      }
+      throw err;
     }
+    const raw = walked.items;
+    const pages = walked.pages;
+    const truncated = walked.truncated;
+    const firstEtag =
+      typeof walked.firstPage.headers.etag === "string"
+        ? walked.firstPage.headers.etag
+        : null;
+    const firstLastModified =
+      typeof walked.firstPage.headers["last-modified"] === "string"
+        ? walked.firstPage.headers["last-modified"]
+        : null;
 
     // Deliberately unfiltered. Which repositories are watched is AD-10's rule
     // and belongs to the lane. This adapter's allowlist guard exists to stop
