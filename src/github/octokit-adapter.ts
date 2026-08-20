@@ -316,6 +316,67 @@ export function validatorFrom(
   return { etag, lastModified, tokenGen };
 }
 
+interface PageResponse {
+  data: unknown;
+  headers: Record<string, string | number | undefined>;
+}
+
+/**
+ * Walk a Link-header-paginated listing under the guards this codebase has
+ * already paid for, rather than handing the job to gh.paginate.
+ *
+ * Three of them are load-bearing and none of them are octokit's: the page
+ * cap, which stops a proxy echoing a self-referential Link header from
+ * looping a lane forever; the origin check, because the next URL is followed
+ * with the installation token attached and a proxy-injected header must not
+ * point that token at another host; and the array check, because a proxy
+ * error page would otherwise spread character by character into a nonsense
+ * count. Truncating at the cap is reported rather than thrown, so what was
+ * read is still ingested and the caller degrades to partial (AD-23).
+ *
+ * Shared because the org path and the per-repository fan-out are the same
+ * walk, and the first version of the fan-out reached for gh.paginate and
+ * silently dropped all three.
+ */
+async function walkLinkedPages(
+  label: string,
+  first: () => Promise<PageResponse>,
+  followUp: (url: string) => Promise<PageResponse>,
+): Promise<{
+  items: unknown[];
+  firstPage: PageResponse;
+  pages: number;
+  truncated: boolean;
+}> {
+  const items: unknown[] = [];
+  let pages = 0;
+  let truncated = false;
+  let next: string | null = null;
+  let firstPage: PageResponse | null = null;
+  for (;;) {
+    pages++;
+    const res: PageResponse = next ? await followUp(next) : await first();
+    if (firstPage === null) firstPage = res;
+    if (!Array.isArray(res.data)) {
+      throw new Error(`${label} returned a non-array body (page ${pages})`);
+    }
+    items.push(...(res.data as unknown[]));
+    const link = typeof res.headers.link === "string" ? res.headers.link : "";
+    next = nextLink(link);
+    if (!next) break;
+    if (pages >= MAX_ALERT_PAGES) {
+      truncated = true;
+      break;
+    }
+    if (!next.startsWith("https://api.github.com/")) {
+      throw new Error(
+        `${label} carried a cross-origin next link; refusing to follow it`,
+      );
+    }
+  }
+  return { items, firstPage, pages, truncated };
+}
+
 /**
  * GitHubPort backed by Octokit. Scoped to the allowlist: every call asserts the
  * repo is permitted before touching the API (defense in depth — run.ts already
@@ -346,16 +407,27 @@ export class OctokitGitHub implements GitHubPort {
         "listOrgRepos needs an org resolver; this client was built without one",
       );
     }
+    // Resolved BEFORE the kind is read: the kind map is filled by the same
+    // resolver's lazy re-resolve, so asking first returns "unknown" for an
+    // installation created since startup and silently routes it down the
+    // organisation path.
     const client = await this.orgOctokitFor(org);
     // A user account has no /orgs listing at all: it answers 404, which the
-    // coverage lane then records as a failed run every cycle, leaving every
-    // personal repository's coverage permanently unknown. Measured
-    // 2026-08-21: /users/{login}/repos answers this for a user account with
-    // the same fields.
+    // coverage lane records as a failed run every cycle, leaving every
+    // personal repository's coverage permanently unknown.
+    //
+    // NOT /users/{login}/repos, which measurement rules out: it returned
+    // 223 repositories against the installation's 240 on the live account,
+    // every one of the 17 private ones missing. Coverage would then find no
+    // metadata for a watched private repository, never report it archived,
+    // and fall through to the probe - promising "covered" for a repository
+    // that is archived, which is the false promise the archived branch
+    // exists to prevent. The installation's own listing carries all of
+    // them, and is the honest universe anyway: it is exactly what this App
+    // can see.
     const repos =
       this.accountKindFor(org) === "user"
-        ? await client.paginate(client.repos.listForUser, {
-            username: org,
+        ? await client.paginate(client.apps.listReposAccessibleToInstallation, {
             per_page: 100,
           })
         : await client.paginate(client.repos.listForOrg, {
@@ -773,22 +845,37 @@ export class OctokitGitHub implements GitHubPort {
   ): Promise<OrgAlertPage> {
     const alerts: RawDependabotAlert[] = [];
     let unreadable = 0;
+    let unreachable = 0;
+    let truncated = false;
     for (const repo of repos) {
-      let raw: unknown[];
+      const slug = repoSlug(repo);
+      let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
       try {
         const gh = await this.client(repo);
-        raw = await gh.paginate("GET /repos/{owner}/{repo}/dependabot/alerts", {
-          owner: repo.owner,
-          repo: repo.name,
-          state: "open",
-          per_page: 100,
-        });
+        // The same guarded walk the org path uses. gh.paginate would drop
+        // the page cap, the origin check and the array guard, all of which
+        // this lane already paid for.
+        walked = await walkLinkedPages(
+          `alert listing for ${slug}`,
+          () =>
+            gh.request("GET /repos/{owner}/{repo}/dependabot/alerts", {
+              owner: repo.owner,
+              repo: repo.name,
+              state: "open",
+              per_page: 100,
+            }),
+          (url) => gh.request(`GET ${url}`),
+        );
       } catch (err) {
+        // Alerts switched off is a FACT, the same one the coverage probe
+        // records, and most repositories on a personal account answer it.
+        // Counting it would make every sweep partial forever.
         if (translateDependabotProbe(err) === "alerts_disabled") continue;
-        unreadable++;
+        unreachable++;
         continue;
       }
-      for (const item of raw) {
+      truncated = truncated || walked.truncated;
+      for (const item of walked.items) {
         const alert = toDependabotAlert(item, repo);
         if (alert === null) unreadable++;
         else alerts.push(alert);
@@ -800,8 +887,9 @@ export class OctokitGitHub implements GitHubPort {
     return {
       alerts,
       unreadable,
+      unreachable,
       notModified: false,
-      truncated: false,
+      truncated,
       validator: null,
     };
   }
@@ -816,6 +904,12 @@ export class OctokitGitHub implements GitHubPort {
         "listDependabotAlerts needs an org resolver; this client was built without one",
       );
     }
+    // Resolved first, deliberately: the kind map is filled by this same
+    // resolver's lazy re-resolve, so reading the kind before resolving
+    // returns "unknown" for an installation created since the process
+    // started, routes it to the org endpoint, and fails the lane every
+    // cycle until someone restarts the container.
+    const gh = await this.orgOctokitFor(org);
     // A user account has no org-level alert endpoint - `/orgs/{login}/...`
     // answers 404 - so there is nothing to collapse and the only route is
     // one call per watched repository. The spine prices this: 36 calls plus
@@ -824,7 +918,6 @@ export class OctokitGitHub implements GitHubPort {
     if (this.accountKindFor(org) === "user") {
       return this.listDependabotAlertsPerRepo(repos);
     }
-    const gh = await this.orgOctokitFor(org);
 
     // A validator from a previous token generation is a guaranteed miss:
     // GitHub's ETags vary with the Authorization header. Cold, not sent. An
@@ -871,6 +964,7 @@ export class OctokitGitHub implements GitHubPort {
             return {
               alerts: [],
               unreadable: 0,
+              unreachable: 0,
               notModified: true,
               truncated: false,
               validator: { ...send },
@@ -943,6 +1037,9 @@ export class OctokitGitHub implements GitHubPort {
     return {
       alerts,
       unreadable,
+      // The org path reads one listing or none, so there is no such thing
+      // as an unreachable repository here.
+      unreachable: 0,
       notModified: false,
       truncated,
       // Only a listing that fit in one page gets a validator: each page

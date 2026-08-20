@@ -331,6 +331,8 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   userAccounts = new Set<string>();
   /** Repos the fan-out should report as having alerts switched off. */
   alertsDisabled = new Set<string>();
+  /** Repos the fan-out could not read at all. */
+  unreachableRepos = new Set<string>();
 
   async listDependabotAlerts(
     org: string,
@@ -338,20 +340,30 @@ export class FakeGitHubReadPort implements GitHubReadPort {
     cached: RequestValidator | null = null,
   ): Promise<OrgAlertPage> {
     if (this.userAccounts.has(org)) {
+      // Recorded before anything else: a test asserting the lane sends no
+      // validator on this path has nothing to assert against otherwise, and
+      // the first version of that test was vacuous for exactly that reason.
+      this.orgAlertCachedSeen.push(cached);
       if (this.failingOrgs.has(org)) {
         throw new Error(`fake: ${org} is unreachable`);
       }
       const alerts: RawDependabotAlert[] = [];
       let unreadable = 0;
+      let unreachable = 0;
       for (const repo of repos) {
         const slug = repoSlug(repo).toLowerCase();
         if (this.alertsDisabled.has(slug)) continue;
+        if (this.unreachableRepos.has(slug)) {
+          unreachable++;
+          continue;
+        }
         alerts.push(...(this.repoAlerts.get(slug) ?? []));
         unreadable += this.unreadableByOrg.get(slug) ?? 0;
       }
       return {
         alerts,
         unreadable,
+        unreachable,
         notModified: false,
         truncated: false,
         validator: null,
@@ -365,6 +377,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       return {
         alerts: [],
         unreadable: 0,
+        unreachable: 0,
         notModified: true,
         truncated: false,
         validator: cached,
@@ -373,6 +386,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
     return {
       alerts: this.orgAlerts.get(org) ?? [],
       unreadable: this.unreadableByOrg.get(org) ?? 0,
+      unreachable: 0,
       notModified: false,
       truncated: this.orgAlertTruncated.has(org),
       validator: this.orgAlertValidators.get(org) ?? null,

@@ -608,6 +608,23 @@ describe("Dependabot alerts lane", () => {
       expect(r.outcome).toBe("partial");
     });
 
+    it("reports unreachable repositories as such, not as bad payloads", async () => {
+      // The fan-out makes whole-repository failures the common case, and
+      // calling three of them "3 alert payloads could not be read" sends
+      // the reader hunting a mapper bug that does not exist.
+      watched.add("indigo423/benchmark");
+      watched.add("indigo423/gone");
+      github.userAccounts.add("indigo423");
+      github.unreachableRepos.add("indigo423/gone");
+
+      const r = await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(r.outcome).toBe("partial");
+      const detail = store.latestRuns(1)[0]?.detail ?? "";
+      expect(detail).toContain("1 repositories could not be read");
+      expect(detail).not.toContain("alert payloads");
+    });
+
     it("never sends a validator it cannot honour for a user account", async () => {
       // Each repository carries its own ETag; one cached value cannot
       // describe a set of them, so the fan-out caches nothing and the next
@@ -622,10 +639,17 @@ describe("Dependabot alerts lane", () => {
         }),
       ]);
 
+      // Twice: the first sweep would have stored one if it were going to,
+      // so the second is the one that could send it.
       await collectOrgAlerts(deps(), "indigo423", "full");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+
+      // Nothing stored, and - the half the first version of this test
+      // missed - nothing SENT either.
       expect(
         store.loadValidator("indigo423", orgAlertsUrl("indigo423")),
       ).toBeNull();
+      expect(github.orgAlertCachedSeen).toEqual([null, null]);
     });
   });
 

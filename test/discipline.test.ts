@@ -646,12 +646,12 @@ describe("the conditional alert listing", () => {
     const seen: string[] = [];
     const gh = {
       auth: async () => ({ token: "x", expiresAt: EXPIRES }),
-      paginate: async (route: string, options: Record<string, unknown>) => {
+      request: async (route: string, options: Record<string, unknown> = {}) => {
+        if (route.includes("/orgs/")) {
+          throw new Error("the org endpoint must not be called");
+        }
         seen.push(`${route} ${options.owner}/${options.repo}`);
-        return [alertItem];
-      },
-      request: async () => {
-        throw new Error("the org endpoint must not be called");
+        return { data: [alertItem], headers: {} };
       },
     } as unknown as Octokit;
     const adapter = new OctokitGitHub(
@@ -684,14 +684,14 @@ describe("the conditional alert listing", () => {
       Object.assign(new Error(message), { status: 403 });
     const gh = {
       auth: async () => ({ token: "x", expiresAt: EXPIRES }),
-      paginate: async (_r: string, o: { repo: string }) => {
+      request: async (_r: string, o: { repo: string }) => {
         if (o.repo === "off") {
           throw fail("Dependabot alerts are disabled for this repository.");
         }
         if (o.repo === "broken") {
           throw fail("Resource not accessible by integration");
         }
-        return [];
+        return { data: [], headers: {} };
       },
     } as unknown as Octokit;
     const adapter = new OctokitGitHub(
@@ -707,9 +707,11 @@ describe("the conditional alert listing", () => {
       { owner: "indigo423", name: "fine" },
     ]);
 
-    // Switched off: skipped silently. Broken: counted, so the lane goes
-    // partial and tombstones nothing.
-    expect(page.unreadable).toBe(1);
+    // Switched off: skipped silently. Broken: counted as an unreachable
+    // REPOSITORY, kept apart from unreadable payloads so the operator is
+    // not pointed at a mapper bug that does not exist.
+    expect(page.unreachable).toBe(1);
+    expect(page.unreadable).toBe(0);
     expect(page.alerts).toEqual([]);
   });
 
@@ -720,7 +722,7 @@ describe("the conditional alert listing", () => {
     // checked.
     const gh = {
       auth: async () => ({ token: "x", expiresAt: EXPIRES }),
-      paginate: async () => [],
+      request: async () => ({ data: [], headers: {} }),
     } as unknown as Octokit;
     const adapter = new OctokitGitHub(
       async () => gh,
@@ -759,9 +761,11 @@ describe("the conditional alert listing", () => {
     };
     const gh = {
       auth: async () => ({ token: "x", expiresAt: EXPIRES }),
-      paginate: async () => [realShape],
-      request: async () => {
-        throw new Error("the org endpoint must not be called");
+      request: async (route: string) => {
+        if (route.includes("/orgs/")) {
+          throw new Error("the org endpoint must not be called");
+        }
+        return { data: [realShape], headers: {} };
       },
     } as unknown as Octokit;
     const adapter = new OctokitGitHub(
@@ -788,7 +792,7 @@ describe("the conditional alert listing", () => {
     });
   });
 
-  it("lists a user account's repositories from the user endpoint", async () => {
+  it("lists a user account's repositories from the installation listing", async () => {
     // /orgs/{login}/repos answers 404 on a user account, which the coverage
     // lane recorded as a failed run every cycle.
     const routes: string[] = [];
@@ -799,8 +803,12 @@ describe("the conditional alert listing", () => {
         return [];
       },
       repos: {
-        listForUser: { name: "listForUser" },
         listForOrg: { name: "listForOrg" },
+      },
+      apps: {
+        listReposAccessibleToInstallation: {
+          name: "listReposAccessibleToInstallation",
+        },
       },
     } as unknown as Octokit;
     const adapter = new OctokitGitHub(
@@ -812,7 +820,13 @@ describe("the conditional alert listing", () => {
 
     await adapter.listOrgRepos("indigo423");
 
-    expect(routes).toEqual(["listForUser"]);
+    // The installation's own listing, NOT /users/{login}/repos: measured
+    // 2026-08-21, that endpoint returned 223 repositories against the
+    // installation's 240, every private one missing, so a watched private
+    // repository would have no metadata and could never be reported
+    // archived - it would fall through to the probe and be promised as
+    // covered.
+    expect(routes).toEqual(["listReposAccessibleToInstallation"]);
   });
 
   it("refuses a non-array listing body legibly", async () => {

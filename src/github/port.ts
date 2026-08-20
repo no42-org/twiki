@@ -92,6 +92,16 @@ export interface OrgAlertPage {
   /** Payloads the mapper could not read. Never silently discarded. */
   unreadable: number;
   /**
+   * Whole repositories that could not be read, on the per-repository path.
+   *
+   * Counted apart from `unreadable` because they are a different fact and
+   * the operator-facing detail says which: folding three unreachable
+   * repositories into "3 alert payloads could not be read" points the
+   * reader at a mapper bug that does not exist. Zero on the org path,
+   * which reads one listing or none.
+   */
+  unreachable: number;
+  /**
    * True when GitHub answered 304: the listing is byte-identical to the one
    * the cached validator was captured from. `alerts` is empty then, and the
    * caller confirms its stored rows instead of rewriting them.
