@@ -334,6 +334,52 @@ export function parseActionsInstallation(
   return value;
 }
 
+/**
+ * Which installations the Actions lane sweeps, or null when it is off.
+ *
+ * Extracted from main() so it can be tested: it silently decides whether a
+ * whole lane exists, and the one bug it has already had - a set-but-empty
+ * variable reading as "off" - was invisible from anywhere else.
+ */
+export function actionsInstallationsFor(
+  env: NodeJS.ProcessEnv,
+  installations: readonly string[],
+): readonly string[] | null {
+  // Trimmed-empty is UNSET, not "off". `??` fires only on undefined, but
+  // compose's pass-through form (`environment: - TRICORDER_ACTIONS`), a bare
+  // `TRICORDER_ACTIONS=` line and a k8s `value: ""` all deliver "", and
+  // envFlag reads that as false. Every neighbouring parser in this file
+  // treats trimmed-empty as unset; this one used to do the opposite, and
+  // silently dropped the lane while the log blamed an operator who had
+  // switched nothing off.
+  if (!envFlag((env.TRICORDER_ACTIONS ?? "").trim() || "on")) return null;
+  const one = parseActionsInstallation(
+    env.TRICORDER_ACTIONS_INSTALLATION,
+    installations,
+  );
+  return one ? [one] : installations;
+}
+
+/**
+ * When one installation's share of the cycle's Actions bound runs out.
+ *
+ * Divided per cycle rather than granted per installation: the scheduler
+ * runs installations serially, so a per-installation bound multiplies by
+ * their number and the lane outlasts the cadence it must fit inside.
+ */
+export function actionsDeadline(
+  startedAtMs: number,
+  installationCount: number,
+): string {
+  // Floored, not left fractional: Date truncates sub-millisecond values
+  // anyway, and a share that reads as a whole number is one a test can
+  // state exactly rather than approximately.
+  const share = Math.floor(
+    ACTIONS_SWEEP_BOUND_MS / Math.max(1, installationCount),
+  );
+  return new Date(startedAtMs + share).toISOString();
+}
+
 /** An https URL, or unset. Anything else refuses to start. */
 export function parseKevUrl(raw: string | undefined): string | undefined {
   const trimmed = (raw ?? "").trim();
@@ -444,23 +490,7 @@ async function main(): Promise<void> {
     // single-installation variable stays as a narrowing aid, and switching
     // the lane off entirely is explicit rather than a side effect of
     // leaving something unset.
-    const actionsOne = parseActionsInstallation(
-      env.TRICORDER_ACTIONS_INSTALLATION,
-      installations,
-    );
-    // Trimmed-empty is UNSET, not "off". `??` fires only on undefined, but
-    // compose's pass-through form (`environment: - TRICORDER_ACTIONS`), a
-    // bare `TRICORDER_ACTIONS=` line and a k8s `value: ""` all deliver "",
-    // and envFlag reads that as false - silently disabling the lane this
-    // story exists to enable, while the log blamed an operator who switched
-    // nothing off. Every neighbouring parser here treats empty as unset.
-    const actionsInstallations = envFlag(
-      (env.TRICORDER_ACTIONS ?? "").trim() || "on",
-    )
-      ? actionsOne
-        ? [actionsOne]
-        : installations
-      : null;
+    const actionsInstallations = actionsInstallationsFor(env, installations);
 
     const laneDeps = {
       github,
@@ -509,11 +539,10 @@ async function main(): Promise<void> {
                 // An equal share of the cycle's bound, so the lane's total
                 // wall-clock stays inside it however many installations
                 // there are.
-                deadlineAt: new Date(
-                  Date.now() +
-                    ACTIONS_SWEEP_BOUND_MS /
-                      Math.max(1, actionsInstallations.length),
-                ).toISOString(),
+                deadlineAt: actionsDeadline(
+                  Date.now(),
+                  actionsInstallations.length,
+                ),
                 budgetFloor: ACTIONS_BUDGET_FLOOR,
               }),
           }

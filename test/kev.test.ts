@@ -26,6 +26,9 @@ import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { buildCollectionHealth } from "../src/tricorder/web/view.js";
 import {
   ACTIONS_CADENCE_MS,
+  ACTIONS_SWEEP_BOUND_MS,
+  actionsDeadline,
+  actionsInstallationsFor,
   buildSchedules,
   cycleInstallations,
   KEV_CADENCE_MS,
@@ -589,6 +592,61 @@ describe("the real schedule table", () => {
 
   it("runs KEV only on its own pseudo-installation", () => {
     expect(lane("kev")?.installations).toEqual([KEV_INSTALLATION]);
+  });
+
+  it("treats a set-but-empty TRICORDER_ACTIONS as unset, not as off", () => {
+    // Compose's pass-through form, a bare `TRICORDER_ACTIONS=` line and a
+    // k8s `value: ""` all deliver "". Reading that as "off" drops the whole
+    // lane while the log blames an operator who switched nothing off, and
+    // every neighbouring parser in this file treats empty as unset.
+    const installs = ["no42-org", "indigo423"];
+    expect(actionsInstallationsFor({} as NodeJS.ProcessEnv, installs)).toEqual(
+      installs,
+    );
+    expect(
+      actionsInstallationsFor(
+        { TRICORDER_ACTIONS: "" } as NodeJS.ProcessEnv,
+        installs,
+      ),
+    ).toEqual(installs);
+    expect(
+      actionsInstallationsFor(
+        { TRICORDER_ACTIONS: "   " } as NodeJS.ProcessEnv,
+        installs,
+      ),
+    ).toEqual(installs);
+    // Switching it off stays explicit.
+    expect(
+      actionsInstallationsFor(
+        { TRICORDER_ACTIONS: "off" } as NodeJS.ProcessEnv,
+        installs,
+      ),
+    ).toBeNull();
+    // And the narrowing aid still narrows.
+    expect(
+      actionsInstallationsFor(
+        { TRICORDER_ACTIONS_INSTALLATION: "no42-org" } as NodeJS.ProcessEnv,
+        installs,
+      ),
+    ).toEqual(["no42-org"]);
+  });
+
+  it("divides the Actions bound across installations, per cycle", () => {
+    // The scheduler runs installations serially, so a per-installation
+    // bound multiplies by their number: thirteen installations at forty
+    // minutes each is nearly nine hours in one lane, blocking the
+    // fifteen-minute lanes behind it and outlasting the hourly cadence it
+    // is meant to fit inside.
+    const start = Date.UTC(2026, 7, 20, 12, 0, 0);
+    const one = Date.parse(actionsDeadline(start, 1)) - start;
+    const thirteen = Date.parse(actionsDeadline(start, 13)) - start;
+
+    expect(one).toBe(ACTIONS_SWEEP_BOUND_MS);
+    expect(thirteen).toBe(Math.floor(ACTIONS_SWEEP_BOUND_MS / 13));
+    // Whatever the count, the lane's total stays inside the cadence.
+    expect(thirteen * 13).toBeLessThan(ACTIONS_CADENCE_MS);
+    // A zero count cannot divide by zero into an invalid date.
+    expect(Number.isNaN(Date.parse(actionsDeadline(start, 0)))).toBe(false);
   });
 
   it("refuses an Actions installation that is not a real owner", () => {
