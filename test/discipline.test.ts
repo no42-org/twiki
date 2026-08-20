@@ -380,12 +380,12 @@ describe("the conditional alert listing", () => {
       async () => gh,
     );
 
-    await adapter.listOrgDependabotAlerts("no42-org", {
+    await adapter.listDependabotAlerts("no42-org", [], {
       etag: 'W/"a"',
       lastModified: null,
       tokenGen: EXPIRES,
     });
-    await adapter.listOrgDependabotAlerts("no42-org", {
+    await adapter.listDependabotAlerts("no42-org", [], {
       etag: 'W/"a"',
       lastModified: null,
       tokenGen: "some-older-token",
@@ -408,7 +408,7 @@ describe("the conditional alert listing", () => {
       async () => gh,
     );
 
-    const page = await adapter.listOrgDependabotAlerts("no42-org", {
+    const page = await adapter.listDependabotAlerts("no42-org", [], {
       etag: 'W/"a"',
       lastModified: null,
       tokenGen: EXPIRES,
@@ -429,7 +429,7 @@ describe("the conditional alert listing", () => {
       () => true,
       async () => single.gh,
     );
-    const one = await adapter1.listOrgDependabotAlerts("no42-org");
+    const one = await adapter1.listDependabotAlerts("no42-org");
     expect(one.validator).toEqual({
       etag: 'W/"page1"',
       lastModified: null,
@@ -455,7 +455,7 @@ describe("the conditional alert listing", () => {
       () => true,
       async () => multi.gh,
     );
-    const two = await adapter2.listOrgDependabotAlerts("no42-org");
+    const two = await adapter2.listDependabotAlerts("no42-org");
     // EVERY page's items arrive, exactly. The old assertion (> 0) was
     // satisfied by page one alone: a mutation dropping all later pages kept
     // the suite green, and the next full-ok sweep would have tombstoned
@@ -484,7 +484,7 @@ describe("the conditional alert listing", () => {
       () => true,
       async () => gh,
     );
-    const page = await adapter.listOrgDependabotAlerts("no42-org");
+    const page = await adapter.listDependabotAlerts("no42-org", []);
     expect(page.alerts.length + page.unreadable).toBe(2);
   });
 
@@ -503,7 +503,7 @@ describe("the conditional alert listing", () => {
       async () => gh,
     );
 
-    const page = await adapter.listOrgDependabotAlerts("no42-org");
+    const page = await adapter.listDependabotAlerts("no42-org", []);
 
     expect(page.truncated).toBe(true);
     expect(page.alerts.length + page.unreadable).toBe(MAX_ALERT_PAGES);
@@ -533,7 +533,7 @@ describe("the conditional alert listing", () => {
       async () => gh,
     );
 
-    const page = await adapter.listOrgDependabotAlerts("no42-org");
+    const page = await adapter.listDependabotAlerts("no42-org", []);
     expect(page.alerts.length + page.unreadable).toBe(MAX_ALERT_PAGES);
     expect(page.truncated).toBe(false);
   });
@@ -551,7 +551,7 @@ describe("the conditional alert listing", () => {
       () => true,
       async () => gh,
     );
-    await expect(adapter.listOrgDependabotAlerts("no42-org")).rejects.toThrow(
+    await expect(adapter.listDependabotAlerts("no42-org", [])).rejects.toThrow(
       /cross-origin/,
     );
   });
@@ -574,7 +574,7 @@ describe("the conditional alert listing", () => {
       async () => gh,
     );
 
-    const page = await adapter.listOrgDependabotAlerts("no42-org", {
+    const page = await adapter.listDependabotAlerts("no42-org", [], {
       etag: 'W/"a"',
       lastModified: null,
       tokenGen: "2026-08-18T08:00:00Z",
@@ -594,14 +594,14 @@ describe("the conditional alert listing", () => {
       async () => gh,
     );
 
-    await adapter.listOrgDependabotAlerts("no42-org", {
+    await adapter.listDependabotAlerts("no42-org", [], {
       etag: 'W/"a"',
       lastModified: "Tue, 22 Jul 2025 05:46:32 GMT",
       tokenGen: EXPIRES,
     });
     // A validator with only Last-Modified still conditions the request:
     // discarding it wastes a cached 304 for no reason.
-    await adapter.listOrgDependabotAlerts("no42-org", {
+    await adapter.listDependabotAlerts("no42-org", [], {
       etag: null,
       lastModified: "Tue, 22 Jul 2025 05:46:32 GMT",
       tokenGen: EXPIRES,
@@ -631,12 +631,73 @@ describe("the conditional alert listing", () => {
     // No header went on the wire, so the 304 is unsolicited and must not be
     // honoured as notModified.
     await expect(
-      adapter.listOrgDependabotAlerts("no42-org", {
+      adapter.listDependabotAlerts("no42-org", [], {
         etag: null,
         lastModified: null,
         tokenGen: EXPIRES,
       }),
     ).rejects.toThrow();
+  });
+
+  it("fans out per repository for a user account, and skips the org call", async () => {
+    // The org endpoint does not exist for a user account. Measured
+    // 2026-08-21: the per-repository endpoint carries the same payload,
+    // EPSS included, so the same mapper reads it.
+    const seen: string[] = [];
+    const gh = {
+      auth: async () => ({ token: "x", expiresAt: EXPIRES }),
+      paginate: async (route: string, options: Record<string, unknown>) => {
+        seen.push(`${route} ${options.owner}/${options.repo}`);
+        return [alertItem];
+      },
+      request: async () => {
+        throw new Error("the org endpoint must not be called");
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+      () => "user",
+    );
+
+    const page = await adapter.listDependabotAlerts("indigo423", [
+      { owner: "indigo423", name: "one" },
+      { owner: "indigo423", name: "two" },
+    ]);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toContain("indigo423/one");
+    expect(page.alerts.length + page.unreadable).toBe(2);
+    // No validator: one cached value cannot describe a set of ETags.
+    expect(page.validator).toBeNull();
+  });
+
+  it("lists a user account's repositories from the user endpoint", async () => {
+    // /orgs/{login}/repos answers 404 on a user account, which the coverage
+    // lane recorded as a failed run every cycle.
+    const routes: string[] = [];
+    const gh = {
+      auth: async () => ({ token: "x", expiresAt: EXPIRES }),
+      paginate: async (route: unknown) => {
+        routes.push(String((route as { name?: string })?.name ?? route));
+        return [];
+      },
+      repos: {
+        listForUser: { name: "listForUser" },
+        listForOrg: { name: "listForOrg" },
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+      () => "user",
+    );
+
+    await adapter.listOrgRepos("indigo423");
+
+    expect(routes).toEqual(["listForUser"]);
   });
 
   it("refuses a non-array listing body legibly", async () => {
@@ -652,7 +713,7 @@ describe("the conditional alert listing", () => {
       () => true,
       async () => gh,
     );
-    await expect(adapter.listOrgDependabotAlerts("no42-org")).rejects.toThrow(
+    await expect(adapter.listDependabotAlerts("no42-org", [])).rejects.toThrow(
       /non-array body/,
     );
   });
@@ -671,7 +732,7 @@ describe("the conditional alert listing", () => {
       () => true,
       async () => gh,
     );
-    await expect(adapter.listOrgDependabotAlerts("no42-org")).rejects.toThrow(
+    await expect(adapter.listDependabotAlerts("no42-org", [])).rejects.toThrow(
       /unconditional/,
     );
   });
@@ -780,7 +841,12 @@ describe("the discipline hook rides the factory's clients", () => {
     const appPort = {
       identity: async () => ({ slug: "t", name: "t", permissions: {} }),
       listInstallations: async () => [
-        { id: 7, account: "no42-org", repositorySelection: "all" },
+        {
+          id: 7,
+          account: "no42-org",
+          repositorySelection: "all",
+          accountKind: "organization" as const,
+        },
       ],
       listInstallationRepos: async () => [],
     };
@@ -794,7 +860,7 @@ describe("the discipline hook rides the factory's clients", () => {
       fetchImpl as typeof fetch,
     );
 
-    const page = await port.listOrgDependabotAlerts("no42-org");
+    const page = await port.listDependabotAlerts("no42-org", []);
 
     // One 403 with retry-after, then success: only a disciplined client
     // retries. An unwrapped one would have thrown the 403.

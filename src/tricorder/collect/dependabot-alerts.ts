@@ -195,8 +195,11 @@ export async function collectOrgAlerts(
         `${LANE} ${installation}: conditional sweep off, unconfirmed: ${unconfirmed.join(", ")}`,
       );
     }
-    const page = await deps.github.listOrgDependabotAlerts(
+    const page = await deps.github.listDependabotAlerts(
       installation,
+      // Used only when the account has no org-level endpoint to collapse
+      // into. An organisation ignores this and still costs one call.
+      deps.watchedIn(installation),
       unconfirmed.length === 0
         ? deps.store.loadValidator(installation, url)
         : null,

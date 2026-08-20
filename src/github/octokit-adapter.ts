@@ -20,6 +20,7 @@ import {
 } from "./auth.js";
 import { installationTokenGen, withRequestDiscipline } from "./discipline.js";
 import type {
+  AccountKind,
   AppIdentity,
   DependabotAccess,
   GitHubAppPort,
@@ -59,6 +60,11 @@ export type OctokitResolver = (repo: RepoRef) => Promise<Octokit>;
  * one, so its wiring does not need to supply this.
  */
 export type OrgOctokitResolver = (org: string) => Promise<Octokit>;
+/**
+ * What kind of account an installation is on. Supplied by the factory from
+ * the installation payload, so nothing here has to probe or guess.
+ */
+export type AccountKindResolver = (login: string) => AccountKind;
 
 /**
  * GitHub caps search queries at 256 characters, so the watched repositories
@@ -320,6 +326,9 @@ export class OctokitGitHub implements GitHubPort {
     private readonly octokitFor: OctokitResolver,
     private readonly isAllowed: (repo: RepoRef) => boolean,
     private readonly orgOctokitFor?: OrgOctokitResolver,
+    /** Defaults to treating every account as an organisation, which is what
+     * this adapter did before user accounts were handled at all. */
+    private readonly accountKindFor: AccountKindResolver = () => "organization",
   ) {}
 
   private async client(repo: RepoRef): Promise<Octokit> {
@@ -338,10 +347,21 @@ export class OctokitGitHub implements GitHubPort {
       );
     }
     const client = await this.orgOctokitFor(org);
-    const repos = await client.paginate(client.repos.listForOrg, {
-      org,
-      per_page: 100,
-    });
+    // A user account has no /orgs listing at all: it answers 404, which the
+    // coverage lane then records as a failed run every cycle, leaving every
+    // personal repository's coverage permanently unknown. Measured
+    // 2026-08-21: /users/{login}/repos answers this for a user account with
+    // the same fields.
+    const repos =
+      this.accountKindFor(org) === "user"
+        ? await client.paginate(client.repos.listForUser, {
+            username: org,
+            per_page: 100,
+          })
+        : await client.paginate(client.repos.listForOrg, {
+            org,
+            per_page: 100,
+          });
     return repos.map(
       (r: {
         owner: { login: string };
@@ -740,14 +760,69 @@ export class OctokitGitHub implements GitHubPort {
     }
   }
 
-  async listOrgDependabotAlerts(
+  /**
+   * The per-repository fallback. One call each, and a 403 saying alerts are
+   * switched off is NOT a failure: it is the same fact the coverage probe
+   * records, and counting it as unreadable would degrade every sweep of an
+   * account that simply does not use Dependabot everywhere. Anything else
+   * unreadable does count, so the sweep goes partial and tombstones
+   * nothing (AD-23).
+   */
+  private async listDependabotAlertsPerRepo(
+    repos: readonly RepoRef[],
+  ): Promise<OrgAlertPage> {
+    const alerts: RawDependabotAlert[] = [];
+    let unreadable = 0;
+    for (const repo of repos) {
+      let raw: unknown[];
+      try {
+        const gh = await this.client(repo);
+        raw = await gh.paginate("GET /repos/{owner}/{repo}/dependabot/alerts", {
+          owner: repo.owner,
+          repo: repo.name,
+          state: "open",
+          per_page: 100,
+        });
+      } catch (err) {
+        if (translateDependabotProbe(err) === "alerts_disabled") continue;
+        unreadable++;
+        continue;
+      }
+      for (const item of raw) {
+        const alert = toDependabotAlert(item);
+        if (alert === null) unreadable++;
+        else alerts.push(alert);
+      }
+    }
+    // No validator: each repository carries its own ETag, and one cached
+    // value cannot describe a set of them. The next sweep pays full price
+    // rather than revalidating against a listing that does not exist.
+    return {
+      alerts,
+      unreadable,
+      notModified: false,
+      truncated: false,
+      validator: null,
+    };
+  }
+
+  async listDependabotAlerts(
     org: string,
+    repos: readonly RepoRef[] = [],
     cached: RequestValidator | null = null,
   ): Promise<OrgAlertPage> {
     if (!this.orgOctokitFor) {
       throw new Error(
-        "listOrgDependabotAlerts needs an org resolver; this client was built without one",
+        "listDependabotAlerts needs an org resolver; this client was built without one",
       );
+    }
+    // A user account has no org-level alert endpoint - `/orgs/{login}/...`
+    // answers 404 - so there is nothing to collapse and the only route is
+    // one call per watched repository. The spine prices this: 36 calls plus
+    // three per allowlisted personal-account repository, of which this lane
+    // is one.
+    if (this.accountKindFor(org) === "user") {
+      return this.listDependabotAlertsPerRepo(repos);
     }
     const gh = await this.orgOctokitFor(org);
 
@@ -1199,13 +1274,24 @@ export class OctokitGitHubApp implements GitHubAppPort {
       // fallback that can never match a real owner is worse than saying so: it
       // would silently orphan every repository under that account.
       const account = i.account as
-        | { login?: string; slug?: string }
+        | { login?: string; slug?: string; type?: string }
         | null
         | undefined;
+      // Read, never inferred. Anything unrecognised stays `unknown`, which
+      // the adapter treats as an organisation: that is what it did before
+      // user accounts existed here, so an unfamiliar account type cannot
+      // silently change how an installation is swept.
+      const type = account?.type;
       return {
         id: i.id,
         account: account?.login ?? account?.slug ?? null,
         repositorySelection: i.repository_selection ?? "unknown",
+        accountKind:
+          type === "User"
+            ? ("user" as const)
+            : type === "Organization"
+              ? ("organization" as const)
+              : ("unknown" as const),
       };
     });
   }
@@ -1299,8 +1385,12 @@ export async function createTricorderReadPort(
   };
 
   const byAccount = new Map<string, number>();
+  const kindByAccount = new Map<string, AccountKind>();
   for (const i of await appPort.listInstallations()) {
-    if (i.account) byAccount.set(i.account.toLowerCase(), i.id);
+    if (i.account) {
+      byAccount.set(i.account.toLowerCase(), i.id);
+      kindByAccount.set(i.account.toLowerCase(), i.accountKind);
+    }
   }
 
   const clients = new Map<number, Octokit>();
@@ -1333,7 +1423,10 @@ export async function createTricorderReadPort(
       // container, with nothing in the log suggesting that.
       resolved = true;
       for (const i of await appPort.listInstallations()) {
-        if (i.account) byAccount.set(i.account.toLowerCase(), i.id);
+        if (i.account) {
+          byAccount.set(i.account.toLowerCase(), i.id);
+          kindByAccount.set(i.account.toLowerCase(), i.accountKind);
+        }
       }
       clients.clear();
       id = byAccount.get(account.toLowerCase());
@@ -1355,5 +1448,10 @@ export async function createTricorderReadPort(
     async (repo) => forAccount(repo.owner),
     isAllowed,
     forAccount,
+    // Unknown until the installations resolve, and unknown is treated as an
+    // organisation: that is the behaviour every account had before user
+    // accounts were handled, so an unfamiliar type cannot quietly change
+    // how an installation is swept.
+    (login) => kindByAccount.get(login.toLowerCase()) ?? "unknown",
   );
 }

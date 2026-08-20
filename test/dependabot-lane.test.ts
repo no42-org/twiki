@@ -552,6 +552,83 @@ describe("Dependabot alerts lane", () => {
     });
   });
 
+  describe("personal accounts have no org-level endpoint", () => {
+    it("collects a user account's alerts per repository", async () => {
+      // /orgs/{login}/dependabot/alerts answers 404 on a user account, so
+      // this lane used to fail every cycle there and collect nothing at
+      // all - a watched personal repository had no alerts, ever, and the
+      // page could only say it had never been confirmed.
+      watched.add("indigo423/benchmark");
+      watched.add("indigo423/helm-dv");
+      github.userAccounts.add("indigo423");
+      github.repoAlerts.set("indigo423/benchmark", [
+        makeAlert({
+          number: 1,
+          repo: { owner: "indigo423", name: "benchmark" },
+        }),
+      ]);
+      github.repoAlerts.set("indigo423/helm-dv", [
+        makeAlert({ number: 2, repo: { owner: "indigo423", name: "helm-dv" } }),
+      ]);
+
+      const r = await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(r).toMatchObject({ outcome: "ok", alerts: 2 });
+      expect(store.currentByType("dependabot_alert")).toHaveLength(2);
+    });
+
+    it("treats alerts-switched-off as a fact, not a failure", async () => {
+      // Most repositories on the measured account have Dependabot off, and
+      // a 403 saying so is the same fact the coverage probe records.
+      // Counting it as unreadable would make every sweep partial forever
+      // and stop the lane ever tombstoning anything.
+      watched.add("indigo423/benchmark");
+      watched.add("indigo423/quiet");
+      github.userAccounts.add("indigo423");
+      github.repoAlerts.set("indigo423/benchmark", [
+        makeAlert({
+          number: 1,
+          repo: { owner: "indigo423", name: "benchmark" },
+        }),
+      ]);
+      github.alertsDisabled.add("indigo423/quiet");
+
+      const r = await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(r).toMatchObject({ outcome: "ok", alerts: 1, unreadable: 0 });
+    });
+
+    it("still degrades when a repository could not be read for another reason", async () => {
+      watched.add("indigo423/benchmark");
+      github.userAccounts.add("indigo423");
+      github.unreadableByOrg.set("indigo423/benchmark", 2);
+
+      const r = await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(r.outcome).toBe("partial");
+    });
+
+    it("never sends a validator it cannot honour for a user account", async () => {
+      // Each repository carries its own ETag; one cached value cannot
+      // describe a set of them, so the fan-out caches nothing and the next
+      // sweep pays full price rather than revalidating against a listing
+      // that does not exist.
+      watched.add("indigo423/benchmark");
+      github.userAccounts.add("indigo423");
+      github.repoAlerts.set("indigo423/benchmark", [
+        makeAlert({
+          number: 1,
+          repo: { owner: "indigo423", name: "benchmark" },
+        }),
+      ]);
+
+      await collectOrgAlerts(deps(), "indigo423", "full");
+      expect(
+        store.loadValidator("indigo423", orgAlertsUrl("indigo423")),
+      ).toBeNull();
+    });
+  });
+
   describe("the conditional sweep (AD-25)", () => {
     const VALIDATOR = {
       etag: 'W/"alerts-1"',

@@ -119,7 +119,11 @@ export interface OrgAlertPage {
  * fail independently.
  */
 export interface GitHubReadPort {
-  /** Every repository in the organisation, with the states the listing carries. */
+  /**
+   * Every repository the account owns, with the states the listing carries.
+   * Organisations and user accounts have different endpoints for this, and
+   * the org one 404s on a user account.
+   */
   listOrgRepos(org: string): Promise<RawRepoMeta[]>;
   /** Is Dependabot actually watching this repository? One call. */
   probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess>;
@@ -221,8 +225,14 @@ export interface GitHubReadPort {
    * unconditional fetch (AD-25). A validator from a different token
    * generation is ignored, not sent.
    */
-  listOrgDependabotAlerts(
-    org: string,
+  /**
+   * `repos` is the watched set for this installation, used only when the
+   * account has no org-level endpoint to collapse into: a user account
+   * costs one call per repository, an organisation still costs one call.
+   */
+  listDependabotAlerts(
+    installation: string,
+    repos: readonly RepoRef[],
     cached?: RequestValidator | null,
   ): Promise<OrgAlertPage>;
 }
@@ -256,12 +266,26 @@ export interface AppIdentity {
   permissions: Record<string, string> | null;
 }
 
+/**
+ * What kind of account an installation is on.
+ *
+ * Load-bearing, not descriptive: a GitHub App on a USER account has no
+ * org-level endpoints at all. `/orgs/{login}/dependabot/alerts` and
+ * `/orgs/{login}/repos` both answer 404 there, so the lanes that collapse an
+ * organisation into one call must fan out per repository instead. Measured
+ * 2026-08-21: the installation payload carries this, so nothing has to be
+ * probed or guessed.
+ */
+export type AccountKind = "user" | "organization" | "unknown";
+
 export interface InstallationRef {
   id: number;
   /** The org or user login, or an enterprise slug. Null when neither is present. */
   account: string | null;
   /** `all` or `selected`, as GitHub reports it. */
   repositorySelection: string;
+  /** Unknown when GitHub reported something this build does not recognise. */
+  accountKind: AccountKind;
 }
 
 export interface GitHubAppPort {
