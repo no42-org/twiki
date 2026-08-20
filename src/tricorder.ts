@@ -79,6 +79,40 @@ export const KEV_CADENCE_MS = 24 * 60 * 60_000;
 export const KEV_RETRY_MS = 60 * 60_000;
 
 /**
+ * The Actions lane's own cadence, and the bound on one sweep.
+ *
+ * Hourly rather than the 15-minute sweep cadence, decided on measurement
+ * (2026-08-18): a call costs ~1.3s whether it answers 200 or 304, because
+ * latency dominates and a conditional request saves budget rather than
+ * time, so the ~941-call floor across a full estate is 20-25 minutes of
+ * wall-clock. That does not fit a 15-minute cadence at all, and pretending
+ * otherwise would mean every sweep yielding halfway forever.
+ *
+ * The bound is the safety net rather than the plan: a sweep that overruns
+ * it stops and records a partial run (AD-24), and the repositories it never
+ * reached keep their own attestations and go on ageing, which is what makes
+ * them render stale instead of zero.
+ */
+export const ACTIONS_CADENCE_MS = 60 * 60_000;
+/**
+ * The bound on the Actions lane per CYCLE, shared across installations.
+ *
+ * Per cycle, not per installation: the scheduler runs installations
+ * serially, so a per-installation bound multiplies by their number - at the
+ * thirteen this system is sized for, a degraded cycle would sit in this one
+ * lane for nearly nine hours, blocking the fifteen-minute lanes behind it
+ * and blowing through the hourly cadence it is supposed to fit inside.
+ * Each installation gets an equal share; whatever a share does not reach is
+ * picked up by the next cycle, in order.
+ */
+export const ACTIONS_SWEEP_BOUND_MS = 40 * 60_000;
+/**
+ * Leave this much core budget for the lanes with no cheaper route. The
+ * security lanes cannot fall back to anything; this one can wait an hour.
+ */
+export const ACTIONS_BUDGET_FLOOR = 500;
+
+/**
  * `??` does not catch NaN, so an unparseable port would reach listen(), coerce
  * to 0 and bind an arbitrary ephemeral port while the log claimed otherwise.
  *
@@ -159,13 +193,12 @@ export function buildSchedules(deps: {
   issues: (installation: string) => Promise<{ outcome: RunOutcome }>;
   updateStatuses: (installation: string) => Promise<{ outcome: RunOutcome }>;
   /**
-   * Null when TRICORDER_ACTIONS_INSTALLATION is unset: the lane is absent,
-   * loudly. Story 15 runs it on ONE opted-in installation to measure the
-   * real per-repo cost before story 16 commits the whole allowlist to it -
-   * this is the lane the spine prices at a hard per-repo floor (AD-15).
+   * Null only when the lane is switched off outright. It runs across every
+   * installation now that its cost is measured; TRICORDER_ACTIONS_INSTALLATION
+   * narrows it to one, which is a measurement aid rather than the norm.
    */
   actionsRuns: {
-    installation: string;
+    installations: readonly string[];
     run: (installation: string) => Promise<{ outcome: RunOutcome }>;
   } | null;
 }): LaneSchedule[] {
@@ -222,8 +255,8 @@ export function buildSchedules(deps: {
           {
             lane: ACTIONS_LANE,
             scope: "full" as const,
-            cadenceMs: ALERT_CADENCE_MS,
-            installations: [deps.actionsRuns.installation],
+            cadenceMs: ACTIONS_CADENCE_MS,
+            installations: deps.actionsRuns.installations,
             run: deps.actionsRuns.run,
           },
         ]),
@@ -299,6 +332,52 @@ export function parseActionsInstallation(
     );
   }
   return value;
+}
+
+/**
+ * Which installations the Actions lane sweeps, or null when it is off.
+ *
+ * Extracted from main() so it can be tested: it silently decides whether a
+ * whole lane exists, and the one bug it has already had - a set-but-empty
+ * variable reading as "off" - was invisible from anywhere else.
+ */
+export function actionsInstallationsFor(
+  env: NodeJS.ProcessEnv,
+  installations: readonly string[],
+): readonly string[] | null {
+  // Trimmed-empty is UNSET, not "off". `??` fires only on undefined, but
+  // compose's pass-through form (`environment: - TRICORDER_ACTIONS`), a bare
+  // `TRICORDER_ACTIONS=` line and a k8s `value: ""` all deliver "", and
+  // envFlag reads that as false. Every neighbouring parser in this file
+  // treats trimmed-empty as unset; this one used to do the opposite, and
+  // silently dropped the lane while the log blamed an operator who had
+  // switched nothing off.
+  if (!envFlag((env.TRICORDER_ACTIONS ?? "").trim() || "on")) return null;
+  const one = parseActionsInstallation(
+    env.TRICORDER_ACTIONS_INSTALLATION,
+    installations,
+  );
+  return one ? [one] : installations;
+}
+
+/**
+ * When one installation's share of the cycle's Actions bound runs out.
+ *
+ * Divided per cycle rather than granted per installation: the scheduler
+ * runs installations serially, so a per-installation bound multiplies by
+ * their number and the lane outlasts the cadence it must fit inside.
+ */
+export function actionsDeadline(
+  startedAtMs: number,
+  installationCount: number,
+): string {
+  // Floored, not left fractional: Date truncates sub-millisecond values
+  // anyway, and a share that reads as a whole number is one a test can
+  // state exactly rather than approximately.
+  const share = Math.floor(
+    ACTIONS_SWEEP_BOUND_MS / Math.max(1, installationCount),
+  );
+  return new Date(startedAtMs + share).toISOString();
 }
 
 /** An https URL, or unset. Anything else refuses to start. */
@@ -407,10 +486,11 @@ async function main(): Promise<void> {
     const app = createTricorderAppFromEnv(env);
     const github = await createTricorderReadPort(app, isWatched, env);
 
-    const actionsInstallation = parseActionsInstallation(
-      env.TRICORDER_ACTIONS_INSTALLATION,
-      installations,
-    );
+    // Across the allowlist by default now that the cost is measured. The
+    // single-installation variable stays as a narrowing aid, and switching
+    // the lane off entirely is explicit rather than a side effect of
+    // leaving something unset.
+    const actionsInstallations = actionsInstallationsFor(env, installations);
 
     const laneDeps = {
       github,
@@ -451,21 +531,32 @@ async function main(): Promise<void> {
       // cycleInstallations, which unions in KEV's pseudo-installation, so
       // `cisa` would pass and then sweep zero repositories and report ok
       // forever. Rejected explicitly above, before it gets here.
-      actionsRuns: actionsInstallation
+      actionsRuns: actionsInstallations
         ? {
-            installation: actionsInstallation,
+            installations: actionsInstallations,
             run: (installation) =>
-              collectWorkflowRuns(laneDeps, installation, "full"),
+              collectWorkflowRuns(laneDeps, installation, "full", {
+                // An equal share of the cycle's bound, so the lane's total
+                // wall-clock stays inside it however many installations
+                // there are.
+                deadlineAt: actionsDeadline(
+                  Date.now(),
+                  actionsInstallations.length,
+                ),
+                budgetFloor: ACTIONS_BUDGET_FLOOR,
+              }),
           }
         : null,
     });
 
-    if (!actionsInstallation) {
+    if (!actionsInstallations) {
       // Absent, loudly (AD-28): "no build failures" and "we never looked"
-      // must not be the same picture. Story 15 keeps this lane opt-in while
-      // its per-repo cost is being measured on one installation.
+      // must not be the same picture, so a switched-off lane says so rather
+      // than leaving the dashboard to imply the first.
+      log("TRICORDER_ACTIONS=off; the Actions lane is disabled.");
+    } else if (actionsInstallations.length < installations.length) {
       log(
-        "TRICORDER_ACTIONS_INSTALLATION is unset; the Actions lane is disabled.",
+        `TRICORDER_ACTIONS_INSTALLATION restricts the Actions lane to ${actionsInstallations.join(", ")}; the other installations are not swept.`,
       );
     }
 

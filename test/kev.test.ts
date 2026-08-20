@@ -25,6 +25,10 @@ import { kevSignal, loadKevIndex } from "../src/tricorder/kev-lookup.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { buildCollectionHealth } from "../src/tricorder/web/view.js";
 import {
+  ACTIONS_CADENCE_MS,
+  ACTIONS_SWEEP_BOUND_MS,
+  actionsDeadline,
+  actionsInstallationsFor,
   buildSchedules,
   cycleInstallations,
   KEV_CADENCE_MS,
@@ -549,7 +553,7 @@ describe("the real schedule table", () => {
     updatePrs: noop,
     issues: noop,
     updateStatuses: noop,
-    actionsRuns: { installation: "no42-org", run: noop },
+    actionsRuns: { installations: ["no42-org", "other-org"], run: noop },
   });
 
   const lane = (name: string) => schedules.find((s) => s.lane === name);
@@ -590,6 +594,61 @@ describe("the real schedule table", () => {
     expect(lane("kev")?.installations).toEqual([KEV_INSTALLATION]);
   });
 
+  it("treats a set-but-empty TRICORDER_ACTIONS as unset, not as off", () => {
+    // Compose's pass-through form, a bare `TRICORDER_ACTIONS=` line and a
+    // k8s `value: ""` all deliver "". Reading that as "off" drops the whole
+    // lane while the log blames an operator who switched nothing off, and
+    // every neighbouring parser in this file treats empty as unset.
+    const installs = ["no42-org", "indigo423"];
+    expect(actionsInstallationsFor({} as NodeJS.ProcessEnv, installs)).toEqual(
+      installs,
+    );
+    expect(
+      actionsInstallationsFor(
+        { TRICORDER_ACTIONS: "" } as NodeJS.ProcessEnv,
+        installs,
+      ),
+    ).toEqual(installs);
+    expect(
+      actionsInstallationsFor(
+        { TRICORDER_ACTIONS: "   " } as NodeJS.ProcessEnv,
+        installs,
+      ),
+    ).toEqual(installs);
+    // Switching it off stays explicit.
+    expect(
+      actionsInstallationsFor(
+        { TRICORDER_ACTIONS: "off" } as NodeJS.ProcessEnv,
+        installs,
+      ),
+    ).toBeNull();
+    // And the narrowing aid still narrows.
+    expect(
+      actionsInstallationsFor(
+        { TRICORDER_ACTIONS_INSTALLATION: "no42-org" } as NodeJS.ProcessEnv,
+        installs,
+      ),
+    ).toEqual(["no42-org"]);
+  });
+
+  it("divides the Actions bound across installations, per cycle", () => {
+    // The scheduler runs installations serially, so a per-installation
+    // bound multiplies by their number: thirteen installations at forty
+    // minutes each is nearly nine hours in one lane, blocking the
+    // fifteen-minute lanes behind it and outlasting the hourly cadence it
+    // is meant to fit inside.
+    const start = Date.UTC(2026, 7, 20, 12, 0, 0);
+    const one = Date.parse(actionsDeadline(start, 1)) - start;
+    const thirteen = Date.parse(actionsDeadline(start, 13)) - start;
+
+    expect(one).toBe(ACTIONS_SWEEP_BOUND_MS);
+    expect(thirteen).toBe(Math.floor(ACTIONS_SWEEP_BOUND_MS / 13));
+    // Whatever the count, the lane's total stays inside the cadence.
+    expect(thirteen * 13).toBeLessThan(ACTIONS_CADENCE_MS);
+    // A zero count cannot divide by zero into an invalid date.
+    expect(Number.isNaN(Date.parse(actionsDeadline(start, 0)))).toBe(false);
+  });
+
   it("refuses an Actions installation that is not a real owner", () => {
     // assertSchedules validates against cycleInstallations, which unions in
     // KEV's pseudo-installation, so `cisa` would pass and then sweep zero
@@ -606,10 +665,19 @@ describe("the real schedule table", () => {
     expect(parseActionsInstallation(undefined, ["no42-org"])).toBeNull();
   });
 
-  it("runs the Actions lane only on its opted-in installation", () => {
-    // Story 15: one installation, measured, before story 16 commits the
-    // whole allowlist to the lane with the hard per-repo floor.
-    expect(lane("rest-actions-runs")?.installations).toEqual(["no42-org"]);
+  it("runs the Actions lane across the allowlist, on its own cadence", () => {
+    // Story 16: every installation now that the cost is measured, and
+    // hourly rather than the 15-minute sweep cadence, because a full estate
+    // takes 20-25 minutes of wall-clock and would otherwise yield halfway
+    // on every single sweep.
+    expect(lane("rest-actions-runs")?.installations).toEqual([
+      "no42-org",
+      "other-org",
+    ]);
+    expect(lane("rest-actions-runs")?.cadenceMs).toBe(ACTIONS_CADENCE_MS);
+    expect(lane("rest-actions-runs")?.cadenceMs).toBeGreaterThan(
+      lane("rest-org-dependabot")?.cadenceMs ?? 0,
+    );
   });
 
   it("keeps the GitHub lanes off that pseudo-installation", () => {

@@ -91,6 +91,75 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.actionsSection.attested).toBe(false);
   });
 
+  it("judges Actions by this repository's own sweep, not the lane's", () => {
+    // A bounded sweep reaches some repositories and yields before others.
+    // A lane-wide verdict would mark a repository the sweep DID reach as
+    // unconfirmed because a different one was missed - or, worse, confirm
+    // one it never reached at all.
+    const r = store.beginRun({
+      lane: "rest-actions-runs",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: 0, failing: 0 },
+      },
+    ] as never[]);
+    // The sweep yielded, so the LANE run is partial.
+    store.finishRun(r, "partial", "2026-08-20T11:55:00.000Z", "yielded");
+
+    const reached = buildRepoView(store, REPO, NOW, DEPS);
+    const missed = buildRepoView(
+      store,
+      { owner: "no42-org", name: "never-reached" },
+      NOW,
+      DEPS,
+    );
+
+    // Reached: its own confirmation stands, so "no workflows" is a fact.
+    expect(reached.actionsSection.attested).toBe(true);
+    // Not reached: nothing vouches for it, and the page says so.
+    expect(missed.actionsSection.attested).toBe(false);
+  });
+
+  it("does not vouch for Actions on a confirmation it could not read", () => {
+    // The sweep reached this repository and could not read what it found.
+    // Rendering that as a fresh "no runs recorded" would be a confident
+    // zero stated with more confidence than before the confirmation
+    // existed (AD-28).
+    seed("rest-actions-runs", [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: null, failing: null },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.actionsSection.attested).toBe(false);
+  });
+
+  it("does not keep badging a stale Actions confirmation as vouched for", () => {
+    // Same rule the coverage lookup applies: a lane that died days ago must
+    // not keep presenting its last word as though it were this hour's.
+    seedAt("rest-actions-runs", "2026-08-18T00:00:00.000Z", [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: 2, failing: 0 },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, {
+      policy: SWEEP,
+      actionsPolicy: { cadenceMs: 60 * 60_000 },
+    });
+
+    expect(view.actionsSection.attested).toBe(false);
+  });
+
   it("refuses to call a partial run an attestation", () => {
     // A partial sweep skipped something, and it may have been exactly this
     // repository: its silence proves nothing.
