@@ -403,6 +403,30 @@ describe("the Actions lane (story 15)", () => {
     })();
   });
 
+  it("advances the confirmation on a 304, not only on a fetch", async () => {
+    // A repository that always answers 304 is confirmed every sweep. If
+    // only the 200 path wrote its attestation it would look
+    // least-recently-confirmed forever, so the sweep order would keep
+    // returning to it while its page section aged into stale.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeRun({ nodeId: "WFR_1" }),
+    ]);
+    github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const before = store.currentByType("repository_actions")[0];
+
+    github.workflowRunNotModified.add("no42-org/packyard");
+    const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(r.notModified).toBe(1);
+    const after = store.currentByType("repository_actions")[0];
+    expect(after?.verifiedAt).not.toBe(before?.verifiedAt);
+    // Confirmed, not rewritten: the counts did not change, so neither did
+    // the observation behind them.
+    expect(after?.observedAt).toBe(before?.observedAt);
+    expect(after?.payload).toMatchObject({ workflows: 1 });
+  });
+
   it("counts failing workflows in the confirmation", async () => {
     github.workflowRuns.set("no42-org/packyard", [
       makeRun({ nodeId: "WFR_1", conclusion: "failure" }),
