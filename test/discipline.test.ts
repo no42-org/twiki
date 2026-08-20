@@ -673,6 +673,57 @@ describe("the conditional alert listing", () => {
     expect(page.validator).toBeNull();
   });
 
+  it("maps a per-repository alert payload, which names no repository", async () => {
+    // The shape difference that made the first version of this fan-out
+    // report 31 unreadable payloads and zero alerts against repositories
+    // that had them: the org listing names the repository on every alert,
+    // the per-repository listing does not, because the URL already did.
+    // Fixture copied from the live payload (2026-08-21), repository key
+    // absent exactly as GitHub sends it.
+    const realShape = {
+      number: 90,
+      state: "open",
+      html_url: "https://github.com/indigo423/one/security/dependabot/90",
+      created_at: "2025-07-22T05:46:32Z",
+      dependency: { package: { name: "form-data", ecosystem: "npm" } },
+      security_advisory: {
+        ghsa_id: "GHSA-fjxv-7rqg-78g4",
+        cve_id: "CVE-2025-7783",
+        severity: "critical",
+        epss: { percentage: 0.01735, percentile: 0.75531 },
+      },
+    };
+    const gh = {
+      auth: async () => ({ token: "x", expiresAt: EXPIRES }),
+      paginate: async () => [realShape],
+      request: async () => {
+        throw new Error("the org endpoint must not be called");
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+      () => "user",
+    );
+
+    const page = await adapter.listDependabotAlerts("indigo423", [
+      { owner: "indigo423", name: "one" },
+    ]);
+
+    expect(page.unreadable).toBe(0);
+    expect(page.alerts).toHaveLength(1);
+    // Attributed to the repository we asked about, and EPSS survives, which
+    // AD-18's ranking depends on.
+    expect(page.alerts[0]).toMatchObject({
+      repo: { owner: "indigo423", name: "one" },
+      number: 90,
+      severity: "critical",
+      cveId: "CVE-2025-7783",
+      epssPercentage: 0.01735,
+    });
+  });
+
   it("lists a user account's repositories from the user endpoint", async () => {
     // /orgs/{login}/repos answers 404 on a user account, which the coverage
     // lane recorded as a failed run every cycle.

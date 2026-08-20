@@ -789,7 +789,7 @@ export class OctokitGitHub implements GitHubPort {
         continue;
       }
       for (const item of raw) {
-        const alert = toDependabotAlert(item);
+        const alert = toDependabotAlert(item, repo);
         if (alert === null) unreadable++;
         else alerts.push(alert);
       }
@@ -1193,7 +1193,11 @@ export function createGitHubFromEnv(
  * has grown over time (EPSS is a recent addition) and a field the installed
  * Octokit types do not know about would otherwise be dropped silently.
  */
-function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
+function toDependabotAlert(
+  raw: unknown,
+  /** The repository the caller asked about, when the payload cannot say. */
+  knownRepo?: RepoRef,
+): RawDependabotAlert | null {
   const a = raw as {
     number?: number;
     state?: string;
@@ -1212,8 +1216,14 @@ function toDependabotAlert(raw: unknown): RawDependabotAlert | null {
       epss?: { percentage?: number; percentile?: number } | null;
     };
   };
-  const owner = a.repository?.owner?.login;
-  const name = a.repository?.name;
+  // The org-level listing names the repository on every alert; the
+  // per-repository listing does NOT - measured 2026-08-21, `repository` is
+  // absent from that payload entirely, because the URL already said which
+  // repository it is. Without the fallback every alert from the
+  // personal-account fan-out failed to map, and the lane reported 31
+  // unreadable payloads and zero alerts for repositories that had them.
+  const owner = a.repository?.owner?.login ?? knownRepo?.owner;
+  const name = a.repository?.name ?? knownRepo?.name;
   if (typeof a.number !== "number" || !owner || !name) return null;
 
   return {
