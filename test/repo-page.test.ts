@@ -99,6 +99,48 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.alerts[0]?.freshness).toBe("fresh");
   });
 
+  it("keeps a sibling repository's alerts off the page", () => {
+    // Alerts are read per installation, so every repository the owner has
+    // comes back in the same query. Without the per-repository check the
+    // page would show a neighbour's alerts as this repository's.
+    seed("rest-org-dependabot", [
+      normalise(makeAlert({ number: 1 })),
+      normalise(
+        makeAlert({
+          number: 2,
+          repo: { owner: "no42-org", name: "other" },
+        }),
+      ),
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.alerts.map((a) => a.number)).toEqual([1]);
+  });
+
+  it("drops a non-https link but keeps the row", () => {
+    // The first store-derived href on this page, and hono/jsx renders a
+    // `javascript:` scheme verbatim.
+    seed("graphql-issues", [
+      {
+        subject: { type: "issue", key: "I_evil" },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 6,
+          title: "Looks fine",
+          author: "someone",
+          htmlUrl: "javascript:alert(1)",
+          createdAt: "2026-08-20T00:00:00.000Z",
+        },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.issues).toHaveLength(1);
+    expect(view.issues[0]?.htmlUrl).toBeNull();
+  });
+
   it("keeps another repository's rows off the page", () => {
     // Node-keyed subjects carry no owner in the key, so the payload decides.
     // Without that check a PR from a sibling repository would appear here.
