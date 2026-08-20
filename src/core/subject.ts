@@ -30,6 +30,13 @@ export const SUBJECT_TYPES = [
   // the value as changing on every sweep.
   "dependabot_update_status",
   "workflow_run",
+  // Per-repository confirmation from the Actions lane: "we swept this
+  // repository, and this is what it had". Its own subject for the same
+  // reason repository_coverage is: a repository with no workflows has no
+  // run rows, and without a confirmation that is indistinguishable from one
+  // the sweep never reached (AD-28). It also carries the freshness the
+  // sweep order is chosen by.
+  "repository_actions",
   "issue",
 ] as const;
 
@@ -95,6 +102,11 @@ export function updateStatusSubject(
     type: "dependabot_update_status",
     key: `${subjectSlug(repo)}#${alertNumber}`,
   };
+}
+
+/** One repository's Actions sweep confirmation. Same key space as the repo. */
+export function actionsSubject(repo: RepoRef): Subject {
+  return { type: "repository_actions", key: subjectSlug(repo) };
 }
 
 export function alertSubject(

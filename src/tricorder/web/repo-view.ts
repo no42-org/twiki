@@ -317,6 +317,10 @@ export function buildRepoView(
     }))
     .sort((a, b) => a.number - b.number);
 
+  const actionsConfirmation = store
+    .currentByType("repository_actions")
+    .find((v) => v.state === "present" && v.subject.key === slug);
+
   const runResult = forRepo(
     store.currentByType("workflow_run"),
     slug,
@@ -368,13 +372,28 @@ export function buildRepoView(
       deps.policy,
     ),
     runs,
-    actionsSection: laneAttestation(
-      store,
-      ACTIONS_LANE,
-      installation,
-      now,
-      deps.actionsPolicy ?? deps.policy,
-    ),
+    // This repository's OWN attestation, not the lane's. A bounded sweep
+    // reaches some repositories and yields before others (AD-24), so a
+    // lane-wide verdict would mark every repository unconfirmed because one
+    // was missed - or worse, confirm one the sweep never reached. Falls
+    // back to the lane while no per-repository confirmation exists yet.
+    actionsSection: actionsConfirmation
+      ? {
+          attested: true,
+          freshness: freshness(
+            actionsConfirmation.verifiedAt,
+            now,
+            deps.actionsPolicy ?? deps.policy,
+          ),
+          age: ageLabel(actionsConfirmation.verifiedAt, now),
+        }
+      : laneAttestation(
+          store,
+          ACTIONS_LANE,
+          installation,
+          now,
+          deps.actionsPolicy ?? deps.policy,
+        ),
     unreadable,
     unattributable,
   };

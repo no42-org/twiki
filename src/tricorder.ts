@@ -79,6 +79,29 @@ export const KEV_CADENCE_MS = 24 * 60 * 60_000;
 export const KEV_RETRY_MS = 60 * 60_000;
 
 /**
+ * The Actions lane's own cadence, and the bound on one sweep.
+ *
+ * Hourly rather than the 15-minute sweep cadence, decided on measurement
+ * (2026-08-18): a call costs ~1.3s whether it answers 200 or 304, because
+ * latency dominates and a conditional request saves budget rather than
+ * time, so the ~941-call floor across a full estate is 20-25 minutes of
+ * wall-clock. That does not fit a 15-minute cadence at all, and pretending
+ * otherwise would mean every sweep yielding halfway forever.
+ *
+ * The bound is the safety net rather than the plan: a sweep that overruns
+ * it stops and records a partial run (AD-24), and the repositories it never
+ * reached keep their own attestations and go on ageing, which is what makes
+ * them render stale instead of zero.
+ */
+export const ACTIONS_CADENCE_MS = 60 * 60_000;
+export const ACTIONS_SWEEP_BOUND_MS = 40 * 60_000;
+/**
+ * Leave this much core budget for the lanes with no cheaper route. The
+ * security lanes cannot fall back to anything; this one can wait an hour.
+ */
+export const ACTIONS_BUDGET_FLOOR = 500;
+
+/**
  * `??` does not catch NaN, so an unparseable port would reach listen(), coerce
  * to 0 and bind an arbitrary ephemeral port while the log claimed otherwise.
  *
@@ -159,13 +182,12 @@ export function buildSchedules(deps: {
   issues: (installation: string) => Promise<{ outcome: RunOutcome }>;
   updateStatuses: (installation: string) => Promise<{ outcome: RunOutcome }>;
   /**
-   * Null when TRICORDER_ACTIONS_INSTALLATION is unset: the lane is absent,
-   * loudly. Story 15 runs it on ONE opted-in installation to measure the
-   * real per-repo cost before story 16 commits the whole allowlist to it -
-   * this is the lane the spine prices at a hard per-repo floor (AD-15).
+   * Null only when the lane is switched off outright. It runs across every
+   * installation now that its cost is measured; TRICORDER_ACTIONS_INSTALLATION
+   * narrows it to one, which is a measurement aid rather than the norm.
    */
   actionsRuns: {
-    installation: string;
+    installations: readonly string[];
     run: (installation: string) => Promise<{ outcome: RunOutcome }>;
   } | null;
 }): LaneSchedule[] {
@@ -222,8 +244,8 @@ export function buildSchedules(deps: {
           {
             lane: ACTIONS_LANE,
             scope: "full" as const,
-            cadenceMs: ALERT_CADENCE_MS,
-            installations: [deps.actionsRuns.installation],
+            cadenceMs: ACTIONS_CADENCE_MS,
+            installations: deps.actionsRuns.installations,
             run: deps.actionsRuns.run,
           },
         ]),
@@ -407,10 +429,19 @@ async function main(): Promise<void> {
     const app = createTricorderAppFromEnv(env);
     const github = await createTricorderReadPort(app, isWatched, env);
 
-    const actionsInstallation = parseActionsInstallation(
+    // Across the allowlist by default now that the cost is measured. The
+    // single-installation variable stays as a narrowing aid, and switching
+    // the lane off entirely is explicit rather than a side effect of
+    // leaving something unset.
+    const actionsOne = parseActionsInstallation(
       env.TRICORDER_ACTIONS_INSTALLATION,
       installations,
     );
+    const actionsInstallations = envFlag(env.TRICORDER_ACTIONS ?? "on")
+      ? actionsOne
+        ? [actionsOne]
+        : installations
+      : null;
 
     const laneDeps = {
       github,
@@ -451,21 +482,29 @@ async function main(): Promise<void> {
       // cycleInstallations, which unions in KEV's pseudo-installation, so
       // `cisa` would pass and then sweep zero repositories and report ok
       // forever. Rejected explicitly above, before it gets here.
-      actionsRuns: actionsInstallation
+      actionsRuns: actionsInstallations
         ? {
-            installation: actionsInstallation,
+            installations: actionsInstallations,
             run: (installation) =>
-              collectWorkflowRuns(laneDeps, installation, "full"),
+              collectWorkflowRuns(laneDeps, installation, "full", {
+                // Computed per sweep, from the same clock the lane reads.
+                deadlineAt: new Date(
+                  Date.now() + ACTIONS_SWEEP_BOUND_MS,
+                ).toISOString(),
+                budgetFloor: ACTIONS_BUDGET_FLOOR,
+              }),
           }
         : null,
     });
 
-    if (!actionsInstallation) {
+    if (!actionsInstallations) {
       // Absent, loudly (AD-28): "no build failures" and "we never looked"
-      // must not be the same picture. Story 15 keeps this lane opt-in while
-      // its per-repo cost is being measured on one installation.
+      // must not be the same picture, so a switched-off lane says so rather
+      // than leaving the dashboard to imply the first.
+      log("TRICORDER_ACTIONS=off; the Actions lane is disabled.");
+    } else if (actionsInstallations.length < installations.length) {
       log(
-        "TRICORDER_ACTIONS_INSTALLATION is unset; the Actions lane is disabled.",
+        `TRICORDER_ACTIONS_INSTALLATION restricts the Actions lane to ${actionsInstallations.join(", ")}; the other installations are not swept.`,
       );
     }
 

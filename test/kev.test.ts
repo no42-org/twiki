@@ -25,6 +25,7 @@ import { kevSignal, loadKevIndex } from "../src/tricorder/kev-lookup.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { buildCollectionHealth } from "../src/tricorder/web/view.js";
 import {
+  ACTIONS_CADENCE_MS,
   buildSchedules,
   cycleInstallations,
   KEV_CADENCE_MS,
@@ -549,7 +550,7 @@ describe("the real schedule table", () => {
     updatePrs: noop,
     issues: noop,
     updateStatuses: noop,
-    actionsRuns: { installation: "no42-org", run: noop },
+    actionsRuns: { installations: ["no42-org", "other-org"], run: noop },
   });
 
   const lane = (name: string) => schedules.find((s) => s.lane === name);
@@ -606,10 +607,19 @@ describe("the real schedule table", () => {
     expect(parseActionsInstallation(undefined, ["no42-org"])).toBeNull();
   });
 
-  it("runs the Actions lane only on its opted-in installation", () => {
-    // Story 15: one installation, measured, before story 16 commits the
-    // whole allowlist to the lane with the hard per-repo floor.
-    expect(lane("rest-actions-runs")?.installations).toEqual(["no42-org"]);
+  it("runs the Actions lane across the allowlist, on its own cadence", () => {
+    // Story 16: every installation now that the cost is measured, and
+    // hourly rather than the 15-minute sweep cadence, because a full estate
+    // takes 20-25 minutes of wall-clock and would otherwise yield halfway
+    // on every single sweep.
+    expect(lane("rest-actions-runs")?.installations).toEqual([
+      "no42-org",
+      "other-org",
+    ]);
+    expect(lane("rest-actions-runs")?.cadenceMs).toBe(ACTIONS_CADENCE_MS);
+    expect(lane("rest-actions-runs")?.cadenceMs).toBeGreaterThan(
+      lane("rest-org-dependabot")?.cadenceMs ?? 0,
+    );
   });
 
   it("keeps the GitHub lanes off that pseudo-installation", () => {

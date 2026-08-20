@@ -5,7 +5,7 @@
 
 import { safeLog } from "../../core/log.js";
 import { redact } from "../../core/redact.js";
-import { nodeSubject } from "../../core/subject.js";
+import { actionsSubject, nodeSubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import {
   type GitHubReadPort,
@@ -38,6 +38,22 @@ export interface WorkflowRunObservation {
   createdAt: string;
 }
 
+/**
+ * Per-repository confirmation: this repository was swept, and this is what
+ * it had. Written for every repository the sweep actually reached.
+ *
+ * Without it, a repository with no workflows and a repository the sweep
+ * yielded before reaching are both "no run rows", which is the confident
+ * zero this dashboard exists to refuse (AD-28). It is also the clock the
+ * next sweep orders by, so a bounded sweep resumes where the last one
+ * stopped instead of re-walking the same prefix forever.
+ */
+export interface ActionsRepoObservation {
+  repo: string;
+  workflows: number;
+  failing: number;
+}
+
 export interface ActionsDeps {
   github: GitHubReadPort;
   store: StorePort;
@@ -62,6 +78,12 @@ export interface ActionsResult {
   notModified: number;
   /** Repositories whose read failed. Each degrades the run to partial. */
   failedRepos: number;
+  /** Repositories this sweep reached, of the installation's watched set. */
+  reached: number;
+  /** Watched repositories in this installation. */
+  watched: number;
+  /** True when the sweep stopped early on its own bound rather than finishing. */
+  yielded: boolean;
   /**
    * Core budget left after the sweep, from GET /rate_limit (AD-24's honest
    * source; the endpoint is free and does not charge itself). Null when the
@@ -118,10 +140,31 @@ export function normaliseRun(run: RawWorkflowRun): ObservationInput {
  * window is a fact about the window, and treating it as "gone" would
  * tombstone every dormant workflow's last known state.
  */
+export interface SweepBound {
+  /**
+   * The instant this sweep must stop by, ISO-8601. Compared against the
+   * lane's own clock, so a test drives it exactly like production does.
+   *
+   * The bound is wall-clock rather than a request count because wall-clock
+   * is what actually binds: measured 2026-08-18, a call costs ~1.3s whether
+   * it answers 200 or 304, so 941 repositories take 20-25 minutes and the
+   * budget barely moves (a 304 is free). AD-24 asks a lane that would
+   * exceed its budget to yield and record a partial run; this is that.
+   */
+  deadlineAt?: string;
+  /**
+   * Yield before starting if the core budget is below this. Read from
+   * GET /rate_limit, the only honest source (AD-24): a 304's headers are
+   * stale by GitHub's own documentation.
+   */
+  budgetFloor?: number;
+}
+
 export async function collectWorkflowRuns(
   deps: ActionsDeps,
   installation: string,
   scope: RunScope,
+  bound: SweepBound = {},
 ): Promise<ActionsResult> {
   let run: ReturnType<StorePort["beginRun"]> | null = null;
   const log = safeLog(deps.log);
@@ -140,6 +183,7 @@ export async function collectWorkflowRuns(
       string,
       { key: string; workflowId: number }[]
     >();
+    const storedFailing = new Map<string, number>();
     for (const c of deps.store.currentByType("workflow_run")) {
       if (c.state !== "present") continue;
       const p = c.payload as WorkflowRunObservation | undefined;
@@ -149,9 +193,13 @@ export async function collectWorkflowRuns(
       const list = storedByRepo.get(p.repo) ?? [];
       list.push({ key: c.subject.key, workflowId: p.workflowId });
       storedByRepo.set(p.repo, list);
+      if (p.conclusion === "failure") {
+        storedFailing.set(p.repo, (storedFailing.get(p.repo) ?? 0) + 1);
+      }
     }
 
     const observations: ObservationInput[] = [];
+    const confirmations: ObservationInput[] = [];
     const confirmed: { type: "workflow_run"; key: string }[] = [];
     const gone: { type: "workflow_run"; key: string }[] = [];
     // Deferred until the rows they vouch for are committed. A validator
@@ -166,7 +214,55 @@ export async function collectWorkflowRuns(
     let notModified = 0;
     let failedRepos = 0;
 
-    for (const repo of deps.watchedIn(installation)) {
+    // Least-recently-confirmed first, never-confirmed before that. A sweep
+    // that yields must not re-walk the same prefix next time: with a fixed
+    // order the tail would never be reached at all, and its repositories
+    // would sit permanently uncollected while the sweep reported success.
+    const confirmedAt = new Map<string, string>();
+    for (const c of deps.store.currentByType("repository_actions")) {
+      if (c.state === "present") confirmedAt.set(c.subject.key, c.verifiedAt);
+    }
+    const order = [...deps.watchedIn(installation)].sort((a, b) => {
+      const at = confirmedAt.get(`${a.owner}/${a.name}`.toLowerCase());
+      const bt = confirmedAt.get(`${b.owner}/${b.name}`.toLowerCase());
+      if (at === undefined && bt === undefined) return 0;
+      if (at === undefined) return -1;
+      if (bt === undefined) return 1;
+      return at.localeCompare(bt);
+    });
+
+    let yielded = false;
+    let reached = 0;
+
+    // The budget check happens once, up front, and never mid-sweep: this
+    // lane is bounded by wall-clock, not by budget (a 304 costs nothing and
+    // a full estate is ~941 calls against 5800/hour), so the floor exists to
+    // keep a lane that is ALREADY starved from taking the last of it from
+    // the security lanes, which have no cheaper route.
+    if (bound.budgetFloor !== undefined) {
+      try {
+        const { remaining } = await deps.github.rateLimit(installation);
+        if (remaining < bound.budgetFloor) {
+          yielded = true;
+          log(
+            `${LANE} ${installation}: yielding before starting, ${remaining} budget left`,
+          );
+        }
+      } catch {
+        // Unreadable budget is not evidence of a low one. Proceeding is the
+        // conservative choice here: the deadline still bounds the sweep, and
+        // refusing to run on a failed diagnostic would let one flaky
+        // endpoint silently stop collection altogether.
+      }
+    }
+
+    for (const repo of yielded ? [] : order) {
+      // Checked before the call, not after: stopping once the deadline has
+      // already been blown past would make the bound advisory.
+      if (bound.deadlineAt && deps.now() >= bound.deadlineAt) {
+        yielded = true;
+        break;
+      }
       const slug = `${repo.owner}/${repo.name}`.toLowerCase();
       const url = workflowRunsUrl(repo);
       try {
@@ -179,9 +275,23 @@ export async function collectWorkflowRuns(
           // Nothing changed since the sweep that stored these rows: the
           // stored latest runs are still the latest. Confirm, free.
           notModified++;
-          for (const s of storedByRepo.get(slug) ?? []) {
+          reached++;
+          const stored = storedByRepo.get(slug) ?? [];
+          for (const s of stored) {
             confirmed.push({ type: "workflow_run", key: s.key });
           }
+          // Reached and confirmed, so the repository's own attestation
+          // advances too: a 304 is evidence about this repository exactly as
+          // a 200 is, and leaving it behind would send the next sweep back
+          // to a repository that is already current.
+          confirmations.push({
+            subject: actionsSubject(repo),
+            payload: {
+              repo: slug,
+              workflows: stored.length,
+              failing: storedFailing.get(slug) ?? 0,
+            } satisfies ActionsRepoObservation,
+          });
           if (page.validator) {
             validatorOps.push({ url, validator: page.validator });
           }
@@ -206,6 +316,16 @@ export async function collectWorkflowRuns(
           }
         }
 
+        reached++;
+        confirmations.push({
+          subject: actionsSubject(repo),
+          payload: {
+            repo: slug,
+            workflows: latest.length,
+            failing: latest.filter((r) => r.conclusion === "failure").length,
+          } satisfies ActionsRepoObservation,
+        });
+
         // Save-or-purge, exactly as the alert lane (AD-25): a 200 that
         // rewrote rows without earning a validator must not leave the old
         // one describing a listing that no longer matches stored state.
@@ -225,7 +345,10 @@ export async function collectWorkflowRuns(
       }
     }
 
-    deps.store.recordObservations(run, deps.now(), observations);
+    deps.store.recordObservations(run, deps.now(), [
+      ...observations,
+      ...confirmations,
+    ]);
     if (confirmed.length > 0) {
       deps.store.touchVerified(confirmed, deps.now());
     }
@@ -260,9 +383,17 @@ export async function collectWorkflowRuns(
       );
     }
 
-    const outcome = failedRepos > 0 || unreadable > 0 ? "partial" : "ok";
-    const detail =
-      failedRepos > 0
+    // A yielded sweep is partial by construction: it did not look at every
+    // watched repository, so the ones it never reached must go on ageing
+    // rather than be treated as confirmed (AD-16). The unreached
+    // repositories keep their own attestations, which is what makes them
+    // render stale rather than zero.
+    const watchedCount = order.length;
+    const outcome =
+      failedRepos > 0 || unreadable > 0 || yielded ? "partial" : "ok";
+    const detail = yielded
+      ? `yielded after ${reached} of ${watchedCount} repositories; the rest keep ageing`
+      : failedRepos > 0
         ? `${failedRepos} repositories failed`
         : unreadable > 0
           ? `${unreadable} run payloads could not be read`
@@ -278,6 +409,7 @@ export async function collectWorkflowRuns(
     log(
       `${LANE} ${installation}: ${runsSeen} latest runs across ` +
         `${deps.watchedIn(installation).length} repositories, ` +
+        `${reached} of ${watchedCount} reached, ` +
         `${fetched} fetched, ${notModified} not modified, ${failedRepos} failed` +
         (gone.length > 0 ? `, ${gone.length} superseded` : "") +
         (unreadable > 0 ? `, ${unreadable} unreadable` : "") +
@@ -294,6 +426,9 @@ export async function collectWorkflowRuns(
       notModified,
       failedRepos,
       budgetRemaining,
+      reached,
+      watched: watchedCount,
+      yielded,
     };
   } catch (err) {
     const detail = redact(err instanceof Error ? err.message : String(err));
@@ -314,6 +449,9 @@ export async function collectWorkflowRuns(
       notModified: 0,
       failedRepos: 0,
       budgetRemaining: null,
+      reached: 0,
+      watched: 0,
+      yielded: false,
     };
   }
 }
