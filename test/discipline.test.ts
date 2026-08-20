@@ -673,6 +673,70 @@ describe("the conditional alert listing", () => {
     expect(page.validator).toBeNull();
   });
 
+  it("treats alerts-switched-off as a fact and a real error as unreadable", async () => {
+    // Two 403s that differ only in message (measured 2026-08-17). One says
+    // the feature is off, which is the same fact the coverage probe
+    // records and must not degrade the sweep - most repositories on the
+    // measured personal account answer it. The other is a genuine failure
+    // and has to count, or the sweep would finish clean having read
+    // nothing and tombstone everything it did not see.
+    const fail = (message: string) =>
+      Object.assign(new Error(message), { status: 403 });
+    const gh = {
+      auth: async () => ({ token: "x", expiresAt: EXPIRES }),
+      paginate: async (_r: string, o: { repo: string }) => {
+        if (o.repo === "off") {
+          throw fail("Dependabot alerts are disabled for this repository.");
+        }
+        if (o.repo === "broken") {
+          throw fail("Resource not accessible by integration");
+        }
+        return [];
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+      () => "user",
+    );
+
+    const page = await adapter.listDependabotAlerts("indigo423", [
+      { owner: "indigo423", name: "off" },
+      { owner: "indigo423", name: "broken" },
+      { owner: "indigo423", name: "fine" },
+    ]);
+
+    // Switched off: skipped silently. Broken: counted, so the lane goes
+    // partial and tombstones nothing.
+    expect(page.unreadable).toBe(1);
+    expect(page.alerts).toEqual([]);
+  });
+
+  it("caches no validator for the per-repository fan-out", async () => {
+    // Each repository carries its own ETag, so one cached value cannot
+    // describe the set. Storing one would let the next sweep revalidate
+    // against a listing that does not exist and confirm rows nothing
+    // checked.
+    const gh = {
+      auth: async () => ({ token: "x", expiresAt: EXPIRES }),
+      paginate: async () => [],
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+      () => "user",
+    );
+
+    const page = await adapter.listDependabotAlerts("indigo423", [
+      { owner: "indigo423", name: "one" },
+    ]);
+
+    expect(page.validator).toBeNull();
+    expect(page.notModified).toBe(false);
+  });
+
   it("maps a per-repository alert payload, which names no repository", async () => {
     // The shape difference that made the first version of this fan-out
     // report 31 unreadable payloads and zero alerts against repositories
