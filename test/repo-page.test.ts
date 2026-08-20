@@ -474,6 +474,61 @@ describe("the per-repository page", () => {
     expect(section).not.toContain("not confirmed by any completed sweep");
   });
 
+  it("keeps showing the count when the coverage attestation goes stale", async () => {
+    // The bug this pins was in the RENDERER, not the view model: it
+    // re-derived "not covered" as anything-but-covered, which swallows
+    // `unknown` - the state a stale coverage attestation degrades to. Two
+    // days of a dead coverage lane would have blanked the count on every
+    // page while the list page still showed it.
+    const old = store.beginRun({
+      lane: "coverage",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-18T00:00:00.000Z",
+    });
+    store.recordObservations(old, "2026-08-18T00:00:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", state: "covered" },
+      },
+    ] as never[]);
+    store.finishRun(old, "ok", "2026-08-18T00:00:00.000Z");
+
+    const fresh = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(fresh, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          openAlerts: 3,
+          worstSeverity: "high",
+        },
+      },
+    ] as never[]);
+    store.finishRun(fresh, "ok", "2026-08-20T11:55:00.000Z");
+
+    const withDailyCoverage = createApp({
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      lanePolicies: { coverage: { cadenceMs: 24 * 60 * 60_000 } },
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+    const html = await (
+      await withDailyCoverage.request("/repo/no42-org/twiki")
+    ).text();
+
+    expect(html).toContain("3 open alerts");
+    expect(html).not.toContain("not covered");
+    expect(html).not.toContain("no count and no list");
+  });
+
   it("answers 404 for a repository outside the watched set", async () => {
     // repos.yaml is the universe (AD-10). Rendering empty sections for an
     // unwatched repository would be a page full of confident nothings.
