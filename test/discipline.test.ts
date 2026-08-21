@@ -829,6 +829,64 @@ describe("the conditional alert listing", () => {
     expect(routes).toEqual(["listReposAccessibleToInstallation"]);
   });
 
+  it("searches for review requests globally, with no repo scoping", async () => {
+    // The one search here without repo: qualifiers, deliberately: 38 of the
+    // 40 measured requests were in repositories nobody watches, and adding
+    // any scoping qualifier would quietly return the capability to almost
+    // empty. Asserted on the query string because that is where the
+    // scoping would live, and the fake cannot see it.
+    const queries: string[] = [];
+    const gh = {
+      graphql: async (_q: string, vars: { q: string }) => {
+        queries.push(vars.q);
+        return {
+          search: {
+            issueCount: 0,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [],
+          },
+        };
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    await adapter.listReviewRequests("no42-org", ["indigo423", "someone"]);
+
+    expect(queries).toHaveLength(1);
+    const q = queries[0] ?? "";
+    expect(q).toContain("review-requested:indigo423");
+    expect(q).toContain("review-requested:someone");
+    expect(q).toContain("is:pr");
+    expect(q).toContain("is:open");
+    // Nothing that narrows it to an account or repository.
+    expect(q).not.toContain("repo:");
+    expect(q).not.toContain("org:");
+    expect(q).not.toContain("user:");
+  });
+
+  it("asks for nothing when no reviewers are configured", async () => {
+    const gh = {
+      graphql: async () => {
+        throw new Error("must not search with no reviewers");
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    await expect(adapter.listReviewRequests("no42-org", [])).resolves.toEqual({
+      requests: [],
+      unreadable: 0,
+      truncated: false,
+    });
+  });
+
   it("refuses a non-array listing body legibly", async () => {
     // A proxy error page: spreading it would throw an illegible TypeError,
     // and a string body would spread character by character into a nonsense

@@ -673,6 +673,15 @@ describe("the real schedule table", () => {
     expect(parseActionsInstallation(undefined, ["no42-org"])).toBeNull();
   });
 
+  it("runs the review lane on its pseudo-installation, once per cycle", () => {
+    // The search is global: sweeping it per installation would repeat one
+    // call once per installation and have those runs reconcile the same
+    // set against each other.
+    expect(lane("graphql-review-requests")?.installations).toEqual([
+      REVIEWS_INSTALLATION,
+    ]);
+  });
+
   it("runs the Actions lane across the allowlist, on its own cadence", () => {
     // Story 16: every installation now that the cost is measured, and
     // hourly rather than the 15-minute sweep cadence, because a full estate
