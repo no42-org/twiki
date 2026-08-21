@@ -284,6 +284,24 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.issues.map((i) => i.number)).toEqual([5]);
   });
 
+  it("does not let an unreadable review request mark this page incomplete", () => {
+    // Review requests are collected estate-wide by design - 38 of 40
+    // measured were in repositories nobody watches - so one corrupt
+    // third-party row would otherwise mark EVERY watched repository's page
+    // incomplete. The /reviews page counts them instead, where they belong.
+    seed("graphql-review-requests", [
+      {
+        subject: { type: "review_request", key: "RR_bad" },
+        payload: { repo: 42, number: "nine" },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.unattributable).toBe(0);
+    expect(view.reviews).toEqual([]);
+  });
+
   it("counts rows it cannot attribute rather than dropping them", () => {
     // A malformed node-keyed row has no readable repository, so it can be
     // neither claimed by this page nor ruled out of it. Skipping it silently

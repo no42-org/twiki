@@ -34,6 +34,10 @@ export interface ReviewRow {
   htmlUrl: string | null;
   /** Everyone asked, so "waiting on you" can be read against "and four others". */
   requestedReviewers: string[];
+  /** When the request was opened. Collected all along, rendered at last. */
+  createdAt: string;
+  /** How long it has been waiting, which is the point of the page. */
+  waiting: string;
   /** In repos.yaml, and so covered by every other lane. */
   watched: boolean;
   freshness: Freshness;
@@ -87,6 +91,8 @@ export function buildReviewView(
       // `javascript:` scheme verbatim.
       htmlUrl: request.htmlUrl.startsWith("https://") ? request.htmlUrl : null,
       requestedReviewers: request.requestedReviewers,
+      createdAt: request.createdAt,
+      waiting: ageLabel(request.createdAt, now),
       watched: watchedSlugs.has(request.repo.toLowerCase()),
       freshness: freshness(value.verifiedAt, now, policy),
       age: ageLabel(value.verifiedAt, now),
@@ -94,9 +100,16 @@ export function buildReviewView(
   }
 
   // Oldest request first: the one that has been waiting longest is the one
-  // most likely to be forgotten. Ties broken by key so the list does not
-  // reshuffle between refreshes.
-  rows.sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number);
+  // most likely to be forgotten, and it is the only ordering the page's
+  // "waiting since" column makes sense against. An earlier version said
+  // exactly this in a comment while sorting by repository name, so a
+  // request left for six months in a late-alphabet repository sorted last
+  // and nothing on the page showed how long anything had waited. Ties break
+  // on the key, so the list does not reshuffle between refreshes.
+  rows.sort(
+    (a, b) =>
+      a.createdAt.localeCompare(b.createdAt) || a.key.localeCompare(b.key),
+  );
 
   // The lane's own standing, read from its run rows rather than inferred
   // from the presence of data: an empty list means "none waiting" only if

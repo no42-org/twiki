@@ -109,11 +109,18 @@ export async function collectReviewRequests(
     // Truncation degrades exactly as unreadable nodes do: an incomplete
     // result set cannot support concluding that anything is gone.
     const outcome = page.unreadable > 0 || page.truncated ? "partial" : "ok";
-    const detail = page.truncated
-      ? "search results truncated at GitHub's ceiling; nothing tombstoned"
-      : page.unreadable > 0
+    // Composed, not chosen: a degraded sweep can hit the ceiling AND fail to
+    // read nodes, and reporting only the ceiling attributes the whole
+    // degradation to one cause in the row an operator actually reads.
+    const notes = [
+      page.truncated
+        ? "search results truncated at GitHub's ceiling; nothing tombstoned"
+        : null,
+      page.unreadable > 0
         ? `${page.unreadable} review-request nodes could not be read`
-        : undefined;
+        : null,
+    ].filter((n): n is string => n !== null);
+    const detail = notes.length > 0 ? notes.join("; ") : undefined;
 
     deps.store.recordObservations(run, deps.now(), observations);
 

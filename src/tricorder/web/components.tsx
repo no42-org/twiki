@@ -555,7 +555,7 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
           <tr>
             <th>Pull request</th>
             <th>Opened by</th>
-            <th>Also asked</th>
+            <th>Requested from</th>
             <th>Last confirmed</th>
           </tr>
         </thead>
@@ -572,9 +572,9 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
               </td>
               <td>{r.author}</td>
               <td>
-                {r.requestedReviewers.length > 1
-                  ? `${r.requestedReviewers.length - 1} others`
-                  : "just you"}
+                {r.requestedReviewers.length === 0
+                  ? "unknown"
+                  : r.requestedReviewers.join(", ")}
               </td>
               <td>
                 <FreshnessBadge freshness={r.freshness} age={r.age} />
@@ -653,7 +653,8 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
           <tr>
             <th>Pull request</th>
             <th>Opened by</th>
-            <th>Also asked</th>
+            <th>Requested from</th>
+            <th>Waiting</th>
             <th>Last confirmed</th>
           </tr>
         </thead>
@@ -678,10 +679,15 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
               </td>
               <td>{r.author}</td>
               <td>
-                {r.requestedReviewers.length > 1
-                  ? `${r.requestedReviewers.length - 1} others`
-                  : "just you"}
+                {/* The reviewers themselves, not a count. GraphQL reports a
+                    TEAM request by its slug, so counting produced "just
+                    you" for a pull request nobody had asked the reader for
+                    personally. */}
+                {r.requestedReviewers.length === 0
+                  ? "unknown"
+                  : r.requestedReviewers.join(", ")}
               </td>
+              <td>{r.waiting}</td>
               <td>
                 <FreshnessBadge freshness={r.freshness} age={r.age} />
               </td>

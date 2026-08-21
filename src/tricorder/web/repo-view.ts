@@ -351,7 +351,14 @@ export function buildRepoView(
     slug,
     readReviewRequest,
   );
-  unattributable += reviewResult.unattributable;
+  // Its unreadable rows are deliberately NOT counted here. Every other lane
+  // feeding forRepo is allowlist-scoped, so an unreadable row of theirs
+  // plausibly belongs to this estate; this lane is estate-wide by design and
+  // 38 of 40 measured rows were in repositories nobody watches, so one
+  // corrupt third-party row would mark EVERY watched repository's page
+  // incomplete - the same failure the alert loop above already fixed once.
+  // The /reviews page counts them, where the reader is looking at the
+  // estate-wide list those rows actually belong to.
   const reviews = reviewResult.rows
     .map(({ value, payload }) => ({
       key: value.subject.key,

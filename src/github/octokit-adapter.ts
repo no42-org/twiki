@@ -162,6 +162,37 @@ export function searchQueries(
   return { queries, unsearchable };
 }
 
+/**
+ * Spread `reviewers` over as many queries as the length cap allows.
+ *
+ * The reviewer qualifiers OR together, so splitting them across queries and
+ * merging the results returns the same set - unlike the repo-scoped
+ * searches, where every chunk narrows a different slice.
+ */
+export function reviewerQueries(reviewers: readonly string[]): string[] {
+  const base = "is:pr is:open";
+  const queries: string[] = [];
+  let current = base;
+  for (const reviewer of reviewers) {
+    const qualifier = ` review-requested:${reviewer}`;
+    if (base.length + qualifier.length > SEARCH_QUERY_MAX) {
+      // One login so long it cannot share a query with the base at all.
+      // Skipping it silently would drop that reviewer's requests without
+      // a word, so it is refused where the reason is legible.
+      throw new Error(
+        `review-requested qualifier for ${reviewer} exceeds the ${SEARCH_QUERY_MAX}-character search cap`,
+      );
+    }
+    if (current.length + qualifier.length > SEARCH_QUERY_MAX) {
+      queries.push(current);
+      current = base + qualifier;
+    } else {
+      current += qualifier;
+    }
+  }
+  return current === base ? [] : queries.concat(current);
+}
+
 export function issueSearchQueries(repos: readonly RepoRef[]): SearchPlan {
   return searchQueries(ISSUE_SEARCH_BASE, repos);
 }
@@ -175,12 +206,38 @@ export function issueSearchQueries(repos: readonly RepoRef[]): SearchPlan {
  * PullRequest and Issue nodes are read through one shape: the two fragments
  * request the same fields.
  */
-async function runNodeSearch(
+const NODE_FIELDS = `
+  id
+  number
+  title
+  url
+  createdAt
+  author { login }
+  repository { name owner { login } }
+`;
+
+/** The shape every search node here shares, before the caller's mapping. */
+interface SearchNodeRaw {
+  id?: string;
+  number?: number;
+  title?: string;
+  url?: string;
+  createdAt?: string;
+  author?: { login?: string } | null;
+  repository?: { name?: string; owner?: { login?: string } } | null;
+}
+
+async function runNodeSearch<T>(
   gh: Octokit,
   nodeType: "PullRequest" | "Issue",
   query: string,
-): Promise<{ items: RawUpdatePr[]; unreadable: number; truncated: boolean }> {
-  const items: RawUpdatePr[] = [];
+  /** Extra node sub-selection, for a caller that needs more than the shared fields. */
+  extraFields = "",
+  /** Maps a node the shared guard accepted. Defaults to the update-PR shape. */
+  map: (raw: SearchNodeRaw, base: RawUpdatePr) => T = (_raw, base) =>
+    base as unknown as T,
+): Promise<{ items: T[]; unreadable: number; truncated: boolean }> {
+  const items: T[] = [];
   let unreadable = 0;
   let cursor: string | null = null;
   for (;;) {
@@ -197,13 +254,8 @@ async function runNodeSearch(
            pageInfo { hasNextPage endCursor }
            nodes {
              ... on ${nodeType} {
-               id
-               number
-               title
-               url
-               createdAt
-               author { login }
-               repository { name owner { login } }
+               ${NODE_FIELDS}
+               ${extraFields}
              }
            }
          }
@@ -236,18 +288,20 @@ async function runNodeSearch(
         unreadable++;
         continue;
       }
-      items.push({
-        nodeId: item.id,
-        repo: {
-          owner: item.repository.owner.login,
-          name: item.repository.name,
-        },
-        number: item.number,
-        title: item.title,
-        author: item.author?.login ?? "unknown",
-        htmlUrl: item.url ?? "",
-        createdAt: item.createdAt ?? "",
-      });
+      items.push(
+        map(item, {
+          nodeId: item.id,
+          repo: {
+            owner: item.repository.owner.login,
+            name: item.repository.name,
+          },
+          number: item.number,
+          title: item.title,
+          author: item.author?.login ?? "unknown",
+          htmlUrl: item.url ?? "",
+          createdAt: item.createdAt ?? "",
+        }),
+      );
     }
     if (!page.search.pageInfo.hasNextPage) {
       // hasNextPage goes false at the 1000-result search ceiling exactly as
@@ -501,7 +555,7 @@ export class OctokitGitHub implements GitHubPort {
     let unreadable = 0;
     let truncated = false;
     for (const query of plan.queries) {
-      const page = await runNodeSearch(gh, "PullRequest", query);
+      const page = await runNodeSearch<RawUpdatePr>(gh, "PullRequest", query);
       prs.push(...page.items);
       unreadable += page.unreadable;
       truncated = truncated || page.truncated;
@@ -534,7 +588,7 @@ export class OctokitGitHub implements GitHubPort {
     let unreadable = 0;
     let truncated = false;
     for (const query of plan.queries) {
-      const page = await runNodeSearch(gh, "Issue", query);
+      const page = await runNodeSearch<RawIssue>(gh, "Issue", query);
       issues.push(...page.items);
       unreadable += page.unreadable;
       truncated = truncated || page.truncated;
@@ -564,110 +618,61 @@ export class OctokitGitHub implements GitHubPort {
     // does - measured 2026-08-21: adding a login nobody has heard of left
     // the count unchanged rather than emptying it.
     //
+    // Chunked under the same 256-character cap the repo-scoped searches
+    // respect. Nothing bounded the length here at first, and each
+    // qualifier is roughly twenty characters: about ten configured
+    // reviewers crossed the cap, GitHub rejected the query, and the lane
+    // recorded failed every cycle with nothing on the page to suggest the
+    // reviewer count was the cause.
+    //
     // No repo: qualifiers, and this is the one search here without them:
     // the point of this lane is the requests that arrive from outside the
     // watched estate, which were 38 of 40 on the measured account.
-    const query = [
-      "is:pr",
-      "is:open",
-      ...reviewers.map((r) => `review-requested:${r}`),
-    ].join(" ");
-
     const requests: RawReviewRequest[] = [];
     let unreadable = 0;
-    let cursor: string | null = null;
-    for (;;) {
-      const page: {
-        search: {
-          issueCount: number;
-          pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          nodes: unknown[];
-        } | null;
-      } = await gh.graphql(
-        `query ($q: String!, $cursor: String) {
-           search(type: ISSUE, query: $q, first: 100, after: $cursor) {
-             issueCount
-             pageInfo { hasNextPage endCursor }
-             nodes {
-               ... on PullRequest {
-                 id
-                 number
-                 title
-                 url
-                 createdAt
-                 author { login }
-                 repository { name owner { login } }
-                 reviewRequests(first: 20) {
-                   nodes {
-                     requestedReviewer {
-                       ... on User { login }
-                       ... on Team { slug }
-                     }
-                   }
-                 }
-               }
+    let truncated = false;
+    for (const chunk of reviewerQueries(reviewers)) {
+      const page = await runNodeSearch<RawReviewRequest>(
+        gh,
+        "PullRequest",
+        chunk,
+        `reviewRequests(first: 100) {
+           nodes {
+             requestedReviewer {
+               ... on User { login }
+               ... on Team { slug }
              }
            }
          }`,
-        { q: query, cursor },
-      );
-      if (!page.search) {
-        throw new Error("review-request search returned no result container");
-      }
-      for (const node of page.search.nodes) {
-        const pr = node as {
-          id?: string;
-          number?: number;
-          title?: string;
-          url?: string;
-          createdAt?: string;
-          author?: { login?: string } | null;
-          repository?: { name?: string; owner?: { login?: string } } | null;
-          reviewRequests?: {
-            nodes?: ({
-              requestedReviewer?: { login?: string; slug?: string } | null;
-            } | null)[];
-          } | null;
-        } | null;
-        if (
-          !pr?.id ||
-          typeof pr.number !== "number" ||
-          typeof pr.title !== "string" ||
-          !pr.repository?.owner?.login ||
-          !pr.repository.name
-        ) {
-          unreadable++;
-          continue;
-        }
-        requests.push({
-          nodeId: pr.id,
-          repo: {
-            owner: pr.repository.owner.login,
-            name: pr.repository.name,
-          },
-          number: pr.number,
-          title: pr.title,
-          author: pr.author?.login ?? "unknown",
-          htmlUrl: pr.url ?? "",
-          createdAt: pr.createdAt ?? "",
-          requestedReviewers: (pr.reviewRequests?.nodes ?? [])
+        (raw, base) => ({
+          ...base,
+          requestedReviewers: (
+            (
+              raw as {
+                reviewRequests?: {
+                  nodes?:
+                    | ({
+                        requestedReviewer?: {
+                          login?: string;
+                          slug?: string;
+                        } | null;
+                      } | null)[]
+                    | null;
+                } | null;
+              }
+            ).reviewRequests?.nodes ?? []
+          )
             .map(
               (n) => n?.requestedReviewer?.login ?? n?.requestedReviewer?.slug,
             )
             .filter((n): n is string => typeof n === "string"),
-        });
-      }
-      if (!page.search.pageInfo.hasNextPage) {
-        // The same 1000-result ceiling as every other search here.
-        const collected = requests.length + unreadable;
-        return {
-          requests,
-          unreadable,
-          truncated: collected < page.search.issueCount,
-        };
-      }
-      cursor = page.search.pageInfo.endCursor;
+        }),
+      );
+      requests.push(...page.items);
+      unreadable += page.unreadable;
+      truncated = truncated || page.truncated;
     }
+    return { requests, unreadable, truncated };
   }
 
   async listDependabotUpdateStatuses(

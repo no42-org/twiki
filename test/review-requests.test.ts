@@ -300,6 +300,35 @@ describe("the reviews page", () => {
     expect(html).toContain("no alerts, no coverage, no build status");
   });
 
+  it("lists the oldest request first, and says how long it has waited", () => {
+    // The column the page turns on. An earlier version sorted by repository
+    // name while its comment claimed otherwise, so a request left for
+    // months in a late-alphabet repository sorted last and nothing showed
+    // how long anything had been waiting.
+    seed([
+      request({ number: 1, createdAt: "2026-08-20T00:00:00Z" }),
+      request({ number: 2, createdAt: "2026-02-01T00:00:00Z" }),
+    ] as never[]);
+
+    const view = buildReviewView(store, [], NOW, SWEEP);
+
+    expect(view.rows.map((r) => r.number)).toEqual([2, 1]);
+    // And the wait is rendered from the request's own age, not the sweep's.
+    expect(view.rows[0]?.waiting).not.toBe(view.rows[0]?.age);
+  });
+
+  it("names the reviewers rather than counting them", async () => {
+    // GraphQL reports a TEAM request by its slug, so counting produced
+    // "just you" for a pull request nobody had asked the reader for
+    // personally.
+    seed([request({ requestedReviewers: ["maintainers"] })] as never[]);
+
+    const html = await (await app().request("/reviews")).text();
+
+    expect(html).toContain("maintainers");
+    expect(html).not.toContain("just you");
+  });
+
   it("counts a malformed row instead of dropping it", () => {
     seed([
       request(),

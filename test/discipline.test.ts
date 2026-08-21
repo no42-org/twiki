@@ -20,6 +20,7 @@ import {
   MAX_ALERT_PAGES,
   nextLink,
   OctokitGitHub,
+  SEARCH_QUERY_MAX,
 } from "../src/github/octokit-adapter.js";
 
 describe("the backoff decision table (AD-24)", () => {
@@ -866,6 +867,46 @@ describe("the conditional alert listing", () => {
     expect(q).not.toContain("repo:");
     expect(q).not.toContain("org:");
     expect(q).not.toContain("user:");
+  });
+
+  it("chunks reviewers under the search length cap", async () => {
+    // Roughly twenty characters per qualifier: about ten reviewers crossed
+    // the 256-character cap, GitHub rejected the query, and the lane
+    // recorded failed every cycle with nothing on the page to suggest the
+    // reviewer count was why.
+    const many = Array.from({ length: 20 }, (_, i) => `reviewer-number-${i}`);
+    const queries: string[] = [];
+    const gh = {
+      graphql: async (_q: string, vars: { q: string }) => {
+        queries.push(vars.q);
+        return {
+          search: {
+            issueCount: 0,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [],
+          },
+        };
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    await adapter.listReviewRequests("no42-org", many);
+
+    expect(queries.length).toBeGreaterThan(1);
+    for (const q of queries) {
+      expect(q.length).toBeLessThanOrEqual(SEARCH_QUERY_MAX);
+      expect(q).toContain("is:pr is:open");
+    }
+    // Every reviewer asked for exactly once: dropping one loses that
+    // person's requests silently, and duplicating one is a wasted call.
+    const asked = queries.join(" ").match(/review-requested:\S+/g) ?? [];
+    expect(asked.sort()).toEqual(
+      many.map((r) => `review-requested:${r}`).sort(),
+    );
   });
 
   it("asks for nothing when no reviewers are configured", async () => {

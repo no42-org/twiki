@@ -551,12 +551,20 @@ async function main(): Promise<void> {
       reviewRequests:
         config.reviewers.length > 0
           ? () =>
-              collectReviewRequests({
-                ...laneDeps,
-                reviewers: config.reviewers,
-                // Any installation authenticates it; the search is global.
-                viaInstallation: installations[0] ?? "",
-              })
+              collectReviewRequests(
+                {
+                  ...laneDeps,
+                  reviewers: config.reviewers,
+                  // Any installation authenticates it; the search is global.
+                  viaInstallation: installations[0] ?? "",
+                },
+                // Passed explicitly rather than left to the default, for
+                // the reason the KEV lane states above: a scope that
+                // disagrees with the schedule's makes the due-ness key
+                // never match the run written, and the lane re-fetches on
+                // every tick.
+                "full",
+              )
           : null,
       updateStatuses: (installation) =>
         collectUpdateStatuses(laneDeps, installation, "full"),
