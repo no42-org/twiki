@@ -7,31 +7,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type RawWorkflowRun, workflowRunsUrl } from "../src/github/port.js";
+import { workflowRunsUrl } from "../src/github/port.js";
 import {
   collectWorkflowRuns,
   LANE,
   latestPerWorkflow,
 } from "../src/tricorder/collect/workflow-runs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
-import { FakeGitHubReadPort } from "./fakes.js";
+import { FakeGitHubReadPort, makeWorkflowRun } from "./fakes.js";
 
 const REPO = { owner: "no42-org", name: "packyard" };
-
-const makeRun = (over: Partial<RawWorkflowRun> = {}): RawWorkflowRun => ({
-  nodeId: `WFR_${over.runNumber ?? 1}`,
-  repo: REPO,
-  workflowId: 100,
-  workflowName: "CI",
-  runNumber: 1,
-  status: "completed",
-  conclusion: "success",
-  headBranch: "main",
-  event: "push",
-  htmlUrl: "https://github.com/no42-org/packyard/actions/runs/1",
-  createdAt: "2026-08-18T00:00:00.000Z",
-  ...over,
-});
 
 const VALIDATOR = {
   etag: 'W/"runs-1"',
@@ -44,10 +29,14 @@ describe("latest run per workflow", () => {
     // GitHub answers newest first; the selection leans on that rather than
     // re-sorting, so the fixture is deliberately newest-first.
     const latest = latestPerWorkflow([
-      makeRun({ runNumber: 9, workflowId: 100 }),
-      makeRun({ runNumber: 8, workflowId: 200, workflowName: "Release" }),
-      makeRun({ runNumber: 7, workflowId: 100 }),
-      makeRun({ runNumber: 6, workflowId: 200 }),
+      makeWorkflowRun({ runNumber: 9, workflowId: 100 }),
+      makeWorkflowRun({
+        runNumber: 8,
+        workflowId: 200,
+        workflowName: "Release",
+      }),
+      makeWorkflowRun({ runNumber: 7, workflowId: 100 }),
+      makeWorkflowRun({ runNumber: 6, workflowId: 200 }),
     ]);
     expect(latest.map((r) => r.runNumber)).toEqual([9, 8]);
   });
@@ -89,9 +78,9 @@ describe("the Actions lane (story 15)", () => {
 
   it("stores the latest run per workflow, keyed by node id", async () => {
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ runNumber: 9, nodeId: "WFR_9", conclusion: "failure" }),
-      makeRun({ runNumber: 8, nodeId: "WFR_8" }),
-      makeRun({
+      makeWorkflowRun({ runNumber: 9, nodeId: "WFR_9", conclusion: "failure" }),
+      makeWorkflowRun({ runNumber: 8, nodeId: "WFR_8" }),
+      makeWorkflowRun({
         runNumber: 7,
         nodeId: "WFR_7",
         workflowId: 200,
@@ -122,8 +111,8 @@ describe("the Actions lane (story 15)", () => {
   it("tombstones by supersession, never by window absence", async () => {
     // Sweep 1: workflows CI and Release each have a latest run.
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ runNumber: 1, nodeId: "WFR_1" }),
-      makeRun({ runNumber: 2, nodeId: "WFR_2", workflowId: 200 }),
+      makeWorkflowRun({ runNumber: 1, nodeId: "WFR_1" }),
+      makeWorkflowRun({ runNumber: 2, nodeId: "WFR_2", workflowId: 200 }),
     ]);
     await collectWorkflowRuns(deps(), "no42-org", "full");
 
@@ -132,7 +121,7 @@ describe("the Actions lane (story 15)", () => {
     // last known run must stay, because window absence is a fact about the
     // window, not the workflow.
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ runNumber: 3, nodeId: "WFR_3" }),
+      makeWorkflowRun({ runNumber: 3, nodeId: "WFR_3" }),
     ]);
     await collectWorkflowRuns(deps(), "no42-org", "full");
 
@@ -144,13 +133,21 @@ describe("the Actions lane (story 15)", () => {
 
   it("updates the same run in place as its status changes", async () => {
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1", status: "in_progress", conclusion: null }),
+      makeWorkflowRun({
+        nodeId: "WFR_1",
+        status: "in_progress",
+        conclusion: null,
+      }),
     ]);
     await collectWorkflowRuns(deps(), "no42-org", "full");
     const before = current()[0];
 
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1", status: "completed", conclusion: "failure" }),
+      makeWorkflowRun({
+        nodeId: "WFR_1",
+        status: "completed",
+        conclusion: "failure",
+      }),
     ]);
     await collectWorkflowRuns(deps(), "no42-org", "full");
     const after = current()[0];
@@ -162,7 +159,7 @@ describe("the Actions lane (story 15)", () => {
 
   it("a 304 confirms the repository's stored runs without rewriting them", async () => {
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
     await collectWorkflowRuns(deps(), "no42-org", "full");
@@ -186,7 +183,7 @@ describe("the Actions lane (story 15)", () => {
 
   it("purges the validator when a 200 rewrote rows without one", async () => {
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
     await collectWorkflowRuns(deps(), "no42-org", "full");
@@ -200,7 +197,7 @@ describe("the Actions lane (story 15)", () => {
 
   it("unreadable payloads degrade the run and freeze that repo's cache and tombstones", async () => {
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ runNumber: 1, nodeId: "WFR_1" }),
+      makeWorkflowRun({ runNumber: 1, nodeId: "WFR_1" }),
     ]);
     github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
     await collectWorkflowRuns(deps(), "no42-org", "full");
@@ -210,7 +207,7 @@ describe("the Actions lane (story 15)", () => {
     // even-newer run of the same workflow), and no validator may vouch for
     // an incompletely-read page.
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ runNumber: 2, nodeId: "WFR_2" }),
+      makeWorkflowRun({ runNumber: 2, nodeId: "WFR_2" }),
     ]);
     github.workflowRunUnreadable.set("no42-org/packyard", 1);
     const r = await collectWorkflowRuns(deps(), "no42-org", "full");
@@ -226,7 +223,7 @@ describe("the Actions lane (story 15)", () => {
   it("one repository's failure degrades the run, keeping the rest", async () => {
     watched.push({ owner: "no42-org", name: "twiki" });
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     github.workflowRunFailing.add("no42-org/twiki");
 
@@ -240,7 +237,7 @@ describe("the Actions lane (story 15)", () => {
 
   it("a failed repository's stored rows and validator are left alone", async () => {
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
     await collectWorkflowRuns(deps(), "no42-org", "full");
@@ -263,7 +260,7 @@ describe("the Actions lane (story 15)", () => {
     watched.push({ owner: "no42-org", name: "twiki" });
     watched.push({ owner: "no42-org", name: "broken" });
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
     await collectWorkflowRuns(deps(), "no42-org", "full");
@@ -288,7 +285,7 @@ describe("the Actions lane (story 15)", () => {
     // a red build rendering green and fresh for as long as the repo is
     // quiet. Validators land only after the rows they vouch for.
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
     const exploding = {
@@ -312,7 +309,7 @@ describe("the Actions lane (story 15)", () => {
     // /rate_limit is the only honest source (AD-24). A diagnostic that took
     // the lane down would be worse than the number is useful.
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     const ok = await collectWorkflowRuns(deps(), "no42-org", "full");
     expect(ok.budgetRemaining).toBe(5000);
@@ -333,7 +330,7 @@ describe("the Actions lane (story 15)", () => {
     watched.push({ owner: "no42-org", name: "twiki" });
     watched.push({ owner: "no42-org", name: "third" });
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
 
     // A deadline already in the past: nothing is reached at all.
@@ -355,10 +352,13 @@ describe("the Actions lane (story 15)", () => {
     // success for what it did look at.
     watched.push({ owner: "no42-org", name: "twiki" });
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_p" }),
+      makeWorkflowRun({ nodeId: "WFR_p" }),
     ]);
     github.workflowRuns.set("no42-org/twiki", [
-      makeRun({ nodeId: "WFR_t", repo: { owner: "no42-org", name: "twiki" } }),
+      makeWorkflowRun({
+        nodeId: "WFR_t",
+        repo: { owner: "no42-org", name: "twiki" },
+      }),
     ]);
 
     // Sweep 1 reaches exactly one repository before its deadline. The fake
@@ -409,7 +409,7 @@ describe("the Actions lane (story 15)", () => {
     // least-recently-confirmed forever, so the sweep order would keep
     // returning to it while its page section aged into stale.
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
     await collectWorkflowRuns(deps(), "no42-org", "full");
@@ -451,7 +451,10 @@ describe("the Actions lane (story 15)", () => {
     // Sweep 1: only twiki is watched, and it is confirmed.
     watched = [{ owner: "no42-org", name: "twiki" }];
     github.workflowRuns.set("no42-org/twiki", [
-      makeRun({ nodeId: "WFR_t", repo: { owner: "no42-org", name: "twiki" } }),
+      makeWorkflowRun({
+        nodeId: "WFR_t",
+        repo: { owner: "no42-org", name: "twiki" },
+      }),
     ]);
     await collectWorkflowRuns(deps(), "no42-org", "full");
 
@@ -495,8 +498,12 @@ describe("the Actions lane (story 15)", () => {
 
   it("counts failing workflows in the confirmation", async () => {
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1", conclusion: "failure" }),
-      makeRun({ nodeId: "WFR_2", workflowId: 200, conclusion: "success" }),
+      makeWorkflowRun({ nodeId: "WFR_1", conclusion: "failure" }),
+      makeWorkflowRun({
+        nodeId: "WFR_2",
+        workflowId: 200,
+        conclusion: "success",
+      }),
     ]);
 
     await collectWorkflowRuns(deps(), "no42-org", "full");
@@ -509,7 +516,7 @@ describe("the Actions lane (story 15)", () => {
   it("yields before starting when the budget is below the floor", async () => {
     // The security lanes have no cheaper route; this one can wait an hour.
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     github.rateLimit = async () => ({ limit: 5800, remaining: 10 });
 
@@ -527,7 +534,7 @@ describe("the Actions lane (story 15)", () => {
     // An unreadable diagnostic is not evidence of a low budget, and the
     // deadline still bounds the sweep.
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     github.rateLimit = async () => {
       throw new Error("rate_limit unreachable");
@@ -550,7 +557,7 @@ describe("the Actions lane (story 15)", () => {
 
   it("a throwing logger cannot fail the lane", async () => {
     github.workflowRuns.set("no42-org/packyard", [
-      makeRun({ nodeId: "WFR_1" }),
+      makeWorkflowRun({ nodeId: "WFR_1" }),
     ]);
     const r = await collectWorkflowRuns(
       {
