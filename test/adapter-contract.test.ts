@@ -142,6 +142,17 @@ describe("the recorded payloads still map (workflow runs)", () => {
     expect(typeof run?.runNumber).toBe("number");
     expect(run?.status).toBeTruthy();
     expect(run?.event).toBeTruthy();
+    // Carried through, not merely present in the payload: head_branch is
+    // the only branch information this lane has (the payload's own
+    // repository object reports a null default_branch), and the
+    // per-repository page renders it.
+    expect(run?.headBranch).toBe(
+      (fixture("workflow-run.json") as { head_branch: string }).head_branch,
+    );
+    expect(run?.conclusion).toBe(
+      (fixture("workflow-run.json") as { conclusion: string | null })
+        .conclusion,
+    );
     expectSameShape(makeWorkflowRun(), run as object, "RawWorkflowRun");
   });
 
