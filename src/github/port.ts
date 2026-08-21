@@ -177,6 +177,28 @@ export interface GitHubReadPort {
   listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage>;
 
   /**
+   * Open pull requests awaiting review from any of `reviewers` (CAP-5).
+   *
+   * Deliberately NOT scoped to the allowlist, unlike every other search
+   * here. A review request is a claim on the maintainer's attention
+   * wherever it lands, and measured on this estate 38 of 40 were in
+   * repositories nobody watches; scoping would have made the capability
+   * almost empty. What that costs is coverage: these repositories have no
+   * freshness or coverage discipline behind them, so they are kept in
+   * their own subject type and rendered apart from the watched estate,
+   * never mixed into the ranked queue.
+   *
+   * `viaInstallation` only chooses which installation token authenticates
+   * the call. The search itself is global: measured 2026-08-21, all three
+   * installations returned the identical 40 results, including
+   * repositories the App is not installed on.
+   */
+  listReviewRequests(
+    viaInstallation: string,
+    reviewers: readonly string[],
+  ): Promise<ReviewRequestPage>;
+
+  /**
    * What dependabotUpdate reports per open alert of one repository.
    *
    * GraphQL-only: the REST alert payload carries no link to the update PR and
@@ -337,6 +359,33 @@ export interface UpdatePrPage {
    * flag a capped sweep looks complete and the tombstone pass concludes every
    * PR beyond the cap was closed.
    */
+  truncated: boolean;
+}
+
+/** An open pull request awaiting review from a configured login (CAP-5). */
+export interface RawReviewRequest {
+  /** GraphQL node id: the PR's stable identity (AD-22). */
+  nodeId: string;
+  repo: RepoRef;
+  number: number;
+  title: string;
+  author: string;
+  htmlUrl: string;
+  createdAt: string;
+  /**
+   * Everyone currently asked to review, logins and team slugs alike.
+   *
+   * Kept because "waiting on you" reads differently when four other people
+   * were asked too, and the node carries it for free.
+   */
+  requestedReviewers: string[];
+}
+
+export interface ReviewRequestPage {
+  requests: RawReviewRequest[];
+  /** Nodes the mapper could not read. Never silently discarded. */
+  unreadable: number;
+  /** True when GitHub returned fewer results than the query matched. */
   truncated: boolean;
 }
 

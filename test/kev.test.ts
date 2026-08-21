@@ -21,6 +21,7 @@ function catalogueOf(outcome: KevFetchOutcome) {
 }
 
 import { collectKev, KEV_INSTALLATION } from "../src/tricorder/collect/kev.js";
+import { REVIEWS_INSTALLATION } from "../src/tricorder/collect/review-requests.js";
 import { kevSignal, loadKevIndex } from "../src/tricorder/kev-lookup.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { buildCollectionHealth } from "../src/tricorder/web/view.js";
@@ -554,6 +555,7 @@ describe("the real schedule table", () => {
     issues: noop,
     updateStatuses: noop,
     actionsRuns: { installations: ["no42-org", "other-org"], run: noop },
+    reviewRequests: noop,
   });
 
   const lane = (name: string) => schedules.find((s) => s.lane === name);
@@ -562,6 +564,7 @@ describe("the real schedule table", () => {
     expect(schedules.map((s) => s.lane).sort()).toEqual([
       "coverage",
       "graphql-issues",
+      "graphql-review-requests",
       "graphql-update-prs",
       "graphql-update-status",
       "kev",
@@ -583,11 +586,16 @@ describe("the real schedule table", () => {
       issues: noop,
       updateStatuses: noop,
       actionsRuns: null,
+      reviewRequests: null,
     });
     expect(without.map((s) => s.lane)).not.toContain("graphql-update-prs");
     // Same rule for the Actions lane: unset means absent, and the
     // entrypoint says so, rather than a lane silently running on a guess.
     expect(without.map((s) => s.lane)).not.toContain("rest-actions-runs");
+    // Same rule for review requests: an installation token has no user
+    // identity, so with no reviewers configured there is nobody to search
+    // for and the lane is absent rather than quietly empty.
+    expect(without.map((s) => s.lane)).not.toContain("graphql-review-requests");
   });
 
   it("runs KEV only on its own pseudo-installation", () => {
@@ -665,6 +673,15 @@ describe("the real schedule table", () => {
     expect(parseActionsInstallation(undefined, ["no42-org"])).toBeNull();
   });
 
+  it("runs the review lane on its pseudo-installation, once per cycle", () => {
+    // The search is global: sweeping it per installation would repeat one
+    // call once per installation and have those runs reconcile the same
+    // set against each other.
+    expect(lane("graphql-review-requests")?.installations).toEqual([
+      REVIEWS_INSTALLATION,
+    ]);
+  });
+
   it("runs the Actions lane across the allowlist, on its own cadence", () => {
     // Story 16: every installation now that the cost is measured, and
     // hourly rather than the 15-minute sweep cadence, because a full estate
@@ -710,17 +727,25 @@ describe("the real schedule table", () => {
     for (const s of schedules) expect(s.scope, s.lane).toBe("full");
   });
 
-  it("visits KEV's pseudo-installation exactly once", () => {
+  it("visits each pseudo-installation exactly once", () => {
+    // Two lanes now sweep something that is not an installation: the KEV
+    // catalogue, and the global review-request search.
     expect(cycleInstallations(["no42-org"])).toEqual([
       "no42-org",
       KEV_INSTALLATION,
+      REVIEWS_INSTALLATION,
     ]);
   });
 
-  it("does not visit an org literally named cisa twice", () => {
+  it("does not visit an org literally named after one of them twice", () => {
     expect(cycleInstallations([KEV_INSTALLATION, "no42-org"])).toEqual([
       KEV_INSTALLATION,
       "no42-org",
+      REVIEWS_INSTALLATION,
+    ]);
+    expect(cycleInstallations([REVIEWS_INSTALLATION])).toEqual([
+      REVIEWS_INSTALLATION,
+      KEV_INSTALLATION,
     ]);
   });
 });

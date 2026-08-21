@@ -41,6 +41,23 @@ const ConfigSchema = z.strictObject({
         .regex(/^[^\s:"]+$/, "one login per entry, no spaces or search syntax"),
     )
     .optional(),
+  /**
+   * Logins whose review requests to collect (CAP-5).
+   *
+   * Configuration for the same reason the bot actors are (AD-19): an
+   * installation token has no user identity, so `review-requested:@me` is
+   * not available and there is nobody for this dashboard to assume it
+   * belongs to. No default exists in source; unset means the lane does not
+   * run, and the entrypoint says so.
+   */
+  reviewers: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .regex(/^[^\s:"]+$/, "one login per entry, no spaces or search syntax"),
+    )
+    .optional(),
 });
 
 export type RawConfig = z.infer<typeof ConfigSchema>;
@@ -68,6 +85,7 @@ export interface Config {
   remediation: RemediationConfig;
   /** Dependency-update bot actors (AD-19). Empty when none are configured. */
   bots: readonly string[];
+  reviewers: readonly string[];
 }
 
 export function loadConfig(
@@ -105,6 +123,7 @@ export function buildConfig(
     policies,
     remediation,
     bots: raw.bots ?? [],
+    reviewers: raw.reviewers ?? [],
   };
 }
 

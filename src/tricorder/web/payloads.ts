@@ -5,6 +5,7 @@
 
 import type { AlertObservation } from "../collect/dependabot-alerts.js";
 import type { IssueObservation } from "../collect/issues.js";
+import type { ReviewRequestObservation } from "../collect/review-requests.js";
 import type { UpdatePrObservation } from "../collect/update-prs.js";
 import type { UpdateStatusObservation } from "../collect/update-status.js";
 import type { WorkflowRunObservation } from "../collect/workflow-runs.js";
@@ -129,5 +130,21 @@ export function readWorkflowRun(
   if (!stringOrNull(r.conclusion)) return null;
   if (!stringOrNull(r.headBranch)) return null;
   if (typeof r.htmlUrl !== "string") return null;
+  return r;
+}
+
+/**
+ * The review-request shape check, same posture as the rest: counted, not
+ * guessed at.
+ */
+export function readReviewRequest(
+  payload: unknown,
+): ReviewRequestObservation | null {
+  const r = payload as ReviewRequestObservation | null | undefined;
+  if (!r || typeof r !== "object") return null;
+  if (typeof r.repo !== "string" || typeof r.number !== "number") return null;
+  if (typeof r.title !== "string" || typeof r.author !== "string") return null;
+  if (typeof r.htmlUrl !== "string") return null;
+  if (!Array.isArray(r.requestedReviewers)) return null;
   return r;
 }

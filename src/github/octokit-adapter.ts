@@ -33,10 +33,12 @@ import type {
   RawIssue,
   RawPullRequest,
   RawRepoMeta,
+  RawReviewRequest,
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
   RequestValidator,
+  ReviewRequestPage,
   UpdatePrPage,
   WorkflowRunPage,
 } from "./port.js";
@@ -131,23 +133,33 @@ export interface SearchPlan {
  * comment claimed that and it is false: `org:<user>` and `user:<user>`
  * return the same 37 results, measured the same day.
  */
-export function searchQueries(
+/**
+ * Pack `qualifiers` into as few queries under the length cap as possible,
+ * reporting the indices of any that cannot fit a query at all.
+ *
+ * Shared by the repo-scoped and reviewer-scoped searches, which pack
+ * identically and differ only in what an oversized qualifier means: a
+ * repository the sweep must report as unsearchable, or a configured login
+ * the lane must refuse over. Keeping one packer means a fix to the
+ * arithmetic cannot land in one caller and leave the other building queries
+ * GitHub rejects.
+ */
+function packQualifiers(
   base: string,
-  repos: readonly RepoRef[],
-): SearchPlan {
+  qualifiers: readonly string[],
+): { queries: string[]; oversized: Set<number> } {
   const queries: string[] = [];
-  const unsearchable: RepoRef[] = [];
+  const oversized = new Set<number>();
   let current = base;
-  for (const repo of repos) {
-    const qualifier = ` repo:${repo.owner}/${repo.name}`;
+  qualifiers.forEach((qualifier, i) => {
     if (base.length + qualifier.length > SEARCH_QUERY_MAX) {
-      // This ONE repository cannot be searched under this base, however the
-      // rest are packed. Judged per repository rather than against the
+      // This ONE qualifier cannot be searched under this base, however the
+      // rest are packed. Judged per qualifier rather than against the
       // longest: an earlier version refused the whole sweep when any single
       // slug was too long, so one 100-character repository name stopped the
       // other nine from being collected at all.
-      unsearchable.push(repo);
-      continue;
+      oversized.add(i);
+      return;
     }
     if (current.length + qualifier.length > SEARCH_QUERY_MAX) {
       queries.push(current);
@@ -155,9 +167,45 @@ export function searchQueries(
     } else {
       current += qualifier;
     }
-  }
+  });
   if (current !== base) queries.push(current);
-  return { queries, unsearchable };
+  return { queries, oversized };
+}
+
+export function searchQueries(
+  base: string,
+  repos: readonly RepoRef[],
+): SearchPlan {
+  const { queries, oversized } = packQualifiers(
+    base,
+    repos.map((repo) => ` repo:${repo.owner}/${repo.name}`),
+  );
+  return { queries, unsearchable: repos.filter((_, i) => oversized.has(i)) };
+}
+
+/**
+ * Spread `reviewers` over as many queries as the length cap allows.
+ *
+ * The reviewer qualifiers OR together, so splitting them across queries and
+ * merging the results returns the same set - unlike the repo-scoped
+ * searches, where every chunk narrows a different slice.
+ */
+export function reviewerQueries(reviewers: readonly string[]): string[] {
+  const { queries, oversized } = packQualifiers(
+    "is:pr is:open",
+    reviewers.map((reviewer) => ` review-requested:${reviewer}`),
+  );
+  for (const i of oversized) {
+    // One login so long it cannot share a query with the base at all.
+    // Skipping it silently would drop that reviewer's requests without a
+    // word, so it is refused where the reason is legible. Unlike an
+    // unsearchable repository, this is configuration the operator wrote and
+    // can fix.
+    throw new Error(
+      `review-requested qualifier for ${reviewers[i]} exceeds the ${SEARCH_QUERY_MAX}-character search cap`,
+    );
+  }
+  return queries;
 }
 
 export function issueSearchQueries(repos: readonly RepoRef[]): SearchPlan {
@@ -173,12 +221,38 @@ export function issueSearchQueries(repos: readonly RepoRef[]): SearchPlan {
  * PullRequest and Issue nodes are read through one shape: the two fragments
  * request the same fields.
  */
-async function runNodeSearch(
+const NODE_FIELDS = `
+  id
+  number
+  title
+  url
+  createdAt
+  author { login }
+  repository { name owner { login } }
+`;
+
+/** The shape every search node here shares, before the caller's mapping. */
+interface SearchNodeRaw {
+  id?: string;
+  number?: number;
+  title?: string;
+  url?: string;
+  createdAt?: string;
+  author?: { login?: string } | null;
+  repository?: { name?: string; owner?: { login?: string } } | null;
+}
+
+async function runNodeSearch<T>(
   gh: Octokit,
   nodeType: "PullRequest" | "Issue",
   query: string,
-): Promise<{ items: RawUpdatePr[]; unreadable: number; truncated: boolean }> {
-  const items: RawUpdatePr[] = [];
+  /** Extra node sub-selection, for a caller that needs more than the shared fields. */
+  extraFields = "",
+  /** Maps a node the shared guard accepted. Defaults to the update-PR shape. */
+  map: (raw: SearchNodeRaw, base: RawUpdatePr) => T = (_raw, base) =>
+    base as unknown as T,
+): Promise<{ items: T[]; unreadable: number; truncated: boolean }> {
+  const items: T[] = [];
   let unreadable = 0;
   let cursor: string | null = null;
   for (;;) {
@@ -195,13 +269,8 @@ async function runNodeSearch(
            pageInfo { hasNextPage endCursor }
            nodes {
              ... on ${nodeType} {
-               id
-               number
-               title
-               url
-               createdAt
-               author { login }
-               repository { name owner { login } }
+               ${NODE_FIELDS}
+               ${extraFields}
              }
            }
          }
@@ -234,18 +303,20 @@ async function runNodeSearch(
         unreadable++;
         continue;
       }
-      items.push({
-        nodeId: item.id,
-        repo: {
-          owner: item.repository.owner.login,
-          name: item.repository.name,
-        },
-        number: item.number,
-        title: item.title,
-        author: item.author?.login ?? "unknown",
-        htmlUrl: item.url ?? "",
-        createdAt: item.createdAt ?? "",
-      });
+      items.push(
+        map(item, {
+          nodeId: item.id,
+          repo: {
+            owner: item.repository.owner.login,
+            name: item.repository.name,
+          },
+          number: item.number,
+          title: item.title,
+          author: item.author?.login ?? "unknown",
+          htmlUrl: item.url ?? "",
+          createdAt: item.createdAt ?? "",
+        }),
+      );
     }
     if (!page.search.pageInfo.hasNextPage) {
       // hasNextPage goes false at the 1000-result search ceiling exactly as
@@ -499,7 +570,7 @@ export class OctokitGitHub implements GitHubPort {
     let unreadable = 0;
     let truncated = false;
     for (const query of plan.queries) {
-      const page = await runNodeSearch(gh, "PullRequest", query);
+      const page = await runNodeSearch<RawUpdatePr>(gh, "PullRequest", query);
       prs.push(...page.items);
       unreadable += page.unreadable;
       truncated = truncated || page.truncated;
@@ -532,7 +603,7 @@ export class OctokitGitHub implements GitHubPort {
     let unreadable = 0;
     let truncated = false;
     for (const query of plan.queries) {
-      const page = await runNodeSearch(gh, "Issue", query);
+      const page = await runNodeSearch<RawIssue>(gh, "Issue", query);
       issues.push(...page.items);
       unreadable += page.unreadable;
       truncated = truncated || page.truncated;
@@ -543,6 +614,80 @@ export class OctokitGitHub implements GitHubPort {
       truncated,
       unsearchable: plan.unsearchable.length,
     };
+  }
+
+  async listReviewRequests(
+    viaInstallation: string,
+    reviewers: readonly string[],
+  ): Promise<ReviewRequestPage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listReviewRequests needs an org resolver; this client was built without one",
+      );
+    }
+    if (reviewers.length === 0) {
+      return { requests: [], unreadable: 0, truncated: false };
+    }
+    const gh = await this.orgOctokitFor(viaInstallation);
+    // Multiple review-requested qualifiers OR together, exactly as author:
+    // does - measured 2026-08-21: adding a login nobody has heard of left
+    // the count unchanged rather than emptying it.
+    //
+    // Chunked under the same 256-character cap the repo-scoped searches
+    // respect. Nothing bounded the length here at first, and each
+    // qualifier is roughly twenty characters: about ten configured
+    // reviewers crossed the cap, GitHub rejected the query, and the lane
+    // recorded failed every cycle with nothing on the page to suggest the
+    // reviewer count was the cause.
+    //
+    // No repo: qualifiers, and this is the one search here without them:
+    // the point of this lane is the requests that arrive from outside the
+    // watched estate, which were 38 of 40 on the measured account.
+    const requests: RawReviewRequest[] = [];
+    let unreadable = 0;
+    let truncated = false;
+    for (const chunk of reviewerQueries(reviewers)) {
+      const page = await runNodeSearch<RawReviewRequest>(
+        gh,
+        "PullRequest",
+        chunk,
+        `reviewRequests(first: 100) {
+           nodes {
+             requestedReviewer {
+               ... on User { login }
+               ... on Team { slug }
+             }
+           }
+         }`,
+        (raw, base) => ({
+          ...base,
+          requestedReviewers: (
+            (
+              raw as {
+                reviewRequests?: {
+                  nodes?:
+                    | ({
+                        requestedReviewer?: {
+                          login?: string;
+                          slug?: string;
+                        } | null;
+                      } | null)[]
+                    | null;
+                } | null;
+              }
+            ).reviewRequests?.nodes ?? []
+          )
+            .map(
+              (n) => n?.requestedReviewer?.login ?? n?.requestedReviewer?.slug,
+            )
+            .filter((n): n is string => typeof n === "string"),
+        }),
+      );
+      requests.push(...page.items);
+      unreadable += page.unreadable;
+      truncated = truncated || page.truncated;
+    }
+    return { requests, unreadable, truncated };
   }
 
   async listDependabotUpdateStatuses(

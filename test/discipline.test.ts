@@ -20,6 +20,8 @@ import {
   MAX_ALERT_PAGES,
   nextLink,
   OctokitGitHub,
+  reviewerQueries,
+  SEARCH_QUERY_MAX,
 } from "../src/github/octokit-adapter.js";
 
 describe("the backoff decision table (AD-24)", () => {
@@ -827,6 +829,115 @@ describe("the conditional alert listing", () => {
     // archived - it would fall through to the probe and be promised as
     // covered.
     expect(routes).toEqual(["listReposAccessibleToInstallation"]);
+  });
+
+  it("searches for review requests globally, with no repo scoping", async () => {
+    // The one search here without repo: qualifiers, deliberately: 38 of the
+    // 40 measured requests were in repositories nobody watches, and adding
+    // any scoping qualifier would quietly return the capability to almost
+    // empty. Asserted on the query string because that is where the
+    // scoping would live, and the fake cannot see it.
+    const queries: string[] = [];
+    const gh = {
+      graphql: async (_q: string, vars: { q: string }) => {
+        queries.push(vars.q);
+        return {
+          search: {
+            issueCount: 0,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [],
+          },
+        };
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    await adapter.listReviewRequests("no42-org", ["indigo423", "someone"]);
+
+    expect(queries).toHaveLength(1);
+    const q = queries[0] ?? "";
+    expect(q).toContain("review-requested:indigo423");
+    expect(q).toContain("review-requested:someone");
+    expect(q).toContain("is:pr");
+    expect(q).toContain("is:open");
+    // Nothing that narrows it to an account or repository.
+    expect(q).not.toContain("repo:");
+    expect(q).not.toContain("org:");
+    expect(q).not.toContain("user:");
+  });
+
+  it("chunks reviewers under the search length cap", async () => {
+    // Roughly twenty characters per qualifier: about ten reviewers crossed
+    // the 256-character cap, GitHub rejected the query, and the lane
+    // recorded failed every cycle with nothing on the page to suggest the
+    // reviewer count was why.
+    const many = Array.from({ length: 20 }, (_, i) => `reviewer-number-${i}`);
+    const queries: string[] = [];
+    const gh = {
+      graphql: async (_q: string, vars: { q: string }) => {
+        queries.push(vars.q);
+        return {
+          search: {
+            issueCount: 0,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [],
+          },
+        };
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    await adapter.listReviewRequests("no42-org", many);
+
+    expect(queries.length).toBeGreaterThan(1);
+    for (const q of queries) {
+      expect(q.length).toBeLessThanOrEqual(SEARCH_QUERY_MAX);
+      expect(q).toContain("is:pr is:open");
+    }
+    // Every reviewer asked for exactly once: dropping one loses that
+    // person's requests silently, and duplicating one is a wasted call.
+    const asked = queries.join(" ").match(/review-requested:\S+/g) ?? [];
+    expect(asked.sort()).toEqual(
+      many.map((r) => `review-requested:${r}`).sort(),
+    );
+  });
+
+  it("refuses a login too long to search rather than dropping it", () => {
+    // The other half of the cap. A repository too long to search is
+    // reported as unsearchable and the sweep goes on, because repos.yaml
+    // may list a hundred; a reviewer login that long is configuration the
+    // operator typed, and skipping it would drop that person's requests
+    // with nothing anywhere to say so.
+    const tooLong = "r".repeat(SEARCH_QUERY_MAX);
+
+    expect(() => reviewerQueries([tooLong])).toThrow(/exceeds the 256/);
+  });
+
+  it("asks for nothing when no reviewers are configured", async () => {
+    const gh = {
+      graphql: async () => {
+        throw new Error("must not search with no reviewers");
+      },
+    } as unknown as Octokit;
+    const adapter = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+    await expect(adapter.listReviewRequests("no42-org", [])).resolves.toEqual({
+      requests: [],
+      unreadable: 0,
+      truncated: false,
+    });
   });
 
   it("refuses a non-array listing body legibly", async () => {

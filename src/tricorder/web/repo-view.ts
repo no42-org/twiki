@@ -10,6 +10,10 @@ import type { CoverageObservation } from "../collect/coverage.js";
 import type { RepoObservation } from "../collect/dependabot-alerts.js";
 import { watchKey } from "../collect/dependabot-alerts.js";
 import { LANE as ISSUE_LANE } from "../collect/issues.js";
+import {
+  REVIEWS_INSTALLATION,
+  LANE as REVIEWS_LANE,
+} from "../collect/review-requests.js";
 import { LANE as UPDATE_PR_LANE } from "../collect/update-prs.js";
 import { LANE as ACTIONS_LANE } from "../collect/workflow-runs.js";
 import type { CurrentValue, StorePort } from "../store/port.js";
@@ -19,7 +23,13 @@ import {
   type FreshnessPolicy,
   freshness,
 } from "./freshness.js";
-import { readAlert, readIssue, readPr, readWorkflowRun } from "./payloads.js";
+import {
+  readAlert,
+  readIssue,
+  readPr,
+  readReviewRequest,
+  readWorkflowRun,
+} from "./payloads.js";
 
 // The per-repository view (CAP-7): every lane's signals for one repository,
 // each carrying its own freshness.
@@ -83,6 +93,17 @@ export interface RepoRunRow {
   age: string;
 }
 
+export interface RepoReviewRow {
+  key: string;
+  number: number;
+  title: string;
+  author: string;
+  htmlUrl: string | null;
+  requestedReviewers: string[];
+  freshness: Freshness;
+  age: string;
+}
+
 export interface RepoView {
   slug: string;
   coverage: CoverageState | null;
@@ -106,6 +127,14 @@ export interface RepoView {
   issueSection: SectionState;
   runs: RepoRunRow[];
   actionsSection: SectionState;
+  /**
+   * Review requests on THIS repository only, even though the lane collects
+   * them estate-wide: this page is about one watched repository, and a row
+   * from elsewhere has no business on it. The estate-wide list lives at
+   * /reviews.
+   */
+  reviews: RepoReviewRow[];
+  reviewSection: SectionState;
   /**
    * Rows stored for this repository that could not be read. Rendered, never
    * dropped: a page quietly missing items looks complete.
@@ -317,6 +346,32 @@ export function buildRepoView(
     }))
     .sort((a, b) => a.number - b.number);
 
+  const reviewResult = forRepo(
+    store.currentByType("review_request"),
+    slug,
+    readReviewRequest,
+  );
+  // Its unreadable rows are deliberately NOT counted here. Every other lane
+  // feeding forRepo is allowlist-scoped, so an unreadable row of theirs
+  // plausibly belongs to this estate; this lane is estate-wide by design and
+  // 38 of 40 measured rows were in repositories nobody watches, so one
+  // corrupt third-party row would mark EVERY watched repository's page
+  // incomplete - the same failure the alert loop above already fixed once.
+  // The /reviews page counts them, where the reader is looking at the
+  // estate-wide list those rows actually belong to.
+  const reviews = reviewResult.rows
+    .map(({ value, payload }) => ({
+      key: value.subject.key,
+      number: payload.number,
+      title: payload.title,
+      author: payload.author,
+      htmlUrl: safeUrl(payload.htmlUrl),
+      requestedReviewers: payload.requestedReviewers,
+      freshness: freshness(value.verifiedAt, now, deps.policy),
+      age: ageLabel(value.verifiedAt, now),
+    }))
+    .sort((a, b) => a.number - b.number);
+
   const actionsConfirmation = store
     .currentByType("repository_actions")
     .find((v) => v.state === "present" && v.subject.key === slug);
@@ -421,6 +476,16 @@ export function buildRepoView(
           now,
           deps.actionsPolicy ?? deps.policy,
         ),
+    reviews,
+    reviewSection: laneAttestation(
+      store,
+      REVIEWS_LANE,
+      // The review lane runs on its own pseudo-installation, not this
+      // repository's owner: its search is global.
+      REVIEWS_INSTALLATION,
+      now,
+      deps.policy,
+    ),
     unreadable,
     unattributable,
   };
