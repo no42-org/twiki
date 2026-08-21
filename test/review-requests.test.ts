@@ -138,6 +138,26 @@ describe("the review-request lane (CAP-5)", () => {
     expect(current()).toHaveLength(1);
   });
 
+  it("reports both causes when a sweep is degraded twice over", async () => {
+    // Composed, not chosen. A sweep can hit the ceiling AND fail to read
+    // nodes, and reporting only the first attributes the whole degradation
+    // to one cause in the row an operator actually reads.
+    github.reviewRequestTruncated = true;
+    github.reviewRequestUnreadable = 3;
+
+    await collectReviewRequests(deps());
+
+    const detail = store.latestRuns(1)[0]?.detail ?? "";
+    expect(detail).toContain("truncated");
+    expect(detail).toContain("3 review-request nodes could not be read");
+  });
+
+  it("leaves the detail empty when nothing was degraded", async () => {
+    github.reviewRequests = [makeReviewRequest()];
+    await collectReviewRequests(deps());
+    expect(store.latestRuns(1)[0]?.detail ?? null).toBeNull();
+  });
+
   it("runs under its own pseudo-installation", async () => {
     // The search is global, so this lane sweeps nothing that is an
     // installation: running it per installation would repeat one call and

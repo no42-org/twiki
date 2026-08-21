@@ -133,23 +133,33 @@ export interface SearchPlan {
  * comment claimed that and it is false: `org:<user>` and `user:<user>`
  * return the same 37 results, measured the same day.
  */
-export function searchQueries(
+/**
+ * Pack `qualifiers` into as few queries under the length cap as possible,
+ * reporting the indices of any that cannot fit a query at all.
+ *
+ * Shared by the repo-scoped and reviewer-scoped searches, which pack
+ * identically and differ only in what an oversized qualifier means: a
+ * repository the sweep must report as unsearchable, or a configured login
+ * the lane must refuse over. Keeping one packer means a fix to the
+ * arithmetic cannot land in one caller and leave the other building queries
+ * GitHub rejects.
+ */
+function packQualifiers(
   base: string,
-  repos: readonly RepoRef[],
-): SearchPlan {
+  qualifiers: readonly string[],
+): { queries: string[]; oversized: Set<number> } {
   const queries: string[] = [];
-  const unsearchable: RepoRef[] = [];
+  const oversized = new Set<number>();
   let current = base;
-  for (const repo of repos) {
-    const qualifier = ` repo:${repo.owner}/${repo.name}`;
+  qualifiers.forEach((qualifier, i) => {
     if (base.length + qualifier.length > SEARCH_QUERY_MAX) {
-      // This ONE repository cannot be searched under this base, however the
-      // rest are packed. Judged per repository rather than against the
+      // This ONE qualifier cannot be searched under this base, however the
+      // rest are packed. Judged per qualifier rather than against the
       // longest: an earlier version refused the whole sweep when any single
       // slug was too long, so one 100-character repository name stopped the
       // other nine from being collected at all.
-      unsearchable.push(repo);
-      continue;
+      oversized.add(i);
+      return;
     }
     if (current.length + qualifier.length > SEARCH_QUERY_MAX) {
       queries.push(current);
@@ -157,9 +167,20 @@ export function searchQueries(
     } else {
       current += qualifier;
     }
-  }
+  });
   if (current !== base) queries.push(current);
-  return { queries, unsearchable };
+  return { queries, oversized };
+}
+
+export function searchQueries(
+  base: string,
+  repos: readonly RepoRef[],
+): SearchPlan {
+  const { queries, oversized } = packQualifiers(
+    base,
+    repos.map((repo) => ` repo:${repo.owner}/${repo.name}`),
+  );
+  return { queries, unsearchable: repos.filter((_, i) => oversized.has(i)) };
 }
 
 /**
@@ -170,27 +191,21 @@ export function searchQueries(
  * searches, where every chunk narrows a different slice.
  */
 export function reviewerQueries(reviewers: readonly string[]): string[] {
-  const base = "is:pr is:open";
-  const queries: string[] = [];
-  let current = base;
-  for (const reviewer of reviewers) {
-    const qualifier = ` review-requested:${reviewer}`;
-    if (base.length + qualifier.length > SEARCH_QUERY_MAX) {
-      // One login so long it cannot share a query with the base at all.
-      // Skipping it silently would drop that reviewer's requests without
-      // a word, so it is refused where the reason is legible.
-      throw new Error(
-        `review-requested qualifier for ${reviewer} exceeds the ${SEARCH_QUERY_MAX}-character search cap`,
-      );
-    }
-    if (current.length + qualifier.length > SEARCH_QUERY_MAX) {
-      queries.push(current);
-      current = base + qualifier;
-    } else {
-      current += qualifier;
-    }
+  const { queries, oversized } = packQualifiers(
+    "is:pr is:open",
+    reviewers.map((reviewer) => ` review-requested:${reviewer}`),
+  );
+  for (const i of oversized) {
+    // One login so long it cannot share a query with the base at all.
+    // Skipping it silently would drop that reviewer's requests without a
+    // word, so it is refused where the reason is legible. Unlike an
+    // unsearchable repository, this is configuration the operator wrote and
+    // can fix.
+    throw new Error(
+      `review-requested qualifier for ${reviewers[i]} exceeds the ${SEARCH_QUERY_MAX}-character search cap`,
+    );
   }
-  return current === base ? [] : queries.concat(current);
+  return queries;
 }
 
 export function issueSearchQueries(repos: readonly RepoRef[]): SearchPlan {
