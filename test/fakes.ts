@@ -111,9 +111,16 @@ export function makeAlert(
 //
 // Centralised because a hand-written fixture is a claim about what the API
 // produces, and a claim nobody checks is how a lane collected nothing while
-// 613 tests passed: every builder here is pinned against a recorded payload
-// by test/adapter-contract.test.ts, so a shape that drifts from what the
-// adapter can actually produce fails there rather than in production.
+// 613 tests passed.
+//
+// What checks them is test/adapter-contract.test.ts, which drives recorded
+// payloads through the real adapter and compares every mapped field. It
+// covers the shapes these builders stand in for: Dependabot alerts (both
+// listings), workflow runs, pull-request and issue search nodes, update
+// statuses and repository metadata. It does NOT verify these literals
+// directly - a builder may still say whatever it likes about a package
+// name - so treat a value here as a convenience, and the contract as the
+// statement about what the API actually returns.
 
 export const makeRawIssue = (over: Partial<RawIssue> = {}): RawIssue => ({
   nodeId: `I_${over.number ?? 1}`,
