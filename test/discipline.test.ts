@@ -20,6 +20,7 @@ import {
   MAX_ALERT_PAGES,
   nextLink,
   OctokitGitHub,
+  reviewerQueries,
   SEARCH_QUERY_MAX,
 } from "../src/github/octokit-adapter.js";
 
@@ -907,6 +908,17 @@ describe("the conditional alert listing", () => {
     expect(asked.sort()).toEqual(
       many.map((r) => `review-requested:${r}`).sort(),
     );
+  });
+
+  it("refuses a login too long to search rather than dropping it", () => {
+    // The other half of the cap. A repository too long to search is
+    // reported as unsearchable and the sweep goes on, because repos.yaml
+    // may list a hundred; a reviewer login that long is configuration the
+    // operator typed, and skipping it would drop that person's requests
+    // with nothing anywhere to say so.
+    const tooLong = "r".repeat(SEARCH_QUERY_MAX);
+
+    expect(() => reviewerQueries([tooLong])).toThrow(/exceeds the 256/);
   });
 
   it("asks for nothing when no reviewers are configured", async () => {
