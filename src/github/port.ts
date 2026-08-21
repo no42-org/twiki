@@ -123,20 +123,93 @@ export interface OrgAlertPage {
 }
 
 /**
- * Reads only. A consumer that holds just this cannot mutate GitHub, and the
- * compiler enforces that: there is no write method on the type to call. A
- * read-only App installation enforces the same thing at runtime, and the two
- * fail independently.
+ * Reads only, of one named repository.
+ *
+ * Every method here names the repository it acts on, so its installation
+ * resolves from that repository via `GET /repos/{owner}/{repo}/installation`.
+ * That endpoint answers for a user account exactly as it does for an
+ * organisation: measured 2026-08-22 against `indigo423`, it resolved to
+ * installation 154359759. So this half of the surface works on any account
+ * type, and a factory needs nothing but a per-repository resolver to honour
+ * every method on it.
+ *
+ * A consumer holding only this cannot mutate GitHub, and the compiler
+ * enforces that: there is no write method on the type to call. A read-only
+ * App installation enforces the same thing at runtime, and the two fail
+ * independently.
  */
-export interface GitHubReadPort {
+export interface GitHubRepoReadPort {
+  /** Is Dependabot actually watching this repository? One call. */
+  probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess>;
+
+  /**
+   * What dependabotUpdate reports per open alert of one repository.
+   *
+   * GraphQL-only: the REST alert payload carries no link to the update PR and
+   * no error, and this is the only place "GitHub could not prepare the fix"
+   * exists at all.
+   */
+  listDependabotUpdateStatuses(repo: RepoRef): Promise<RawUpdateStatus[]>;
+
+  /**
+   * The newest page of workflow runs for one repository (CAP: build
+   * failures). Page one only, newest first, by design: this is the lane the
+   * spine prices at a hard per-repo floor, so it takes one call per
+   * repository and lets conditional requests (AD-25) make quiet
+   * repositories free. No org-level variant of this endpoint exists.
+   */
+  listRepoWorkflowRuns(
+    repo: RepoRef,
+    cached?: RequestValidator | null,
+  ): Promise<WorkflowRunPage>;
+
+  listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]>;
+  prChecks(repo: RepoRef, headSha: string): Promise<CheckStatus>;
+  branchChecks(repo: RepoRef, branch: string): Promise<CheckStatus>;
+  latestTag(repo: RepoRef): Promise<string | null>;
+  /** Count of Dependabot-attributable commits since `tag` (or all, if null). */
+  dependabotCommitsSince(repo: RepoRef, tag: string | null): Promise<number>;
+  hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean>;
+  defaultBranchSha(repo: RepoRef): Promise<string>;
+
+  // Remediation reads (read-only). `ref` is a SHA or branch name.
+  failingChecks(repo: RepoRef, ref: string): Promise<FailingCheck[]>;
+  workflowRunsForSha(repo: RepoRef, sha: string): Promise<WorkflowRunRef[]>;
+  /** Commits `headSha` is behind `main`; `null` when GitHub can't tell (fail-closed). */
+  behindBy(repo: RepoRef, headSha: string): Promise<number | null>;
+}
+
+/**
+ * Reads only, of a whole account.
+ *
+ * Separate from the repo-scoped half because a per-repository resolver
+ * cannot honour these, and on a user account three of them cannot be
+ * honoured at all. Measured 2026-08-22 against `indigo423`:
+ * `GET /orgs/{login}/installation` and `GET /orgs/{login}/repos` both answer
+ * 404, because a GitHub App on a user account has no org-level endpoint.
+ * Honouring this half means knowing the account kind and resolving
+ * installations by account, which is what `createTricorderReadPort` does
+ * from the installation listing, and what `createGitHubFromEnv`
+ * deliberately does not do.
+ *
+ * The split is a boundary rather than a taxonomy. A port that advertised
+ * these without the wiring behind them failed at the call site with an
+ * upstream 404 naming an orgs endpoint the caller never asked for: honest
+ * status code, wrong story. Keeping them off `GitHubPort` makes that a
+ * compile error instead.
+ *
+ * Three of the six are account-scoped only in how they obtain a token.
+ * `listOpenUpdatePRs`, `listUntriagedIssues` and `listReviewRequests` search
+ * per repository, and those searches work on a user account: measured
+ * 2026-08-19, `org:X` and `user:X` return the same 37 results.
+ */
+export interface GitHubAccountReadPort {
   /**
    * Every repository the account owns, with the states the listing carries.
    * Organisations and user accounts have different endpoints for this, and
    * the org one 404s on a user account.
    */
   listOrgRepos(org: string): Promise<RawRepoMeta[]>;
-  /** Is Dependabot actually watching this repository? One call. */
-  probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess>;
 
   /**
    * Open pull requests in the given repositories authored by any of
@@ -199,46 +272,10 @@ export interface GitHubReadPort {
   ): Promise<ReviewRequestPage>;
 
   /**
-   * What dependabotUpdate reports per open alert of one repository.
-   *
-   * GraphQL-only: the REST alert payload carries no link to the update PR and
-   * no error, and this is the only place "GitHub could not prepare the fix"
-   * exists at all.
-   */
-  listDependabotUpdateStatuses(repo: RepoRef): Promise<RawUpdateStatus[]>;
-
-  /**
-   * The newest page of workflow runs for one repository (CAP: build
-   * failures). Page one only, newest first, by design: this is the lane the
-   * spine prices at a hard per-repo floor, so it takes one call per
-   * repository and lets conditional requests (AD-25) make quiet
-   * repositories free. No org-level variant of this endpoint exists.
-   */
-  listRepoWorkflowRuns(
-    repo: RepoRef,
-    cached?: RequestValidator | null,
-  ): Promise<WorkflowRunPage>;
-
-  /**
    * The core budget, from GET /rate_limit: the one honest source (AD-24).
    * Free: the endpoint does not count against the limit it reports.
    */
   rateLimit(org: string): Promise<{ limit: number; remaining: number }>;
-
-  listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]>;
-  prChecks(repo: RepoRef, headSha: string): Promise<CheckStatus>;
-  branchChecks(repo: RepoRef, branch: string): Promise<CheckStatus>;
-  latestTag(repo: RepoRef): Promise<string | null>;
-  /** Count of Dependabot-attributable commits since `tag` (or all, if null). */
-  dependabotCommitsSince(repo: RepoRef, tag: string | null): Promise<number>;
-  hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean>;
-  defaultBranchSha(repo: RepoRef): Promise<string>;
-
-  // Remediation reads (read-only). `ref` is a SHA or branch name.
-  failingChecks(repo: RepoRef, ref: string): Promise<FailingCheck[]>;
-  workflowRunsForSha(repo: RepoRef, sha: string): Promise<WorkflowRunRef[]>;
-  /** Commits `headSha` is behind `main`; `null` when GitHub can't tell (fail-closed). */
-  behindBy(repo: RepoRef, headSha: string): Promise<number | null>;
 
   // Organisation-scoped reads. These collapse N repositories into one paginated
   // call, which is why the twelve org installations cost about 36 calls per
@@ -269,6 +306,11 @@ export interface GitHubReadPort {
   ): Promise<OrgAlertPage>;
 }
 
+/** Every read, both halves. What gitricorder's collector consumes. */
+export interface GitHubReadPort
+  extends GitHubRepoReadPort,
+    GitHubAccountReadPort {}
+
 /** Mutating — executor only, enforce mode only. */
 export interface GitHubWritePort {
   mergePR(repo: RepoRef, prNumber: number): Promise<void>;
@@ -279,8 +321,17 @@ export interface GitHubWritePort {
   requestDependabotRebase(repo: RepoRef, prNumber: number): Promise<void>;
 }
 
-/** What the write side needs: both halves. The adapter implements this. */
-export interface GitHubPort extends GitHubReadPort, GitHubWritePort {}
+/**
+ * What the write side needs: the repo-scoped reads plus the writes.
+ *
+ * Deliberately not every read. twiki acts on the repositories its allowlist
+ * names and never enumerates an account, so extending the account-scoped
+ * half would advertise six methods `createGitHubFromEnv` cannot honour. It
+ * did, until this split: that factory resolved installations with
+ * `getOrgInstallation`, which 404s on a user account, and nothing in the
+ * type said so.
+ */
+export interface GitHubPort extends GitHubRepoReadPort, GitHubWritePort {}
 
 // App-level reads: what this App is, and where it is installed. These are
 // distinct from GitHubReadPort because they authenticate as the APP, not as an
