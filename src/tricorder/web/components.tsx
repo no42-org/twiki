@@ -7,6 +7,7 @@ import type { FC, PropsWithChildren } from "hono/jsx";
 import type { Freshness } from "./freshness.js";
 import type { Queue } from "./queue.js";
 import type { RepoView, SectionState } from "./repo-view.js";
+import type { ReviewView } from "./review-view.js";
 import type { CollectionHealth, RepoRow } from "./view.js";
 
 // Server-rendered tables. There is no client-side interactivity layer in this
@@ -116,6 +117,7 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({
       <nav>
         <a href="/">repositories</a>
         <a href="/queue">queue</a>
+        <a href="/reviews">reviews</a>
       </nav>
       {children}
     </body>
@@ -541,12 +543,47 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
       </table>
     ) : null}
 
-    <p class="sub">
-      <strong>Review requests</strong>{" "}
-      <span class="never">
-        not collected: no lane collects review requests yet (CAP-5)
-      </span>
-    </p>
+    <Section
+      title="Review requests"
+      state={view.reviewSection}
+      count={view.reviews.length}
+      empty="none waiting on you"
+    />
+    {view.reviews.length > 0 ? (
+      <table>
+        <thead>
+          <tr>
+            <th>Pull request</th>
+            <th>Opened by</th>
+            <th>Also asked</th>
+            <th>Last confirmed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {view.reviews.map((r) => (
+            <tr key={r.key}>
+              <td>
+                {r.htmlUrl ? (
+                  <a href={r.htmlUrl}>#{r.number}</a>
+                ) : (
+                  `#${r.number}`
+                )}{" "}
+                {r.title}
+              </td>
+              <td>{r.author}</td>
+              <td>
+                {r.requestedReviewers.length > 1
+                  ? `${r.requestedReviewers.length - 1} others`
+                  : "just you"}
+              </td>
+              <td>
+                <FreshnessBadge freshness={r.freshness} age={r.age} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    ) : null}
 
     <p class="policy-note">
       Every value carries its own freshness, because each lane confirms on its
@@ -563,6 +600,102 @@ export const UnknownRepoPage: FC<{ slug: string }> = ({ slug }) => (
     <p class="never">
       This repository is not in the watched set, so nothing has ever been
       collected for it. Add it to repos.yaml to start collecting.
+    </p>
+  </Layout>
+);
+
+/**
+ * The review-request page (CAP-5).
+ *
+ * Its own page, not a section of the queue, because these rows are the one
+ * thing collected without the allowlist filter: most of them are in
+ * repositories nobody watches, and nothing behind those has the coverage or
+ * freshness discipline every row on the queue carries. Each says which it
+ * is, so the reader never has to guess.
+ */
+export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
+  view,
+  generatedAt,
+}) => (
+  <Layout title="gitricorder reviews">
+    <h1>Waiting on your review</h1>
+    <p class="sub">
+      {view.attested ? (
+        <>
+          <FreshnessBadge
+            freshness={view.attestedFreshness}
+            age={view.attestedAge}
+          />{" "}
+          {view.rows.length} open
+        </>
+      ) : (
+        <span class="never">not confirmed by any completed sweep</span>
+      )}
+      {" · rendered "}
+      {generatedAt}
+    </p>
+
+    {view.unreadable > 0 ? (
+      <p class="failed">
+        {view.unreadable} stored {view.unreadable === 1 ? "row" : "rows"} could
+        not be read and {view.unreadable === 1 ? "is" : "are"} not shown. This
+        list is incomplete.
+      </p>
+    ) : null}
+
+    {view.attested && view.rows.length === 0 ? (
+      <p class="none">Nothing waiting on you.</p>
+    ) : null}
+
+    {view.rows.length > 0 ? (
+      <table>
+        <thead>
+          <tr>
+            <th>Pull request</th>
+            <th>Opened by</th>
+            <th>Also asked</th>
+            <th>Last confirmed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {view.rows.map((r) => (
+            <tr key={r.key}>
+              <td>
+                {r.htmlUrl ? (
+                  <a href={r.htmlUrl}>
+                    {r.repo}#{r.number}
+                  </a>
+                ) : (
+                  `${r.repo}#${r.number}`
+                )}
+                {r.watched ? null : (
+                  // Said on every row rather than once at the top: this
+                  // repository has no coverage, no alert sweep and no
+                  // freshness behind it beyond this one line.
+                  <span class="badge unknown"> not watched</span>
+                )}
+                <div class="why">{r.title}</div>
+              </td>
+              <td>{r.author}</td>
+              <td>
+                {r.requestedReviewers.length > 1
+                  ? `${r.requestedReviewers.length - 1} others`
+                  : "just you"}
+              </td>
+              <td>
+                <FreshnessBadge freshness={r.freshness} age={r.age} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    ) : null}
+
+    <p class="policy-note">
+      Review requests are collected wherever they land, not only in watched
+      repositories, because a request is a claim on your attention either way.
+      Rows marked not watched carry nothing else from this dashboard: no alerts,
+      no coverage, no build status.
     </p>
   </Layout>
 );

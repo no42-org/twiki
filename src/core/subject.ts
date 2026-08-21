@@ -38,6 +38,12 @@ export const SUBJECT_TYPES = [
   // sweep order is chosen by.
   "repository_actions",
   "issue",
+  // A pull request awaiting the maintainer's review (CAP-5). Its own type
+  // rather than a flavour of dependency_update_pr: these are collected
+  // WITHOUT the allowlist filter every other lane applies, so mixing them
+  // into a watched-estate subject would put rows with no coverage behind
+  // them into views that promise it.
+  "review_request",
 ] as const;
 
 export type SubjectType = (typeof SUBJECT_TYPES)[number];
@@ -119,7 +125,7 @@ export function alertSubject(
 
 /** Issues, pull requests and workflow runs all have a GitHub node id. */
 export function nodeSubject(
-  type: "dependency_update_pr" | "workflow_run" | "issue",
+  type: "dependency_update_pr" | "workflow_run" | "issue" | "review_request",
   nodeId: string,
 ): Subject {
   return { type, key: nodeId };

@@ -33,6 +33,11 @@ import {
   LANE as KEV_LANE,
 } from "./tricorder/collect/kev.js";
 import {
+  collectReviewRequests,
+  REVIEWS_INSTALLATION,
+  LANE as REVIEWS_LANE,
+} from "./tricorder/collect/review-requests.js";
+import {
   assertSchedules,
   formatLine,
   type LaneSchedule,
@@ -191,6 +196,8 @@ export function buildSchedules(deps: {
     | ((installation: string) => Promise<{ outcome: RunOutcome }>)
     | null;
   issues: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  /** Null when no reviewers are configured: the lane is absent, loudly. */
+  reviewRequests: (() => Promise<{ outcome: RunOutcome }>) | null;
   updateStatuses: (installation: string) => Promise<{ outcome: RunOutcome }>;
   /**
    * Null only when the lane is switched off outright. It runs across every
@@ -230,6 +237,21 @@ export function buildSchedules(deps: {
             cadenceMs: ALERT_CADENCE_MS,
             installations: deps.installations,
             run: deps.updatePrs,
+          },
+        ]),
+    ...(deps.reviewRequests === null
+      ? []
+      : [
+          {
+            lane: REVIEWS_LANE,
+            scope: "full" as const,
+            cadenceMs: ALERT_CADENCE_MS,
+            // A pseudo-installation, like KEV's: the search is global, so
+            // running this per installation would make the same call once
+            // per installation and have the runs reconcile against each
+            // other.
+            installations: [REVIEWS_INSTALLATION],
+            run: deps.reviewRequests,
           },
         ]),
     {
@@ -283,7 +305,9 @@ export function buildSchedules(deps: {
  * and every GitHub lane would sweep it twice per cycle.
  */
 export function cycleInstallations(installations: readonly string[]): string[] {
-  return [...new Set([...installations, KEV_INSTALLATION])];
+  return [
+    ...new Set([...installations, KEV_INSTALLATION, REVIEWS_INSTALLATION]),
+  ];
 }
 
 /**
@@ -524,6 +548,16 @@ async function main(): Promise<void> {
               )
           : null,
       issues: (installation) => collectIssues(laneDeps, installation, "full"),
+      reviewRequests:
+        config.reviewers.length > 0
+          ? () =>
+              collectReviewRequests({
+                ...laneDeps,
+                reviewers: config.reviewers,
+                // Any installation authenticates it; the search is global.
+                viaInstallation: installations[0] ?? "",
+              })
+          : null,
       updateStatuses: (installation) =>
         collectUpdateStatuses(laneDeps, installation, "full"),
       // Case-folded like the installations it must match. assertSchedules
@@ -557,6 +591,16 @@ async function main(): Promise<void> {
     } else if (actionsInstallations.length < installations.length) {
       log(
         `TRICORDER_ACTIONS_INSTALLATION restricts the Actions lane to ${actionsInstallations.join(", ")}; the other installations are not swept.`,
+      );
+    }
+
+    if (config.reviewers.length === 0) {
+      // Absent, loudly (AD-19, AD-28): an installation token has no user
+      // identity, so there is nobody this dashboard could assume the
+      // requests belong to, and "no reviews waiting" must not be what an
+      // unset list looks like.
+      log(
+        "no reviewers configured; the review-request lane is disabled. Set reviewers: in repos.yaml.",
       );
     }
 

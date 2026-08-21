@@ -466,8 +466,9 @@ describe("the per-repository page", () => {
     // The lanes that never ran say so, rather than showing empty tables -
     // and say it without claiming more than the store can support.
     expect(html).toContain("not confirmed by any completed sweep");
-    // And the capability with no lane at all is named outright.
-    expect(html).toContain("no lane collects review requests yet");
+    // Review requests have a lane now (CAP-5), so the section behaves like
+    // every other one: unconfirmed until a sweep says otherwise.
+    expect(html).toContain("Review requests");
   });
 
   it("does not list alerts under a header saying it has no count", async () => {

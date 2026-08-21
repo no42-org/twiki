@@ -33,10 +33,12 @@ import type {
   RawIssue,
   RawPullRequest,
   RawRepoMeta,
+  RawReviewRequest,
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
   RequestValidator,
+  ReviewRequestPage,
   UpdatePrPage,
   WorkflowRunPage,
 } from "./port.js";
@@ -543,6 +545,129 @@ export class OctokitGitHub implements GitHubPort {
       truncated,
       unsearchable: plan.unsearchable.length,
     };
+  }
+
+  async listReviewRequests(
+    viaInstallation: string,
+    reviewers: readonly string[],
+  ): Promise<ReviewRequestPage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listReviewRequests needs an org resolver; this client was built without one",
+      );
+    }
+    if (reviewers.length === 0) {
+      return { requests: [], unreadable: 0, truncated: false };
+    }
+    const gh = await this.orgOctokitFor(viaInstallation);
+    // Multiple review-requested qualifiers OR together, exactly as author:
+    // does - measured 2026-08-21: adding a login nobody has heard of left
+    // the count unchanged rather than emptying it.
+    //
+    // No repo: qualifiers, and this is the one search here without them:
+    // the point of this lane is the requests that arrive from outside the
+    // watched estate, which were 38 of 40 on the measured account.
+    const query = [
+      "is:pr",
+      "is:open",
+      ...reviewers.map((r) => `review-requested:${r}`),
+    ].join(" ");
+
+    const requests: RawReviewRequest[] = [];
+    let unreadable = 0;
+    let cursor: string | null = null;
+    for (;;) {
+      const page: {
+        search: {
+          issueCount: number;
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          nodes: unknown[];
+        } | null;
+      } = await gh.graphql(
+        `query ($q: String!, $cursor: String) {
+           search(type: ISSUE, query: $q, first: 100, after: $cursor) {
+             issueCount
+             pageInfo { hasNextPage endCursor }
+             nodes {
+               ... on PullRequest {
+                 id
+                 number
+                 title
+                 url
+                 createdAt
+                 author { login }
+                 repository { name owner { login } }
+                 reviewRequests(first: 20) {
+                   nodes {
+                     requestedReviewer {
+                       ... on User { login }
+                       ... on Team { slug }
+                     }
+                   }
+                 }
+               }
+             }
+           }
+         }`,
+        { q: query, cursor },
+      );
+      if (!page.search) {
+        throw new Error("review-request search returned no result container");
+      }
+      for (const node of page.search.nodes) {
+        const pr = node as {
+          id?: string;
+          number?: number;
+          title?: string;
+          url?: string;
+          createdAt?: string;
+          author?: { login?: string } | null;
+          repository?: { name?: string; owner?: { login?: string } } | null;
+          reviewRequests?: {
+            nodes?: ({
+              requestedReviewer?: { login?: string; slug?: string } | null;
+            } | null)[];
+          } | null;
+        } | null;
+        if (
+          !pr?.id ||
+          typeof pr.number !== "number" ||
+          typeof pr.title !== "string" ||
+          !pr.repository?.owner?.login ||
+          !pr.repository.name
+        ) {
+          unreadable++;
+          continue;
+        }
+        requests.push({
+          nodeId: pr.id,
+          repo: {
+            owner: pr.repository.owner.login,
+            name: pr.repository.name,
+          },
+          number: pr.number,
+          title: pr.title,
+          author: pr.author?.login ?? "unknown",
+          htmlUrl: pr.url ?? "",
+          createdAt: pr.createdAt ?? "",
+          requestedReviewers: (pr.reviewRequests?.nodes ?? [])
+            .map(
+              (n) => n?.requestedReviewer?.login ?? n?.requestedReviewer?.slug,
+            )
+            .filter((n): n is string => typeof n === "string"),
+        });
+      }
+      if (!page.search.pageInfo.hasNextPage) {
+        // The same 1000-result ceiling as every other search here.
+        const collected = requests.length + unreadable;
+        return {
+          requests,
+          unreadable,
+          truncated: collected < page.search.issueCount,
+        };
+      }
+      cursor = page.search.pageInfo.endCursor;
+    }
   }
 
   async listDependabotUpdateStatuses(

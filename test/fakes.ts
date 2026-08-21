@@ -29,10 +29,12 @@ import type {
   RawIssue,
   RawPullRequest,
   RawRepoMeta,
+  RawReviewRequest,
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
   RequestValidator,
+  ReviewRequestPage,
   UpdatePrPage,
   WorkflowRunPage,
 } from "../src/github/port.js";
@@ -121,6 +123,20 @@ export function makeAlert(
 // directly - a builder may still say whatever it likes about a package
 // name - so treat a value here as a convenience, and the contract as the
 // statement about what the API actually returns.
+
+export const makeReviewRequest = (
+  over: Partial<RawReviewRequest> = {},
+): RawReviewRequest => ({
+  nodeId: `RR_${over.number ?? 1}`,
+  repo: { owner: "OpenNMS", name: "opennms" },
+  number: 8803,
+  title: "NMS-19878: Topology Preview UI",
+  author: "someone-else",
+  htmlUrl: "https://github.com/OpenNMS/opennms/pull/8803",
+  createdAt: "2026-08-19T17:48:49Z",
+  requestedReviewers: ["indigo423", "christianpape"],
+  ...over,
+});
 
 export const makeRawIssue = (over: Partial<RawIssue> = {}): RawIssue => ({
   nodeId: `I_${over.number ?? 1}`,
@@ -297,6 +313,28 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       unreadable: this.updatePrUnreadable.get(org) ?? 0,
       truncated: this.updatePrTruncated.has(org),
       unsearchable: this.updatePrUnsearchable.get(org) ?? 0,
+    };
+  }
+
+  /** Review requests the global search answers with (CAP-5). */
+  reviewRequests: RawReviewRequest[] = [];
+  reviewRequestUnreadable = 0;
+  reviewRequestTruncated = false;
+  /** Whose token each call authenticated with, and for whom it searched. */
+  reviewRequestQueries: {
+    viaInstallation: string;
+    reviewers: readonly string[];
+  }[] = [];
+
+  async listReviewRequests(
+    viaInstallation: string,
+    reviewers: readonly string[],
+  ): Promise<ReviewRequestPage> {
+    this.reviewRequestQueries.push({ viaInstallation, reviewers });
+    return {
+      requests: this.reviewRequests,
+      unreadable: this.reviewRequestUnreadable,
+      truncated: this.reviewRequestTruncated,
     };
   }
 

@@ -10,10 +10,17 @@ import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
 import { LANE as KEV_LANE } from "../collect/kev.js";
 import { LANE as ACTIONS_LANE } from "../collect/workflow-runs.js";
 import type { StorePort } from "../store/port.js";
-import { Page, QueuePage, RepoPage, UnknownRepoPage } from "./components.js";
+import {
+  Page,
+  QueuePage,
+  RepoPage,
+  ReviewsPage,
+  UnknownRepoPage,
+} from "./components.js";
 import type { FreshnessPolicy } from "./freshness.js";
 import { buildQueue } from "./queue.js";
 import { buildRepoView } from "./repo-view.js";
+import { buildReviewView } from "./review-view.js";
 import { buildCollectionHealth, buildRepoRows } from "./view.js";
 
 // Routes read through StorePort only: no SQL, no table name, no predicate
@@ -102,6 +109,14 @@ export function createApp(deps: AppDeps): Hono {
       actionsPolicy: deps.lanePolicies?.[ACTIONS_LANE],
     });
     const body = RepoPage({ view, generatedAt: now.toISOString() });
+    return c.html(`<!DOCTYPE html>${body}`);
+  });
+
+  app.get("/reviews", (c) => {
+    const now = deps.now();
+    const view = buildReviewView(deps.store, deps.watched, now, deps.policy);
+    const body = ReviewsPage({ view, generatedAt: now.toISOString() });
+    c.header("Cache-Control", "no-store");
     return c.html(`<!DOCTYPE html>${body}`);
   });
 
