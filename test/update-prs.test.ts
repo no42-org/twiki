@@ -9,25 +9,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/core/config.js";
 import { OctokitGitHub } from "../src/github/octokit-adapter.js";
-import type { RawUpdatePr } from "../src/github/port.js";
 import {
   bumpFromTitle,
   collectUpdatePRs,
-  LANE,
 } from "../src/tricorder/collect/update-prs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
-import { FakeGitHubReadPort } from "./fakes.js";
-
-const makePr = (over: Partial<RawUpdatePr> = {}): RawUpdatePr => ({
-  nodeId: `PR_${over.number ?? 1}`,
-  repo: { owner: "no42-org", name: "twiki" },
-  number: 1,
-  title: "Bump left-pad from 1.0.0 to 1.0.1",
-  author: "dependabot",
-  htmlUrl: "https://github.com/no42-org/twiki/pull/1",
-  createdAt: "2026-08-17T00:00:00.000Z",
-  ...over,
-});
+import { FakeGitHubReadPort, makeUpdatePr } from "./fakes.js";
 
 describe("bump from the PR title", () => {
   it("classifies a Dependabot title", () => {
@@ -107,7 +94,7 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
   });
 
   it("stores a PR keyed by node id, with the bump parsed at ingest", async () => {
-    github.updatePrs.set("no42-org", [makePr({ number: 7 })]);
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 7 })]);
 
     const r = await collectUpdatePRs(deps(), "no42-org", "full");
 
@@ -153,8 +140,8 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
 
   it("drops PRs outside the allowlist", async () => {
     github.updatePrs.set("no42-org", [
-      makePr({ number: 1 }),
-      makePr({
+      makeUpdatePr({ number: 1 }),
+      makeUpdatePr({
         number: 2,
         nodeId: "PR_2",
         repo: { owner: "no42-org", name: "unwatched" },
@@ -168,7 +155,7 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
   });
 
   it("tombstones a PR a clean full sweep no longer sees", async () => {
-    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
     await collectUpdatePRs(deps(), "no42-org", "full");
 
     github.updatePrs.set("no42-org", []);
@@ -178,7 +165,7 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
   });
 
   it("does not tombstone on a hot sweep, which queried a subset", async () => {
-    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
     await collectUpdatePRs(deps(), "no42-org", "full");
 
     github.updatePrs.set("no42-org", []);
@@ -188,7 +175,7 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
   });
 
   it("does not tombstone when nodes were unreadable", async () => {
-    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
     await collectUpdatePRs(deps(), "no42-org", "full");
 
     github.updatePrs.set("no42-org", []);
@@ -204,7 +191,7 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     // one org concluding a PR in another org is gone would wipe real state.
     watched.add("other-org/thing");
     github.updatePrs.set("other-org", [
-      makePr({
+      makeUpdatePr({
         number: 9,
         nodeId: "PR_9",
         repo: { owner: "other-org", name: "thing" },
@@ -219,7 +206,7 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
   });
 
   it("does not tombstone a repository dropped from the allowlist", async () => {
-    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
     await collectUpdatePRs(deps(), "no42-org", "full");
 
     watched.delete("no42-org/twiki");
@@ -233,7 +220,7 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
   it("does not tombstone when a repository could not be searched at all", async () => {
     // Its qualifier did not fit in any query, so nothing was learned about
     // it. Absence from a sweep that never asked means nothing (AD-23).
-    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
     await collectUpdatePRs(deps(), "no42-org", "full");
 
     github.updatePrs.set("no42-org", []);
@@ -249,7 +236,7 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     // Search caps at 1000 results and reports it only through issueCount:
     // hasNextPage goes false exactly as at a genuine end. A capped sweep that
     // finished "ok" would conclude every PR beyond the cap was closed.
-    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
     await collectUpdatePRs(deps(), "no42-org", "full");
 
     github.updatePrs.set("no42-org", []);
@@ -281,7 +268,7 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
   });
 
   it("a throwing logger cannot fail the lane", async () => {
-    github.updatePrs.set("no42-org", [makePr({ number: 1 })]);
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
     const r = await collectUpdatePRs(
       {
         ...deps(),

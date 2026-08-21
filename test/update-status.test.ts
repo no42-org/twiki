@@ -8,20 +8,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { OctokitGitHub } from "../src/github/octokit-adapter.js";
-import type { RawUpdateStatus } from "../src/github/port.js";
 import {
   collectUpdateStatuses,
   LANE,
 } from "../src/tricorder/collect/update-status.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
-import { FakeGitHubReadPort } from "./fakes.js";
-
-const makeStatus = (over: Partial<RawUpdateStatus> = {}): RawUpdateStatus => ({
-  repo: { owner: "no42-org", name: "twiki" },
-  alertNumber: 1,
-  update: { pullRequestNumber: 10, error: null },
-  ...over,
-});
+import { FakeGitHubReadPort, makeUpdateStatus } from "./fakes.js";
 
 describe("the update-status lane (CAP-3's stuck criterion)", () => {
   let dir: string;
@@ -61,15 +53,15 @@ describe("the update-status lane (CAP-3's stuck criterion)", () => {
 
   it("stores a status keyed like the alert it describes", async () => {
     github.updateStatuses.set("no42-org/twiki", [
-      makeStatus({ alertNumber: 7 }),
-      makeStatus({
+      makeUpdateStatus({ alertNumber: 7 }),
+      makeUpdateStatus({
         alertNumber: 8,
         update: {
           pullRequestNumber: null,
           error: "dependency_file_not_supported",
         },
       }),
-      makeStatus({ alertNumber: 9, update: null }),
+      makeUpdateStatus({ alertNumber: 9, update: null }),
     ]);
 
     const r = await collectUpdateStatuses(deps(), "no42-org", "full");
@@ -100,7 +92,7 @@ describe("the update-status lane (CAP-3's stuck criterion)", () => {
     // outcome must not let the reconciliation conclude anything.
     watched.push({ owner: "no42-org", name: "other" });
     github.updateStatuses.set("no42-org/twiki", [
-      makeStatus({ alertNumber: 1 }),
+      makeUpdateStatus({ alertNumber: 1 }),
     ]);
     github.updateStatusFailing.add("no42-org/other");
 
@@ -116,7 +108,7 @@ describe("the update-status lane (CAP-3's stuck criterion)", () => {
     // The alert closed, so its status row must go too: a stale "stuck" flag
     // on a fixed alert would keep shouting about a problem that is gone.
     github.updateStatuses.set("no42-org/twiki", [
-      makeStatus({ alertNumber: 1 }),
+      makeUpdateStatus({ alertNumber: 1 }),
     ]);
     await collectUpdateStatuses(deps(), "no42-org", "full");
 
@@ -129,7 +121,7 @@ describe("the update-status lane (CAP-3's stuck criterion)", () => {
   it("does not reconcile on a partial sweep", async () => {
     watched.push({ owner: "no42-org", name: "other" });
     github.updateStatuses.set("no42-org/twiki", [
-      makeStatus({ alertNumber: 1 }),
+      makeUpdateStatus({ alertNumber: 1 }),
     ]);
     await collectUpdateStatuses(deps(), "no42-org", "full");
 
@@ -143,7 +135,7 @@ describe("the update-status lane (CAP-3's stuck criterion)", () => {
 
   it("does not reconcile on a hot sweep, which queried a subset", async () => {
     github.updateStatuses.set("no42-org/twiki", [
-      makeStatus({ alertNumber: 1 }),
+      makeUpdateStatus({ alertNumber: 1 }),
     ]);
     await collectUpdateStatuses(deps(), "no42-org", "full");
 
@@ -158,7 +150,7 @@ describe("the update-status lane (CAP-3's stuck criterion)", () => {
     // reconciliation by key prefix (AD-16).
     watched.push({ owner: "other-org", name: "thing" });
     github.updateStatuses.set("other-org/thing", [
-      makeStatus({
+      makeUpdateStatus({
         alertNumber: 9,
         repo: { owner: "other-org", name: "thing" },
       }),
@@ -173,7 +165,7 @@ describe("the update-status lane (CAP-3's stuck criterion)", () => {
 
   it("does not reconcile a repository dropped from the allowlist", async () => {
     github.updateStatuses.set("no42-org/twiki", [
-      makeStatus({ alertNumber: 1 }),
+      makeUpdateStatus({ alertNumber: 1 }),
     ]);
     await collectUpdateStatuses(deps(), "no42-org", "full");
 
@@ -196,7 +188,7 @@ describe("the update-status lane (CAP-3's stuck criterion)", () => {
 
   it("a throwing logger cannot fail the lane", async () => {
     github.updateStatuses.set("no42-org/twiki", [
-      makeStatus({ alertNumber: 1 }),
+      makeUpdateStatus({ alertNumber: 1 }),
     ]);
     const r = await collectUpdateStatuses(
       {

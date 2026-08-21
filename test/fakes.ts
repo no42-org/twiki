@@ -107,6 +107,65 @@ export function makeAlert(
   };
 }
 
+// Domain fixtures, in ONE place.
+//
+// Centralised because a hand-written fixture is a claim about what the API
+// produces, and a claim nobody checks is how a lane collected nothing while
+// 613 tests passed: every builder here is pinned against a recorded payload
+// by test/adapter-contract.test.ts, so a shape that drifts from what the
+// adapter can actually produce fails there rather than in production.
+
+export const makeRawIssue = (over: Partial<RawIssue> = {}): RawIssue => ({
+  nodeId: `I_${over.number ?? 1}`,
+  repo: { owner: "no42-org", name: "twiki" },
+  number: 1,
+  title: "Crash on startup",
+  author: "some-user",
+  htmlUrl: "https://github.com/no42-org/twiki/issues/1",
+  createdAt: "2026-08-17T00:00:00.000Z",
+  ...over,
+});
+
+export const makeUpdateStatus = (
+  over: Partial<RawUpdateStatus> = {},
+): RawUpdateStatus => ({
+  repo: { owner: "no42-org", name: "twiki" },
+  alertNumber: 1,
+  update: { pullRequestNumber: 10, error: null },
+  ...over,
+});
+
+export const makeUpdatePr = (over: Partial<RawUpdatePr> = {}): RawUpdatePr => ({
+  nodeId: `PR_${over.number ?? 1}`,
+  repo: { owner: "no42-org", name: "twiki" },
+  number: 1,
+  title: "Bump left-pad from 1.0.0 to 1.0.1",
+  author: "dependabot",
+  htmlUrl: "https://github.com/no42-org/twiki/pull/1",
+  createdAt: "2026-08-17T00:00:00.000Z",
+  ...over,
+});
+
+export const makeWorkflowRun = (
+  over: Partial<RawWorkflowRun> = {},
+): RawWorkflowRun => ({
+  nodeId: `WFR_${over.runNumber ?? 1}`,
+  // Spelled out rather than reusing REPO: this builder moved here from the
+  // Actions lane's own test file, where REPO meant a different repository,
+  // and inheriting the wrong one silently repointed every fixture.
+  repo: { owner: "no42-org", name: "packyard" },
+  workflowId: 100,
+  workflowName: "CI",
+  runNumber: 1,
+  status: "completed",
+  conclusion: "success",
+  headBranch: "main",
+  event: "push",
+  htmlUrl: "https://github.com/no42-org/packyard/actions/runs/1",
+  createdAt: "2026-08-18T00:00:00.000Z",
+  ...over,
+});
+
 /** Advisor stub: returns a fixed plan, or one derived from the input. */
 export class StubAdvisor implements Advisor {
   constructor(

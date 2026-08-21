@@ -12,21 +12,9 @@ import {
   SEARCH_QUERY_MAX,
   searchQueries,
 } from "../src/github/octokit-adapter.js";
-import type { RawIssue } from "../src/github/port.js";
 import { collectIssues, LANE } from "../src/tricorder/collect/issues.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
-import { FakeGitHubReadPort } from "./fakes.js";
-
-const makeIssue = (over: Partial<RawIssue> = {}): RawIssue => ({
-  nodeId: `I_${over.number ?? 1}`,
-  repo: { owner: "no42-org", name: "twiki" },
-  number: 1,
-  title: "Crash on startup",
-  author: "some-user",
-  htmlUrl: "https://github.com/no42-org/twiki/issues/1",
-  createdAt: "2026-08-17T00:00:00.000Z",
-  ...over,
-});
+import { FakeGitHubReadPort, makeRawIssue } from "./fakes.js";
 
 describe("the untriaged-issue lane (CAP-2)", () => {
   let dir: string;
@@ -70,7 +58,7 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   });
 
   it("stores an issue keyed by node id", async () => {
-    github.issues.set("no42-org", [makeIssue({ number: 7 })]);
+    github.issues.set("no42-org", [makeRawIssue({ number: 7 })]);
 
     const r = await collectIssues(deps(), "no42-org", "full");
 
@@ -86,8 +74,8 @@ describe("the untriaged-issue lane (CAP-2)", () => {
 
   it("drops issues outside the allowlist", async () => {
     github.issues.set("no42-org", [
-      makeIssue({ number: 1 }),
-      makeIssue({
+      makeRawIssue({ number: 1 }),
+      makeRawIssue({
         number: 2,
         nodeId: "I_2",
         repo: { owner: "no42-org", name: "unwatched" },
@@ -102,7 +90,7 @@ describe("the untriaged-issue lane (CAP-2)", () => {
 
   it("tombstones an issue a clean full sweep no longer sees", async () => {
     // Assigned or closed, either way it left the untriaged set.
-    github.issues.set("no42-org", [makeIssue({ number: 1 })]);
+    github.issues.set("no42-org", [makeRawIssue({ number: 1 })]);
     await collectIssues(deps(), "no42-org", "full");
 
     github.issues.set("no42-org", []);
@@ -112,7 +100,7 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   });
 
   it("does not tombstone on a hot sweep, which queried a subset", async () => {
-    github.issues.set("no42-org", [makeIssue({ number: 1 })]);
+    github.issues.set("no42-org", [makeRawIssue({ number: 1 })]);
     await collectIssues(deps(), "no42-org", "full");
 
     github.issues.set("no42-org", []);
@@ -122,7 +110,7 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   });
 
   it("does not tombstone when nodes were unreadable", async () => {
-    github.issues.set("no42-org", [makeIssue({ number: 1 })]);
+    github.issues.set("no42-org", [makeRawIssue({ number: 1 })]);
     await collectIssues(deps(), "no42-org", "full");
 
     github.issues.set("no42-org", []);
@@ -137,7 +125,7 @@ describe("the untriaged-issue lane (CAP-2)", () => {
     // Same trap as the PR search: 1000 results, hasNextPage false, and only
     // issueCount says the set is incomplete. A capped "ok" sweep would
     // conclude every issue beyond the cap had been dealt with.
-    github.issues.set("no42-org", [makeIssue({ number: 1 })]);
+    github.issues.set("no42-org", [makeRawIssue({ number: 1 })]);
     await collectIssues(deps(), "no42-org", "full");
 
     github.issues.set("no42-org", []);
@@ -152,7 +140,7 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   it("does not tombstone another installation's issues", async () => {
     watched.add("other-org/thing");
     github.issues.set("other-org", [
-      makeIssue({
+      makeRawIssue({
         number: 9,
         nodeId: "I_9",
         repo: { owner: "other-org", name: "thing" },
@@ -167,7 +155,7 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   });
 
   it("does not tombstone a repository dropped from the allowlist", async () => {
-    github.issues.set("no42-org", [makeIssue({ number: 1 })]);
+    github.issues.set("no42-org", [makeRawIssue({ number: 1 })]);
     await collectIssues(deps(), "no42-org", "full");
 
     watched.delete("no42-org/twiki");
@@ -187,7 +175,7 @@ describe("the untriaged-issue lane (CAP-2)", () => {
   });
 
   it("a throwing logger cannot fail the lane", async () => {
-    github.issues.set("no42-org", [makeIssue({ number: 1 })]);
+    github.issues.set("no42-org", [makeRawIssue({ number: 1 })]);
     const r = await collectIssues(
       {
         ...deps(),
