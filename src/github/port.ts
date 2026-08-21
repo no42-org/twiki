@@ -399,8 +399,12 @@ export interface RawWorkflowRun {
   conclusion: string | null;
   /**
    * Kept so a consumer can weigh a feature-branch failure differently from a
-   * main failure. The run payload's own repository object carries a null
-   * default_branch (measured 2026-08-18), so the lane cannot filter by it.
+   * main failure. The run payload's own repository object has NO
+   * default_branch key at all - the original measurement read it through
+   * jq, which prints null for an absent key and a null one alike, and the
+   * comment it produced claimed a null the payload never sends. Either way
+   * the lane cannot filter by it, and test/adapter-contract.test.ts now
+   * asserts the absence rather than the null.
    */
   headBranch: string | null;
   /** push, schedule, pull_request, workflow_dispatch, dynamic... */

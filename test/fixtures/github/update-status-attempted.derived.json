@@ -1,0 +1,12 @@
+{
+ "dependabotUpdate": {
+  "pullRequest": {
+   "number": 4242
+  },
+  "error": {
+   "title": "The logs for this update could not be found",
+   "errorType": "unknown_error"
+  }
+ },
+ "number": 1
+}
