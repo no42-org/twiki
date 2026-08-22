@@ -211,6 +211,42 @@ The collector reaches **api.github.com** and, for the KEV lane only, **www.cisa.
 The CISA request carries no credentials and downloads roughly 1.5 MB once a day.
 `TRICORDER_KEV_URL` repoints it; there is no way to disable the lane, and a failed fetch leaves every KEV answer `unknown` rather than "not listed".
 
+### Running it
+
+Both products run from **one image**, selected by command (AD-13). `compose.yml`
+runs all three: `twiki` on the image's default command, plus gitricorder's
+`tricorder-collect` and `tricorder-web`.
+
+```sh
+cp .env.example .env      # then fill in the two App IDs and key paths
+make up                   # start
+make logs                 # follow
+make ps                   # what is running
+make down                 # stop
+```
+
+The dashboard is then at <http://127.0.0.1:8787>.
+
+Four things the compose file encodes, each of which is easy to get wrong:
+
+- **The dashboard is published on `127.0.0.1` only.** There is no
+  authentication in front of it, so a bare `8787:8787` would publish on every
+  host interface and expose every collected alert to anything that can reach
+  the port. If you need more than loopback, put your own authenticated proxy in
+  front of it.
+- **The container binds `0.0.0.0` internally while the host mapping is
+  loopback-scoped.** The isolation is the mapping, not the in-container bind: a
+  container listening only on its own `127.0.0.1` cannot receive a published
+  port at all, because the mapping arrives from outside its network namespace.
+- **The data volume is writable for both read-side roles, including `web`.**
+  See the constraints below; a `:ro` mount fails with `SQLITE_CANTOPEN`.
+- **twiki has no data mount and no published port.** It gained nothing when
+  gitricorder arrived, and keeping it that way is deliberate.
+
+The two Apps are separate (AD-21), so `.env` carries two App IDs and two key
+paths. Both keys and `repos.yaml` are mounted read-only and are gitignored;
+none of them is ever baked into the image.
+
 ### Sharing the database between the two roles
 
 Both roles open one SQLite file in WAL mode.

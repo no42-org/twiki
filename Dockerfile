@@ -17,6 +17,14 @@ COPY src ./src
 # install instead of a second `npm ci --omit=dev`. Prod deps are pure JS, so
 # the pruned tree is architecture-independent.
 RUN npm run build && npm prune --omit=dev
+# An empty /data owned by the runtime user. Docker initialises a fresh named
+# volume from the image's contents at the mount point, ownership included, so
+# creating it here is what lets the non-root runtime user write the database.
+# Without it the volume is created owned by root and the collector dies with
+# "unable to open database file" on every cold start - found by deploying, not
+# by reading. Made here rather than in the runtime stage because distroless has
+# no shell for RUN.
+RUN mkdir -p /data && chown 65532:65532 /data
 
 # --- runtime: distroless, non-root, no shell/package manager ----------------
 # Pinned by digest (the manifest-list digest, so multi-arch still resolves) for
@@ -31,16 +39,18 @@ ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./
+# gitricorder's database lives here; the twiki role uses no database at all.
+COPY --from=build --chown=65532:65532 /data /data
 # distroless/nodejs sets ENTRYPOINT ["/usr/bin/node"]; pass the script as CMD.
 #
 # One image, three roles (AD-13). twiki is the default so existing deployments
-# are unaffected; the read side is reached by overriding the command:
+# are unaffected; the read side is reached by overriding the command.
+# `compose.yml` is where those commands live - one home for them, rather than
+# two copies here and there that drift apart.
 #
-#   command: ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "collect"]
-#   command: ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "web"]
-#
-# The flag suppresses node:sqlite's one-per-process ExperimentalWarning by
-# name. Never --no-warnings, which would hide a genuine one.
+# The commands carry --disable-warning=ExperimentalWarning, which suppresses
+# node:sqlite's one-per-process warning BY NAME. Never --no-warnings, which
+# would hide a genuine one.
 #
 # The collect and web roles share one SQLite file on a local bind mount; the
 # default twiki role uses no database and needs no such mount. Mount the volume

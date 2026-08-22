@@ -1,0 +1,92 @@
+# Copyright 2026 Ronny Trommer <ronny@no42.org>
+# SPDX-License-Identifier: MIT
+
+# One image, three roles (AD-13). twiki notifies and merges; gitricorder's two
+# roles collect into a SQLite file and serve the dashboard from it.
+#
+# `compose.yml`, not `docker-compose.yml`: Compose v2 searches this name first.
+#
+# Copy `.env.example` to `.env` and edit, then `make up`. Everything mounted
+# here is gitignored and never baked into the image: the allowlist, and one
+# private key per App.
+
+name: twiki
+
+services:
+  # The write side. Unchanged by gitricorder's arrival: no database, no
+  # published port, no HTTP listener. It runs the image's default command.
+  twiki:
+    image: ${IMAGE:-ghcr.io/no42-org/twiki}:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      TWIKI_CONFIG: /config/repos.yaml
+      TWIKI_GITHUB_APP_ID: ${TWIKI_GITHUB_APP_ID:?set it in .env}
+      TWIKI_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/twiki.pem
+      TWIKI_MODE: ${TWIKI_MODE:-shadow}
+      TWIKI_POLL_MINUTES: ${TWIKI_POLL_MINUTES:-60}
+      TWIKI_SLACK_WEBHOOK_URL: ${TWIKI_SLACK_WEBHOOK_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./repos.yaml:/config/repos.yaml:ro
+      - ${TWIKI_KEY_PATH:-./twiki.pem}:/secrets/twiki.pem:ro
+
+  # The collector. The only writer of the database, and the only role that
+  # migrates the schema. Starts before the dashboard on a cold start: any write
+  # open repairs a database left with an uncheckpointed WAL, and this startup
+  # migration is that write open.
+  tricorder-collect:
+    image: ${IMAGE:-ghcr.io/no42-org/twiki}:${TAG:-latest}
+    restart: unless-stopped
+    command:
+      ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "collect"]
+    environment:
+      TWIKI_CONFIG: /config/repos.yaml
+      TRICORDER_DB: /data/tricorder.db
+      TRICORDER_GITHUB_APP_ID: ${TRICORDER_GITHUB_APP_ID:?set it in .env}
+      TRICORDER_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/tricorder.pem
+      TRICORDER_TICK_SECONDS: ${TRICORDER_TICK_SECONDS:-60}
+    volumes:
+      - ./repos.yaml:/config/repos.yaml:ro
+      - ${TRICORDER_KEY_PATH:-./tricorder.pem}:/secrets/tricorder.pem:ro
+      - tricorder-data:/data
+
+  # The dashboard. Opens the database read-only and never migrates it.
+  tricorder-web:
+    image: ${IMAGE:-ghcr.io/no42-org/twiki}:${TAG:-latest}
+    restart: unless-stopped
+    command:
+      ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "web"]
+    environment:
+      TWIKI_CONFIG: /config/repos.yaml
+      TRICORDER_DB: /data/tricorder.db
+      # Bind every interface INSIDE the container: the isolation comes from the
+      # loopback-scoped host mapping below, not from the container's own bind.
+      # Leaving the in-container default of 127.0.0.1 would make the published
+      # port unreachable, because the mapping arrives from outside the netns.
+      TRICORDER_HOST: 0.0.0.0
+      TRICORDER_PORT: ${TRICORDER_PORT:-8787}
+    ports:
+      # 127.0.0.1 is load-bearing, not decoration. A bare "8787:8787" publishes
+      # on every host interface, and there is NO authentication in front of the
+      # dashboard: that would expose every collected alert to anything that can
+      # reach the port. Put your own authenticated proxy in front if you need
+      # more than loopback.
+      - "127.0.0.1:${TRICORDER_PORT:-8787}:${TRICORDER_PORT:-8787}"
+    volumes:
+      - ./repos.yaml:/config/repos.yaml:ro
+      - tricorder-data:/data
+    depends_on:
+      tricorder-collect:
+        condition: service_started
+
+volumes:
+  # Deliberately NOT mounted :ro for the dashboard, even though its connection
+  # is read-only. WAL keeps its shared memory in a `-shm` file beside the
+  # database, so SQLite must be able to write the DIRECTORY even for a
+  # read-only handle; a read-only mount fails with SQLITE_CANTOPEN. The
+  # read-only guarantee comes from the handle, which SQLite enforces, not from
+  # the filesystem.
+  #
+  # Must be a LOCAL filesystem. WAL needs processes to share memory through
+  # that `-shm` file and mmap, which NFS and SMB do not provide reliably.
+  tricorder-data:

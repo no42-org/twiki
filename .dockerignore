@@ -21,3 +21,5 @@ audit.jsonl
 repos.yaml
 .vscode
 .claude
+compose.yml
+.env.example
