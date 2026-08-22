@@ -1085,6 +1085,29 @@ describe("the catalogue fetch honours a named wait (AD-24)", () => {
     expect(call).toBe(1);
   });
 
+  it("keeps the legible wording when the budget is exhausted", async () => {
+    // The decision table names when the limit resets. Falling through to the
+    // generic path reported a bare "HTTP 403" and threw that away, which is
+    // the difference between an operator knowing to wait and guessing.
+    const port = new HttpEnrichment(
+      "http://x",
+      async () =>
+        new Response("no", {
+          status: 403,
+          headers: {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "1790000000",
+          },
+        }),
+      undefined,
+      async () => {},
+    );
+
+    await expect(port.fetchKev(null)).rejects.toThrow(
+      /rate limit exhausted, resets at/,
+    );
+  });
+
   it("still refuses an unsolicited 304, retry or no retry", async () => {
     // The pre-existing guard, unchanged: a 304 answers a conditional request,
     // and confirming a validator that never went on the wire would freeze the
