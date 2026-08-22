@@ -1,0 +1,151 @@
+# Copyright 2026 Ronny Trommer <ronny@no42.org>
+# SPDX-License-Identifier: MIT
+
+# One image, three roles (AD-13). twiki notifies and merges; gitricorder's two
+# roles collect into a SQLite file and serve the dashboard from it.
+#
+# `compose.yml`, not `docker-compose.yml`: Compose v2 searches this name first.
+#
+# Copy `.env.example` to `.env` and edit, then `make up`. Everything mounted
+# here is gitignored and never baked into the image: the allowlist, and one
+# private key per App.
+
+name: twiki
+
+services:
+  # The write side. Unchanged by gitricorder's arrival: no database, no
+  # published port, no HTTP listener. It runs the image's default command.
+  twiki:
+    image: ${IMAGE:-ghcr.io/no42-org/twiki}:${TAG:-latest}
+    restart: unless-stopped
+    # Everything in .env reaches the container. Enumerating instead meant
+    # eleven of the twenty-six variables src/ reads were silently dropped:
+    # TWIKI_CI_REMEDIATION=off was ignored, so twiki performed the CI writes
+    # the operator had switched off, and a Discord or Matrix user who followed
+    # the quickstart fell through to the console notifier and got nothing,
+    # with no error either time.
+    env_file: .env
+    environment:
+      # Set here rather than passed through: these are paths INSIDE the
+      # container, and `environment` wins over `env_file`, so a host path left
+      # in .env cannot override them.
+      TWIKI_CONFIG: /config/repos.yaml
+      TWIKI_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/twiki.pem
+      TWIKI_AUDIT_PATH: /state/audit.jsonl
+      TWIKI_STATE_DIR: /state
+      # Named so `make up` fails legibly rather than the container starting and
+      # misbehaving later. Without the API key twiki does not crash: it holds
+      # every pull request every cycle and logs "advisor failed, holding all",
+      # which reads as a healthy service that merges nothing.
+      TWIKI_GITHUB_APP_ID: ${TWIKI_GITHUB_APP_ID:?set it in .env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set it in .env}
+    volumes:
+      - ./repos.yaml:/config/repos.yaml:ro
+      - ${TWIKI_KEY_PATH:-./twiki.pem}:/secrets/twiki.pem:ro
+      # Not the dashboard's database - twiki has none, and gets none. This is
+      # twiki's own small state, and without it a redeploy is user-visible:
+      # DedupingNotifier keeps the last digest's hash here, so losing it
+      # re-sends a notification byte-identical to the one already delivered.
+      # The audit log lands here too, which makes it survive a restart rather
+      # than dying with the container's writable layer.
+      - twiki-state:/state
+
+  # The collector. The only writer of the database, and the only role that
+  # migrates the schema. Starts before the dashboard on a cold start: any write
+  # open repairs a database left with an uncheckpointed WAL, and this startup
+  # migration is that write open.
+  tricorder-collect:
+    image: ${IMAGE:-ghcr.io/no42-org/twiki}:${TAG:-latest}
+    restart: unless-stopped
+    command:
+      ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "collect"]
+    env_file: .env
+    environment:
+      TWIKI_CONFIG: /config/repos.yaml
+      TRICORDER_DB: /data/tricorder.db
+      TRICORDER_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/tricorder.pem
+      TRICORDER_GITHUB_APP_ID: ${TRICORDER_GITHUB_APP_ID:?set it in .env}
+    volumes:
+      - ./repos.yaml:/config/repos.yaml:ro
+      - ${TRICORDER_KEY_PATH:-./tricorder.pem}:/secrets/tricorder.pem:ro
+      - tricorder-data:/data
+    healthcheck:
+      # Healthy once the schema is MIGRATED, which is the thing `web` actually
+      # needs. `condition: service_started` was not that - it waits for the
+      # container to start, and measured on a genuine cold start `web` lost
+      # that race and crash-looped 7 times before the file appeared.
+      #
+      # Nor is "the file is non-empty", which this check tried first. Measured:
+      # opening the database leaves it at 0 bytes, the WAL pragma takes it to
+      # 4096, and `user_version` is still 0 with no tables at that point -
+      # migration runs after. So a size check goes green on a schema-less
+      # database and `web` starts only to die with "store schema is version 0".
+      # The check must gate on what the comment claims it gates on.
+      #
+      # distroless has no shell, so no `CMD-SHELL`. A healthcheck `CMD` bypasses
+      # the entrypoint, so the interpreter is named explicitly - at
+      # /nodejs/bin/node, VERIFIED against the image, not /usr/bin/node as this
+      # comment first claimed. That guess failed every probe with "no such file
+      # or directory", which reports as a broken dependency rather than a
+      # broken check.
+      test:
+        [
+          "CMD",
+          "/nodejs/bin/node",
+          "-e",
+          "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync('/data/tricorder.db',{readOnly:true});process.exit(d.prepare('PRAGMA user_version').get().user_version>0?0:1)",
+        ]
+      # Fast while starting, slow once healthy: without start_interval the tight
+      # cadence forks a node process every 2s for the container's whole life,
+      # and the speed only buys anything during the cold start.
+      start_interval: 2s
+      start_period: 60s
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  # The dashboard. Opens the database read-only and never migrates it.
+  tricorder-web:
+    image: ${IMAGE:-ghcr.io/no42-org/twiki}:${TAG:-latest}
+    restart: unless-stopped
+    command:
+      ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "web"]
+    env_file: .env
+    environment:
+      TWIKI_CONFIG: /config/repos.yaml
+      TRICORDER_DB: /data/tricorder.db
+      # Bind every interface INSIDE the container: the isolation comes from the
+      # loopback-scoped host mapping below, not from the container's own bind.
+      # Leaving the in-container default of 127.0.0.1 would make the published
+      # port unreachable, because the mapping arrives from outside the netns.
+      TRICORDER_HOST: 0.0.0.0
+      TRICORDER_PORT: ${TRICORDER_PORT:-8787}
+    ports:
+      # 127.0.0.1 is load-bearing, not decoration. A bare "8787:8787" publishes
+      # on every host interface, and there is NO authentication in front of the
+      # dashboard: that would expose every collected alert to anything that can
+      # reach the port. Put your own authenticated proxy in front if you need
+      # more than loopback.
+      - "127.0.0.1:${TRICORDER_PORT:-8787}:${TRICORDER_PORT:-8787}"
+    volumes:
+      - ./repos.yaml:/config/repos.yaml:ro
+      - tricorder-data:/data
+    depends_on:
+      tricorder-collect:
+        condition: service_healthy
+
+volumes:
+  # twiki's notification dedupe state and audit log. Small, and separate from
+  # the dashboard's database on purpose: the two products share no data.
+  twiki-state:
+
+  # Deliberately NOT mounted :ro for the dashboard, even though its connection
+  # is read-only. WAL keeps its shared memory in a `-shm` file beside the
+  # database, so SQLite must be able to write the DIRECTORY even for a
+  # read-only handle; a read-only mount fails with SQLITE_CANTOPEN. The
+  # read-only guarantee comes from the handle, which SQLite enforces, not from
+  # the filesystem.
+  #
+  # Must be a LOCAL filesystem. WAL needs processes to share memory through
+  # that `-shm` file and mmap, which NFS and SMB do not provide reliably.
+  tricorder-data:

@@ -67,6 +67,7 @@ per-repo `autoMergeMinor` / `mergeOnly` overrides).
 | `TWIKI_MATRIX_TOKEN` | Matrix access token | — |
 | `TWIKI_MATRIX_ROOM` | Matrix room ID, e.g. `!abc:example.org` | — |
 | `TWIKI_AUDIT_PATH` | Append-only JSONL audit log | `audit.jsonl` |
+| `TWIKI_STATE_DIR` | Where the notifier remembers the last digest it sent, so a restart does not re-send it. Unset keeps a dotfile in the working directory, which in a container is a writable layer that dies on every recreate. | unset |
 
 The chat target is chosen by precedence: **Slack** (if its webhook URL is set),
 then **Discord**, then **Matrix** (when all three `TWIKI_MATRIX_*` vars are
@@ -210,6 +211,71 @@ Upgrading means restarting both roles, not just the collector.
 The collector reaches **api.github.com** and, for the KEV lane only, **www.cisa.gov** over HTTPS.
 The CISA request carries no credentials and downloads roughly 1.5 MB once a day.
 `TRICORDER_KEV_URL` repoints it; there is no way to disable the lane, and a failed fetch leaves every KEV answer `unknown` rather than "not listed".
+
+### Running it
+
+Both products run from **one image**, selected by command (AD-13). `compose.yml`
+runs all three: `twiki` on the image's default command, plus gitricorder's
+`tricorder-collect` and `tricorder-web`.
+
+Three files must exist before the first `make up`, because Docker creates a
+missing bind-mount source as an empty **directory** rather than failing: the
+container then gets a directory where it expected a file, and dies with
+`EISDIR` instead of saying what is missing.
+
+- `repos.yaml` — copy `repos.example.yaml`
+- twiki's App private key, at `TWIKI_KEY_PATH`
+- gitricorder's App private key, at `TRICORDER_KEY_PATH`
+
+Both keys must be **readable by uid 65532**, the image's non-root runtime user.
+A key stored the usual way (`chmod 600`, owned by you) is unreadable inside the
+container on Linux and both services crash-loop with `EACCES`. Docker Desktop
+and OrbStack on macOS mask this, so it will not show up until you deploy on a
+Linux host.
+
+```sh
+cp .env.example .env      # then fill in the two App IDs and key paths
+make up                   # start
+make logs                 # follow
+make ps                   # what is running
+make down                 # stop
+```
+
+The dashboard is then at <http://127.0.0.1:8787>.
+
+Four things the compose file encodes, each of which is easy to get wrong:
+
+- **The dashboard is published on `127.0.0.1` only.** There is no
+  authentication in front of it, so a bare `8787:8787` would publish on every
+  host interface and expose every collected alert to anything that can reach
+  the port. If you need more than loopback, put your own authenticated proxy in
+  front of it.
+- **The container binds `0.0.0.0` internally while the host mapping is
+  loopback-scoped.** The isolation is the mapping, not the in-container bind: a
+  container listening only on its own `127.0.0.1` cannot receive a published
+  port at all, because the mapping arrives from outside its network namespace.
+- **The data volume is writable for both read-side roles, including `web`.**
+  See the constraints below; a `:ro` mount fails with `SQLITE_CANTOPEN`.
+- **twiki has no data mount and no published port.** It gained nothing when
+  gitricorder arrived, and keeping it that way is deliberate.
+
+Under compose, `web` logs a warning on every start:
+
+```
+WARNING: binding 0.0.0.0, not loopback. There is no UI authentication;
+anything that can reach this port can read every collected alert.
+```
+
+That is expected here, and correct from where the process stands: it binds
+every interface inside its own network namespace and cannot see that the host
+mapping in front of it is scoped to `127.0.0.1`. Check the mapping rather than
+the warning - `make ps`, or `docker compose port tricorder-web 8787`, should
+show `127.0.0.1`. The warning still earns its place: it is the one that fires
+if somebody widens that mapping.
+
+The two Apps are separate (AD-21), so `.env` carries two App IDs and two key
+paths. Both keys and `repos.yaml` are mounted read-only and are gitignored;
+none of them is ever baked into the image.
 
 ### Sharing the database between the two roles
 

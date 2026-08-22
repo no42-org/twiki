@@ -4,7 +4,8 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 // Chat delivery behind a small interface. Webhook delivery emits a Slack
 // incoming-webhook payload (Discord's webhook accepts the same shape via a thin
@@ -16,6 +17,44 @@ export interface Notifier {
 }
 
 const DEFAULT_DEDUPE_PATH = ".twiki-last-digest";
+
+/**
+ * Where the notifier remembers the last digest it sent.
+ *
+ * A directory rather than a file, because the path is per transport. Unset
+ * keeps the historical behaviour: a dotfile in the working directory.
+ *
+ * It exists because that working directory is a container's writable layer in
+ * any real deployment, so the state died on every recreate and the first run
+ * after a redeploy re-sent a notification byte-identical to the one already
+ * delivered. De-duplication that a redeploy silently resets is not
+ * de-duplication.
+ */
+export function dedupePathFor(
+  flavor: string,
+  env: NodeJS.ProcessEnv,
+  log: (msg: string) => void = (m) => console.error(`[twiki] ${m}`),
+): string | undefined {
+  const dir = (env.TWIKI_STATE_DIR ?? "").trim();
+  if (dir === "") return undefined;
+  // Probed once, because DedupingNotifier swallows its write errors by design
+  // (de-duplication must never break a run). Silence is the wrong answer for a
+  // directory that does not exist or is not writable by the runtime user: the
+  // state is then never persisted, de-duplication is off permanently, and a
+  // digest is re-sent every poll with nothing anywhere saying why. Named here,
+  // once, at startup.
+  try {
+    accessSync(dir, constants.W_OK);
+  } catch {
+    log(
+      `TWIKI_STATE_DIR=${dir} is not writable; de-duplication is disabled and ` +
+        `every poll will re-send its digest. Check the directory exists and ` +
+        `is writable by this user (uid ${process.getuid?.() ?? "unknown"}).`,
+    );
+    return undefined;
+  }
+  return join(dir, `.twiki-last-digest.${flavor}`);
+}
 
 /**
  * Base notifier that handles run-over-run de-duplication and delegates the

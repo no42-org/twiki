@@ -17,6 +17,18 @@ COPY src ./src
 # install instead of a second `npm ci --omit=dev`. Prod deps are pure JS, so
 # the pruned tree is architecture-independent.
 RUN npm run build && npm prune --omit=dev
+# Empty mount points owned by the runtime user. Docker initialises a fresh
+# named volume from the image's contents at that path, ownership included, so
+# creating them here is what lets the non-root runtime user write there.
+# Without this the volume is created owned by root and the process dies on
+# first write: the collector with "unable to open database file" on every cold
+# start, twiki with EACCES on its audit log. Both found by deploying, not by
+# reading. Made here rather than in the runtime stage because distroless has no
+# shell for RUN.
+#
+#   /data   gitricorder's SQLite database, shared by collect and web
+#   /state  twiki's audit log and notification de-duplication state
+RUN mkdir -p /data /state && chown 65532:65532 /data /state
 
 # --- runtime: distroless, non-root, no shell/package manager ----------------
 # Pinned by digest (the manifest-list digest, so multi-arch still resolves) for
@@ -31,21 +43,33 @@ ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./
+# gitricorder's database lives here; the twiki role uses no database at all.
+COPY --from=build --chown=65532:65532 /data /data
+# twiki's own state. Not a database, and not shared with gitricorder.
+COPY --from=build --chown=65532:65532 /state /state
 # distroless/nodejs sets ENTRYPOINT ["/usr/bin/node"]; pass the script as CMD.
 #
 # One image, three roles (AD-13). twiki is the default so existing deployments
-# are unaffected; the read side is reached by overriding the command:
+# are unaffected; the read side is reached by overriding the command.
+# `compose.yml` is where those commands live - one home for them, rather than
+# two copies here and there that drift apart.
 #
-#   command: ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "collect"]
-#   command: ["--disable-warning=ExperimentalWarning", "dist/tricorder.js", "web"]
+# The commands carry --disable-warning=ExperimentalWarning, which suppresses
+# node:sqlite's one-per-process warning BY NAME. Never --no-warnings, which
+# would hide a genuine one.
 #
-# The flag suppresses node:sqlite's one-per-process ExperimentalWarning by
-# name. Never --no-warnings, which would hide a genuine one.
+# The collect and web roles share one SQLite file on a NAMED volume; the
+# default twiki role uses no database and needs no such mount.
 #
-# The collect and web roles share one SQLite file on a local bind mount; the
-# default twiki role uses no database and needs no such mount. Mount the volume
-# WRITABLE for both, including web: WAL keeps its shared memory in a -shm file
-# beside the database, so a read-only mount fails with SQLITE_CANTOPEN even
+# Named, not a bind mount, and that is load-bearing: the /data seeded above
+# gives a fresh named volume its ownership, which is what lets the non-root
+# user write there. A bind mount overlays the host directory's ownership
+# instead and hands back exactly the "unable to open database file" cold start
+# those lines exist to prevent.
+#
+# Mount it WRITABLE for both roles, including web: WAL keeps its shared memory
+# in a -shm file beside the database, so a read-only mount fails with
+# SQLITE_CANTOPEN even
 # though web's connection is readOnly. Start collect first on a cold start, and
 # never copy the database while collect is running. See the README's "Sharing
 # the database between the two roles".

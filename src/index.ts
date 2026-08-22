@@ -15,6 +15,7 @@ import { ClaudeAdvisor } from "./twiki/advisor.js";
 import { JsonlAudit } from "./twiki/audit.js";
 import {
   ConsoleNotifier,
+  dedupePathFor,
   MatrixNotifier,
   type Notifier,
   WebhookNotifier,
@@ -29,10 +30,18 @@ import { schedule } from "./twiki/scheduler.js";
 
 function buildNotifier(env = process.env): Notifier {
   if (env.TWIKI_SLACK_WEBHOOK_URL) {
-    return new WebhookNotifier(env.TWIKI_SLACK_WEBHOOK_URL, "slack");
+    return new WebhookNotifier(
+      env.TWIKI_SLACK_WEBHOOK_URL,
+      "slack",
+      dedupePathFor("slack", env),
+    );
   }
   if (env.TWIKI_DISCORD_WEBHOOK_URL) {
-    return new WebhookNotifier(env.TWIKI_DISCORD_WEBHOOK_URL, "discord");
+    return new WebhookNotifier(
+      env.TWIKI_DISCORD_WEBHOOK_URL,
+      "discord",
+      dedupePathFor("discord", env),
+    );
   }
   if (
     env.TWIKI_MATRIX_HOMESERVER &&
@@ -43,6 +52,7 @@ function buildNotifier(env = process.env): Notifier {
       env.TWIKI_MATRIX_HOMESERVER,
       env.TWIKI_MATRIX_TOKEN,
       env.TWIKI_MATRIX_ROOM,
+      dedupePathFor("matrix", env),
     );
   }
   return new ConsoleNotifier();

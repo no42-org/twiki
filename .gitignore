@@ -7,6 +7,8 @@ audit.jsonl
 # Secrets — never commit
 .env
 .env.*
+# ...except the template, which carries no values (see compose.yml).
+!.env.example
 *.pem
 github-app-private-key*
 

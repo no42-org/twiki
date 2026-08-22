@@ -1,7 +1,7 @@
 # Copyright 2026 Ronny Trommer <ronny@no42.org>
 # SPDX-License-Identifier: MIT
 
-.PHONY: install build typecheck lint test verify audit pack release-plan image run dev clean
+.PHONY: install build typecheck lint test verify audit pack release-plan image run dev clean up down logs ps
 
 # Local image coordinates (CI multi-arch publish is driven by the release
 # workflow's buildx action; this single-arch build is for local use + CI scan).
@@ -48,6 +48,24 @@ release-plan:
 # Build a loadable single-arch image (used locally and by the CI scan job).
 image:
 	docker buildx build --load -t $(IMAGE):$(TAG) .
+
+# --- deployment (compose.yml; see the README) --------------------------------
+# CI and local both go through make, never `docker compose` directly.
+#
+# The dashboard is published on 127.0.0.1 only. There is no authentication in
+# front of it, so changing that mapping exposes every collected alert.
+
+up:
+	docker compose up -d
+
+down:
+	docker compose down
+
+logs:
+	docker compose logs -f
+
+ps:
+	docker compose ps
 
 run: build
 	node dist/index.js
