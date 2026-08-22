@@ -810,19 +810,22 @@ export class OctokitGitHub implements GitHubPort {
     sha: string,
   ): Promise<CheckStatus> {
     const gh = await this.client(repo);
-    const [checks, status] = await Promise.all([
-      gh.checks.listForRef({
-        owner: repo.owner,
-        repo: repo.name,
-        ref: sha,
-        per_page: 100,
-      }),
-      gh.repos.getCombinedStatusForRef({
-        owner: repo.owner,
-        repo: repo.name,
-        ref: sha,
-      }),
-    ]);
+    // Serial, not `Promise.all`. Both calls share one installation token, and
+    // AD-24 binds this adapter by name: requests are issued serially per
+    // installation, never fanned out within a bucket. A fixed width of two is
+    // still a width, and this runs once per pull request - it was what kept
+    // peak in-flight at 2 after the caller's own fan-out was removed.
+    const checks = await gh.checks.listForRef({
+      owner: repo.owner,
+      repo: repo.name,
+      ref: sha,
+      per_page: 100,
+    });
+    const status = await gh.repos.getCombinedStatusForRef({
+      owner: repo.owner,
+      repo: repo.name,
+      ref: sha,
+    });
 
     const runs = checks.data.check_runs;
     const failedRun = runs.some(
@@ -1376,6 +1379,25 @@ export function translateDependabotProbe(err: unknown): DependabotAccess {
  * `OctokitGitHub`'s own guard names the missing wiring if a cast gets past
  * that.
  */
+/**
+ * How long a repository's installation id is trusted.
+ *
+ * Bounded rather than permanent, and bounded rather than per-request. Per
+ * request was the old behaviour and cost 43% of a tick's traffic: the resolver
+ * asked GitHub which installation a repository belongs to before it could
+ * consult the cache keyed on the answer, so one tick on a 15-pull-request
+ * repository issued 54 identical lookups.
+ *
+ * Permanent would pin a dead id. Installation ids change when an App is
+ * uninstalled and reinstalled, which is exactly what an operator does after
+ * fixing a permissions problem, and a process-lifetime cache would fail every
+ * repository until somebody restarted the container.
+ *
+ * Five minutes is shorter than any sane poll interval, so a tick resolves once
+ * per repository, and a reinstalled App is picked up without a restart.
+ */
+export const INSTALLATION_CACHE_TTL_MS = 5 * 60_000;
+
 export function createGitHubFromEnv(
   isAllowed: (repo: RepoRef) => boolean,
   env = process.env,
@@ -1387,24 +1409,46 @@ export function createGitHubFromEnv(
    * cache and its allowlist guard were all deletable with a green suite.
    */
   fetchImpl?: typeof fetch,
+  /** Injected so a test can age the installation cache without waiting. */
+  now: () => number = Date.now,
 ): GitHubPort {
   const auth: AppAuthConfig = loadAppAuthFromEnv(env);
-  const appClient = new Octokit({
-    authStrategy: createAppAuth,
-    auth,
-    ...(fetchImpl ? { request: { fetch: fetchImpl } } : {}),
-  });
+  const appClient = withRequestDiscipline(
+    new Octokit({
+      authStrategy: createAppAuth,
+      auth,
+      ...(fetchImpl ? { request: { fetch: fetchImpl } } : {}),
+    }),
+  );
   const cache = new Map<number, Octokit>();
+  const installations = new Map<string, { id: number; at: number }>();
 
   const resolver: OctokitResolver = async (repo) => {
-    const { data } = await appClient.apps.getRepoInstallation({
-      owner: repo.owner,
-      repo: repo.name,
-    });
-    let client = cache.get(data.id);
+    const key = repoSlug(repo).toLowerCase();
+    const hit = installations.get(key);
+    let id: number;
+    if (hit !== undefined && now() - hit.at < INSTALLATION_CACHE_TTL_MS) {
+      id = hit.id;
+    } else {
+      // Asked once per repository per TTL, not once per call. The lookup used
+      // to run ahead of the client cache below, so that cache could never be
+      // consulted first and the request always happened.
+      const { data } = await appClient.apps.getRepoInstallation({
+        owner: repo.owner,
+        repo: repo.name,
+      });
+      id = data.id;
+      installations.set(key, { id, at: now() });
+    }
+    let client = cache.get(id);
     if (!client) {
-      client = installationOctokit(auth, data.id, fetchImpl);
-      cache.set(data.id, client);
+      // Disciplined like the collector's clients (AD-24): honour retry-after
+      // once, fail fast and legibly on exhaustion. Safe for the mutating
+      // calls this client makes, because the decision table only retries 403
+      // and 429, and both mean GitHub REFUSED the request rather than
+      // performing it - there is no double-merge path.
+      client = withRequestDiscipline(installationOctokit(auth, id, fetchImpl));
+      cache.set(id, client);
     }
     return client;
   };

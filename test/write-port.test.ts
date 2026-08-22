@@ -5,7 +5,10 @@
 
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createGitHubFromEnv } from "../src/github/octokit-adapter.js";
+import {
+  createGitHubFromEnv,
+  INSTALLATION_CACHE_TTL_MS,
+} from "../src/github/octokit-adapter.js";
 import type { GitHubReadPort } from "../src/github/port.js";
 
 // The write side's port boundary.
@@ -104,25 +107,14 @@ describe("the write-side port exposes only what its factory can honour", () => {
     expect(urls.filter((u) => u.includes("/orgs/"))).toEqual([]);
   });
 
-  it("caches the installation client, but re-resolves the installation", async () => {
-    // Two separate facts, and the second is the one a reader gets wrong.
-    //
-    // The client IS cached, so minting a token - which re-reads the private
-    // key and costs a request - happens once however many repositories share
-    // an installation.
-    //
-    // The installation id is NOT cached. `getRepoInstallation` runs on every
-    // call, ahead of the cache lookup, so each port call spends one App-JWT
-    // request: measured here, three calls on ONE repository issue three
-    // resolutions. `gatherFacts` makes roughly eight repo-scoped calls per
-    // repository per tick, so that is about eight extra requests per
-    // repository per tick.
-    //
-    // Asserted rather than fixed, deliberately. Caching the id naively would
-    // pin a stale one: installation ids change when an App is uninstalled
-    // and reinstalled, which is why the read side re-resolves on a miss
-    // instead of caching outright. Doing that here is its own change; this
-    // pins the behaviour so it is visible rather than assumed away.
+  it("resolves an installation once per repository, then reuses it", async () => {
+    // This test used to pin the opposite, and said why: caching the id naively
+    // pins a stale one, because installation ids change when an App is
+    // uninstalled and reinstalled. The answer was a bounded TTL rather than
+    // no cache - `getRepoInstallation` ran ahead of the client-cache lookup on
+    // EVERY call, so the cache could never be consulted first, and one tick on
+    // a 15-pull-request repository spent 54 requests re-asking a question
+    // whose answer had not changed.
     const { fetchImpl, urls } = recordingFetch();
     const gh = createGitHubFromEnv(() => true, ENV, fetchImpl);
     const repo = { owner: "indigo423", name: "one" };
@@ -131,10 +123,38 @@ describe("the write-side port exposes only what its factory can honour", () => {
     await gh.defaultBranchSha(repo);
     await gh.defaultBranchSha({ owner: "indigo423", name: "two" });
 
+    // One token for the installation both repositories share.
     expect(urls.filter((u) => u.includes("/access_tokens"))).toHaveLength(1);
+    // One lookup per repository, not one per call.
     expect(
       urls.filter((u) => /\/repos\/[^/]+\/[^/]+\/installation$/.test(u)),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
+  });
+
+  it("re-resolves once the cached installation is older than the TTL", async () => {
+    // The half that makes caching safe: an operator who uninstalls and
+    // reinstalls the App changes the id, and a process-lifetime cache would
+    // fail that repository until somebody restarted the container.
+    const { fetchImpl, urls } = recordingFetch();
+    let clock = 0;
+    const gh = createGitHubFromEnv(
+      () => true,
+      ENV,
+      fetchImpl,
+      () => clock,
+    );
+    const repo = { owner: "indigo423", name: "one" };
+    const lookups = () =>
+      urls.filter((u) => /\/repos\/[^/]+\/[^/]+\/installation$/.test(u)).length;
+
+    await gh.defaultBranchSha(repo);
+    clock += INSTALLATION_CACHE_TTL_MS - 1;
+    await gh.defaultBranchSha(repo);
+    expect(lookups()).toBe(1);
+
+    clock += 2;
+    await gh.defaultBranchSha(repo);
+    expect(lookups()).toBe(2);
   });
 
   it("refuses a repository outside the allowlist before any request", async () => {

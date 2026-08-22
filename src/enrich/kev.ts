@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { backoffDecision } from "../core/backoff.js";
 import { CVE_ID } from "../core/cve.js";
 import type {
   CachedValidator,
@@ -90,6 +91,9 @@ export class HttpEnrichment implements EnrichmentPort {
     private readonly fetchImpl: typeof fetch = fetch,
     /** Overridable so a test can prove the cap without a 32MB fixture. */
     private readonly maxBodyBytes: number = MAX_BODY_BYTES,
+    /** Injected so a test does not wait out a real retry-after. */
+    private readonly sleep: (ms: number) => Promise<void> = (ms) =>
+      new Promise((r) => setTimeout(r, ms)),
   ) {}
 
   /** The endpoint this instance will call. Exposed so a test can pin it. */
@@ -117,10 +121,39 @@ export class HttpEnrichment implements EnrichmentPort {
     // self-sustaining freeze this lane's history warns about.
     const conditional =
       "if-none-match" in headers || "if-modified-since" in headers;
-    const res = await this.fetchImpl(this.url, {
+    // A throttled catalogue is retried once, honouring the wait the origin
+    // named. AD-24 binds this adapter explicitly, and the cost here is
+    // asymmetric: the lane runs daily, and a failed fetch leaves every KEV
+    // answer `unknown` rather than "not listed", so one 429 costs a day of
+    // the ranking chain's first term. `backoffDecision` is the collector's
+    // own table, reused verbatim - it is pure and takes a status, headers and
+    // a message, not an Octokit.
+    let res = await this.fetchImpl(this.url, {
       signal: AbortSignal.timeout(60_000),
       headers,
     });
+    if (!res.ok && res.status !== 304) {
+      const decision = backoffDecision(
+        res.status,
+        {
+          "retry-after": res.headers?.get?.("retry-after") ?? undefined,
+          "x-ratelimit-remaining":
+            res.headers?.get?.("x-ratelimit-remaining") ?? undefined,
+          "x-ratelimit-reset":
+            res.headers?.get?.("x-ratelimit-reset") ?? undefined,
+        },
+        false,
+      );
+      if (decision.kind === "retry") {
+        await this.sleep(decision.afterMs);
+        // Once. A second refusal is reported, not waited out again: the lane
+        // records a failed run and the next cycle tries afresh (AD-16).
+        res = await this.fetchImpl(this.url, {
+          signal: AbortSignal.timeout(60_000),
+          headers,
+        });
+      }
+    }
     if (res.status === 304) {
       if (!conditional || !cached) {
         // A 304 answers a conditional request. We did not make one, so the

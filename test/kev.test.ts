@@ -994,3 +994,108 @@ describe("the collection-health table judges each lane on its own cadence", () =
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("the catalogue fetch honours a named wait (AD-24)", () => {
+  // AD-24's Binds names src/enrich/ explicitly, and the cost here is
+  // asymmetric: the lane runs daily, and a failed fetch leaves every KEV
+  // answer `unknown` rather than "not listed", so one throttled request costs
+  // a day of the ranking chain's first term.
+  // The file's own fixture builder, so this pins the retry rather than
+  // accidentally re-pinning what a valid catalogue looks like.
+  const body = JSON.stringify(payload(["CVE-2021-44228"]));
+  const ok = () =>
+    new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  const throttled = (retryAfter: string | null) =>
+    new Response("slow down", {
+      status: 429,
+      headers: retryAfter === null ? {} : { "retry-after": retryAfter },
+    });
+
+  it("retries once after the wait the origin named, and succeeds", async () => {
+    const slept: number[] = [];
+    let call = 0;
+    const port = new HttpEnrichment(
+      "http://x",
+      async () => (++call === 1 ? throttled("2") : ok()),
+      undefined,
+      async (ms) => {
+        slept.push(ms);
+      },
+    );
+
+    const out = await port.fetchKev(null);
+
+    expect(call).toBe(2);
+    expect(slept).toEqual([2000]);
+    expect(out.kind).toBe("fresh");
+  });
+
+  it("does not retry a second time", async () => {
+    let call = 0;
+    const port = new HttpEnrichment(
+      "http://x",
+      async () => {
+        call++;
+        return throttled("1");
+      },
+      undefined,
+      async () => {},
+    );
+
+    await expect(port.fetchKev(null)).rejects.toThrow(/HTTP 429/);
+    // One attempt, one retry. Waiting out a second refusal would stall the
+    // cycle; the lane records a failed run and the next cycle tries afresh.
+    expect(call).toBe(2);
+  });
+
+  it("does not retry a failure that is not a rate limit", async () => {
+    let call = 0;
+    const port = new HttpEnrichment(
+      "http://x",
+      async () => {
+        call++;
+        return new Response("nope", { status: 500 });
+      },
+      undefined,
+      async () => {},
+    );
+
+    await expect(port.fetchKev(null)).rejects.toThrow(/HTTP 500/);
+    expect(call).toBe(1);
+  });
+
+  it("refuses a wait too long to be a retry", async () => {
+    // MAX_RETRY_AFTER_S is 120. Sleeping out a longer one inside a lane would
+    // stall the whole cycle.
+    let call = 0;
+    const port = new HttpEnrichment(
+      "http://x",
+      async () => {
+        call++;
+        return throttled("3600");
+      },
+      undefined,
+      async () => {},
+    );
+
+    await expect(port.fetchKev(null)).rejects.toThrow(/HTTP 429/);
+    expect(call).toBe(1);
+  });
+
+  it("still refuses an unsolicited 304, retry or no retry", async () => {
+    // The pre-existing guard, unchanged: a 304 answers a conditional request,
+    // and confirming a validator that never went on the wire would freeze the
+    // catalogue forever.
+    const port = new HttpEnrichment(
+      "http://x",
+      async () => new Response(null, { status: 304 }),
+      undefined,
+      async () => {},
+    );
+
+    await expect(port.fetchKev(null)).rejects.toThrow(/unconditional/);
+  });
+});
