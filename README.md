@@ -243,6 +243,20 @@ Four things the compose file encodes, each of which is easy to get wrong:
 - **twiki has no data mount and no published port.** It gained nothing when
   gitricorder arrived, and keeping it that way is deliberate.
 
+Under compose, `web` logs a warning on every start:
+
+```
+WARNING: binding 0.0.0.0, not loopback. There is no UI authentication;
+anything that can reach this port can read every collected alert.
+```
+
+That is expected here, and correct from where the process stands: it binds
+every interface inside its own network namespace and cannot see that the host
+mapping in front of it is scoped to `127.0.0.1`. Check the mapping rather than
+the warning - `make ps`, or `docker compose port tricorder-web 8787`, should
+show `127.0.0.1`. The warning still earns its place: it is the one that fires
+if somebody widens that mapping.
+
 The two Apps are separate (AD-21), so `.env` carries two App IDs and two key
 paths. Both keys and `repos.yaml` are mounted read-only and are gitignored;
 none of them is ever baked into the image.
