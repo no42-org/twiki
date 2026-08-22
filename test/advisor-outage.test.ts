@@ -3,10 +3,13 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildConfig } from "../src/core/config.js";
-import { NullAudit } from "../src/twiki/audit.js";
-import type { Notifier } from "../src/twiki/notify.js";
+import { JsonlAudit, NullAudit } from "../src/twiki/audit.js";
+import { type Notifier, WebhookNotifier } from "../src/twiki/notify.js";
 import { buildDigest, hasActionableActivity } from "../src/twiki/report.js";
 import { runOnce } from "../src/twiki/run.js";
 import { FakeGitHub, type FakeRepoData } from "./fakes.js";
@@ -142,5 +145,162 @@ describe("a failed advisor is reported, not just logged", () => {
 
     expect(digest).toMatch(/advisor/i);
     expect(digest).not.toMatch(/all repos quiet/i);
+  });
+});
+
+describe("the outage report says only what it can support", () => {
+  const outage = (reason: string) => ({
+    mode: "shadow" as const,
+    repos: [],
+    advisorFailed: reason,
+  });
+
+  it("does not claim the advisor was unreachable", () => {
+    // safePlan catches EVERY throw from the advisor, and two of the causes are
+    // the opposite of unreachable: a missing plan tool call, and a schema
+    // validation failure. Both mean it answered and the answer was unusable -
+    // and a validation failure is also a plausible prompt-injection symptom.
+    // Telling an operator it was unreachable sends them to check credit and
+    // network, which are fine, and away from the model output.
+    const digest = buildDigest(
+      outage("Advisor did not return a plan tool call"),
+    );
+
+    expect(digest).not.toMatch(/could not be reached|unreachable/i);
+    expect(digest).toMatch(/did not produce a plan/i);
+  });
+
+  it("does not discount the decisions the advisor never made", () => {
+    // NOT everything below the banner is advisor-derived. evaluateRelease
+    // gates on isSettled and never reads the plan; a major bump is flagged
+    // before the plan is consulted. An earlier banner told the reader to
+    // discount everything, which would have discounted a real tag push and an
+    // URGENT security flag.
+    const digest = buildDigest({
+      mode: "enforce",
+      advisorFailed: "credit balance is too low",
+      repos: [
+        {
+          repo: "no42-org/demo",
+          mainRed: false,
+          prs: [
+            {
+              number: 7,
+              title: "bump left-pad from 1 to 2",
+              security: true,
+              status: "flagged-major",
+              detail: "URGENT security major",
+            },
+          ],
+          release: { status: "released", version: "v1.2.4", detail: "cut" },
+        },
+      ],
+    });
+
+    expect(digest).toMatch(/releases and flagged majors.*still stand/i);
+    expect(digest).not.toMatch(/nothing below is a merge decision/i);
+    // Both are still rendered, not swallowed by the banner.
+    expect(digest).toContain("released v1.2.4");
+    expect(digest).toContain("URGENT security major");
+  });
+
+  it("bounds the reason so one failure cannot cost the whole digest", () => {
+    // safePlan's try covers PlanSchema.parse, and a ZodError message is a
+    // multi-kilobyte dump. Raw, that pushes the digest past Discord's 2000
+    // character limit, the webhook answers 400, deliver throws, and runOnce
+    // catches it into "notify failed" - losing every merge and release that
+    // DID happen this tick.
+    const digest = buildDigest(outage("z".repeat(5000)));
+
+    expect(digest.length).toBeLessThan(2000);
+    expect(digest).toMatch(/truncated/i);
+  });
+
+  it("keeps a short reason intact", () => {
+    const digest = buildDigest(outage("credit balance is too low"));
+    expect(digest).toContain("credit balance is too low");
+    expect(digest).not.toMatch(/truncated/i);
+  });
+});
+
+describe("the outage reaches the audit, not just the digest", () => {
+  it("records the reason on the audit line", async () => {
+    // The commit claimed "the digest and the audit both see it" while
+    // JsonlAudit serialised only { at, mode, repos }. Six hours of outage
+    // ticks were byte-identical to ticks where a healthy advisor held
+    // everything on purpose - the exact confusion the banner exists to
+    // prevent, reproduced in the file an operator reads afterwards.
+    const dir = mkdtempSync(join(tmpdir(), "advisor-audit-"));
+    const path = join(dir, "audit.jsonl");
+
+    new JsonlAudit(path).record(
+      { mode: "shadow", repos: [], advisorFailed: "credit balance is too low" },
+      "2026-08-22T22:38:31.000Z",
+    );
+
+    const line = JSON.parse(readFileSync(path, "utf8").trim());
+    expect(line.advisorFailed).toBe("credit balance is too low");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("says nothing about the advisor on a healthy run", () => {
+    const dir = mkdtempSync(join(tmpdir(), "advisor-audit-"));
+    const path = join(dir, "audit.jsonl");
+
+    new JsonlAudit(path).record(
+      { mode: "shadow", repos: [] },
+      "2026-08-22T22:38:31.000Z",
+    );
+
+    const line = JSON.parse(readFileSync(path, "utf8").trim());
+    expect("advisorFailed" in line).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("a persistent outage is announced once, and its recovery once", () => {
+  it("does not re-post an identical digest every tick", async () => {
+    // Deliberate, and worth pinning so it is understood rather than
+    // rediscovered. DedupingNotifier hashes the digest and skips an unchanged
+    // one, which is how a persistently red main behaves too. The harm is
+    // small: an advisor outage only matters when there are pull requests to
+    // decide on, and then the digest carries them and varies as they change.
+    // An estate quiet enough for the digest to be byte-identical is one where
+    // the advisor had nothing to decide anyway.
+    const dir = mkdtempSync(join(tmpdir(), "advisor-dedupe-"));
+    const dedupe = join(dir, ".twiki-last-digest.slack");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("ok", { status: 200 })),
+    );
+
+    const digest = buildDigest({
+      mode: "shadow",
+      repos: [],
+      advisorFailed: "credit balance is too low",
+    });
+    await new WebhookNotifier(
+      "https://example.invalid/h",
+      "slack",
+      dedupe,
+    ).send(digest);
+    await new WebhookNotifier(
+      "https://example.invalid/h",
+      "slack",
+      dedupe,
+    ).send(digest);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    // ...and recovery IS announced, because the digest changes.
+    const recovered = buildDigest({ mode: "shadow", repos: [] });
+    await new WebhookNotifier(
+      "https://example.invalid/h",
+      "slack",
+      dedupe,
+    ).send(recovered);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    vi.unstubAllGlobals();
+    rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -18,7 +18,19 @@ export class JsonlAudit implements AuditSink {
   constructor(private readonly path = "audit.jsonl") {}
 
   record(result: RunResult, at: string): void {
-    const line = JSON.stringify({ at, mode: result.mode, repos: result.repos });
+    // advisorFailed included deliberately. Without it, six hours of ticks
+    // during an outage are byte-identical to ticks where a healthy advisor
+    // held everything on purpose, and the operator reconstructing "why did
+    // nothing merge overnight" hits the exact confusion the digest banner
+    // exists to prevent.
+    const line = JSON.stringify({
+      at,
+      mode: result.mode,
+      repos: result.repos,
+      ...(result.advisorFailed !== undefined
+        ? { advisorFailed: result.advisorFailed }
+        : {}),
+    });
     try {
       appendFileSync(this.path, `${line}\n`);
     } catch {

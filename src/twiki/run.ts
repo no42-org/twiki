@@ -79,6 +79,20 @@ export async function runOnce(
   return result;
 }
 
+/** An error's message, plus its cause when that is where the reason lives. */
+function advisorFailureText(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause =
+    err.cause instanceof Error
+      ? err.cause.message
+      : err.cause !== undefined
+        ? String(err.cause)
+        : null;
+  return cause === null || err.message.includes(cause)
+    ? err.message
+    : `${err.message}: ${cause}`;
+}
+
 /**
  * Get the advisor plan, degrading to an empty plan on failure, and reporting
  * WHY it degraded. An empty plan means no PR has a `merge` decision, so the
@@ -99,7 +113,12 @@ async function safePlan(
   try {
     return { plan: await deps.advisor.plan(input) };
   } catch (err) {
-    const failure = err instanceof Error ? err.message : String(err);
+    // The cause, not just the message. undici surfaces every connection-level
+    // failure as a bare "TypeError: fetch failed" and puts the real reason -
+    // ECONNREFUSED, ENOTFOUND, a certificate error, a proxy refusal - on
+    // `cause`. Reporting the fact without the reason is exactly what this
+    // whole change argues against.
+    const failure = advisorFailureText(err);
     log(`advisor failed, holding all: ${failure}`);
     // The reason travels with the empty plan. Returning only the plan left
     // this explanation in stderr, where the person watching the chat channel
