@@ -512,7 +512,11 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   async branchChecks(repo: RepoRef): Promise<CheckStatus> {
     return this.get(repo).mainChecks;
   }
+  /** When set, latestTag throws: a READ failure inside the release step. */
+  failLatestTagWith: Error | null = null;
+
   async latestTag(repo: RepoRef): Promise<string | null> {
+    if (this.failLatestTagWith) throw this.failLatestTagWith;
     return this.get(repo).latestTag;
   }
   async dependabotCommitsSince(repo: RepoRef): Promise<number> {

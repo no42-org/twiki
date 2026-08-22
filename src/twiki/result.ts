@@ -62,7 +62,13 @@ export interface RepoResult {
   remediations?: RemediationOutcome[];
   error?: string;
   /**
-   * True when a write failed and this repository stopped before finishing.
+   * True when this repository stopped before finishing what it had to do.
+   *
+   * Deliberately does NOT claim a write failed. The usual cause is a refused
+   * merge, but `evaluateRelease` reads `latestTag` and `defaultBranchSha`
+   * before it pushes anything, so a 502 on either stops the repository with
+   * no write attempted. `error` carries the actual cause; this flag only
+   * says the work is incomplete.
    *
    * Load-bearing for the reader, not decoration. Stopping creates a second
    * reason a pull request can be missing from `prs`, alongside "evaluated and

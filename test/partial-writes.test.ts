@@ -122,10 +122,31 @@ describe("a repository that stops part-way still reports what it did", () => {
     // Under a secondary limit, carrying on means hammering the endpoint that
     // just refused, which is what AD-24 exists to prevent. The next tick
     // retries from the beginning with fresh facts.
-    const { github } = await runWithFailureOnFourth();
+    //
+    // The failure goes on #2 of four, NOT the last one. An earlier version of
+    // this test failed on #4 and asserted "merged has length 3", which holds
+    // whether the loop stops or continues - there was no pull request after
+    // the failing one to attempt. A mutation that recorded the error and
+    // carried on passed the entire 673-test suite.
+    const github = gh();
+    github.failMergeOn.set(
+      2,
+      new Error("You have exceeded a secondary rate limit"),
+    );
 
-    expect(github.merged.map((m) => m.number)).not.toContain(5);
-    expect(github.merged).toHaveLength(3);
+    const result = await applyPlan(
+      [facts()],
+      mergePlan(FOUR),
+      config(),
+      github,
+    );
+
+    // #1 merged, #2 refused, #3 and #4 never attempted.
+    expect(github.merged.map((m) => m.number)).toEqual([1]);
+    expect(result.repos[0]?.prs.map((p) => p.number)).toEqual([1]);
+    // Three pull requests have no outcome: the one that failed, plus the two
+    // after it.
+    expect(result.repos[0]?.notEvaluated).toBe(3);
   });
 
   it("leaves a completed repository making no early-stop claim", async () => {
@@ -176,6 +197,46 @@ describe("a failure after the merges is caught by the backstop", () => {
     // Every pull request WAS evaluated; only the release failed.
     expect(result.repos[0]?.notEvaluated).toBe(0);
     expect(buildDigest(result)).toContain("#9");
+  });
+});
+
+describe("the stop does not claim a cause it cannot know", () => {
+  it("a read failure in the release step is not called a failed write", async () => {
+    // evaluateRelease reads latestTag and defaultBranchSha BEFORE it pushes
+    // anything, so a 502 on either stops the repository with no write
+    // attempted. The digest used to say "stopped early after a failed write"
+    // regardless, and RepoResult documented the flag as "true when a write
+    // failed".
+    const github = gh();
+    github.failLatestTagWith = new Error(
+      "502 Bad Gateway from the tag listing",
+    );
+
+    const result = await applyPlan(
+      [
+        makeFacts({
+          prs: [makePr({ number: 9, bump: makeBump({ level: "major" }) })],
+        }),
+      ],
+      {
+        repos: [
+          {
+            repo: SLUG,
+            prDecisions: [],
+            release: { action: "release" as const, reason: "settled" },
+          },
+        ],
+      },
+      config(),
+      github,
+    );
+
+    const digest = buildDigest(result);
+    expect(result.repos[0]?.stoppedEarly).toBe(true);
+    expect(digest).toContain("stopped early");
+    expect(digest).not.toMatch(/failed write/);
+    // The real cause is still on the page, from `error`.
+    expect(digest).toMatch(/502/);
   });
 });
 
@@ -253,6 +314,31 @@ describe("a skipped remediation says why it was skipped", () => {
 
     const statuses = (res.repos[0]?.remediations ?? []).map((r) => r.status);
     expect(statuses).not.toContain("failed-rebase");
+  });
+
+  it("renders identically across ticks, so the notifier can dedupe it", async () => {
+    // A persistent failure - the Actions grant still not approved - would
+    // otherwise post to chat every poll. DedupingNotifier hashes the digest
+    // and skips an unchanged one, which only works while the rendering is
+    // stable. This pins that: putting a timestamp or a request id into
+    // `detail` would defeat the dedupe and spam the channel hourly.
+    const tick = async () => {
+      const github = gh();
+      github.failRebaseOn.set(
+        7,
+        new Error("Resource not accessible by integration"),
+      );
+      return buildDigest(
+        await applyPlan(
+          [makeFacts({ prs: [behindPr()] })],
+          noPlan(),
+          config(),
+          github,
+        ),
+      );
+    };
+
+    expect(await tick()).toBe(await tick());
   });
 
   it("a remediation failure does not stop the repository", async () => {

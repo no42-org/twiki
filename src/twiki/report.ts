@@ -82,9 +82,12 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
   if (repo.stoppedEarly) {
     // Said, never left to inference. Otherwise the pull requests it never got
     // to look exactly like pull requests it checked and found nothing to do.
+    // The cause is NOT asserted here. `repo.error` is rendered just above and
+    // carries it; claiming "after a failed write" was wrong whenever the
+    // release step's reads (latestTag, defaultBranchSha) were what threw.
     const n = repo.notEvaluated ?? 0;
     lines.push(
-      `  ⏹️ stopped early after a failed write` +
+      `  ⏹️ stopped early` +
         (n > 0
           ? ` — ${n} pull request${n === 1 ? "" : "s"} not evaluated`
           : ""),

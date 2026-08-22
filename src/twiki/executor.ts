@@ -58,13 +58,21 @@ async function applyRepo(
   // could merge three pull requests, fail on the fourth, and report `prs: []`
   // to both the digest and the audit, because this array was a local inside
   // the try and the catch built a fresh result without it.
+  //
+  // ALL THREE are held out here, not just `prs`. Hoisting only the pull
+  // requests would have left the same dishonesty one step later: a release
+  // that really did push a tag, discarded by the catch and reported as
+  // `waiting`, is the identical failure applied to a different outcome.
   let prs: PrOutcome[] = [];
+  let release: ReleaseOutcome | undefined;
+  let remediations: RemediationOutcome[] | undefined;
   const stopped = (detail: string, error: string): RepoResult => ({
     repo: slug,
     mainRed: facts.mainChecks === "red",
     prs,
-    release: { status: "waiting", detail },
+    release: release ?? { status: "waiting", detail },
     mainFailingChecks: facts.mainFailingChecks,
+    remediations,
     stoppedEarly: true,
     // Reported rather than derived from the gap: a reader counting
     // `facts.prs` against `prs` would need facts the result does not carry.
@@ -89,14 +97,8 @@ async function applyRepo(
       // from the beginning with fresh facts.
       return stopped("stopped after a failed write", evaluated.error);
     }
-    const release = await evaluateRelease(facts, policy, github, enforce);
-    const remediations = await remediate(
-      facts,
-      policy,
-      config,
-      github,
-      enforce,
-    );
+    release = await evaluateRelease(facts, policy, github, enforce);
+    remediations = await remediate(facts, policy, config, github, enforce);
     return {
       repo: slug,
       mainRed: facts.mainChecks === "red",
@@ -106,8 +108,13 @@ async function applyRepo(
       remediations,
     };
   } catch (err) {
-    // The backstop: a release write (pushTag) or anything else unexpected.
-    // `prs` is whatever completed, never discarded.
+    // The backstop: anything the release or remediation step throws.
+    // Whatever completed is kept, never discarded.
+    //
+    // NOT necessarily a write. `evaluateRelease` reads `latestTag` and
+    // `defaultBranchSha` before it pushes anything, so a 502 on the tag
+    // listing lands here too - which is why neither this detail nor the
+    // digest line claims a write failed. `error` carries the real cause.
     return stopped(
       "repo errored",
       err instanceof Error ? err.message : String(err),
