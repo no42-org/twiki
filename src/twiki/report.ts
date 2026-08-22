@@ -39,6 +39,10 @@ function repoHasActivity(repo: RepoResult): boolean {
 
 /** True when at least one repo has actionable news worth posting this tick. */
 export function hasActionableActivity(result: RunResult): boolean {
+  // An advisor outage is news on its own. Without this, a quiet estate plus a
+  // broken advisor suppresses the digest entirely, and the one run that most
+  // needs reporting is the one nobody hears about.
+  if (result.advisorFailed !== undefined) return true;
   return result.repos.some(repoHasActivity);
 }
 
@@ -54,6 +58,20 @@ export function buildDigest(result: RunResult): string {
 
   const blocks: string[] = [header];
   let anyActivity = false;
+
+  if (result.advisorFailed !== undefined) {
+    // At the top, before the repositories, because it changes how every line
+    // below it should be read: each "held" is the absence of a decision, not
+    // a decision to hold. The reason is included rather than just the fact -
+    // "the advisor is down" and "the advisor is down because the account has
+    // no credit" call for different actions.
+    anyActivity = true;
+    blocks.push(
+      `\n🧠 *The advisor could not be reached, so every pull request is held.*` +
+        `\n   Nothing below is a merge decision; they are decisions not taken.` +
+        `\n   ${result.advisorFailed}`,
+    );
+  }
 
   for (const repo of result.repos) {
     const lines = repoLines(repo, shadow);

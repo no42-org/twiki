@@ -84,4 +84,15 @@ export interface RepoResult {
 export interface RunResult {
   mode: Mode;
   repos: RepoResult[];
+  /**
+   * Why the advisor could not be consulted, when it could not be.
+   *
+   * Carried on the result rather than left in the log because the log is not
+   * what an operator reads. `safePlan` degrades to an empty plan, so every
+   * pull request is held, and each one renders as "no advisor decision -
+   * held". That is indistinguishable from twiki being cautious. Found on the
+   * first real deployment: an Anthropic key with no credit held everything,
+   * every cycle, and the digest read like a healthy quiet run.
+   */
+  advisorFailed?: string;
 }
