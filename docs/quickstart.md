@@ -186,25 +186,19 @@ docker run --rm \
    `TWIKI_MODE=enforce`. Rollback is instant: switch back to `shadow`.
 3. Deploy as a long-running poller (drop `TWIKI_ONCE`; it polls hourly, tune
    with `TWIKI_POLL_MINUTES`). Add your chosen chat-target variable (e.g.
-   `TWIKI_SLACK_WEBHOOK_URL=...`) to `.env` so `env_file` passes it to the
-   container, then:
+   `TWIKI_SLACK_WEBHOOK_URL=...`) to `.env`, which `compose.yml` passes to the
+   container in full.
 
-   ```yaml
-   # compose.yml
-   services:
-     twiki:
-       image: ghcr.io/no42-org/twiki:latest
-       restart: unless-stopped
-       env_file: .env # includes the chat-target webhook/token from step 3a/b/c
-       environment:
-         TWIKI_MODE: enforce # override the shadow default for the live deploy
-       volumes:
-         - ./repos.yaml:/config/repos.yaml:ro
-         - ./twiki.pem:/secrets/twiki.pem:ro
-   ```
+   **Use the `compose.yml` in the repository root; do not write your own.** It
+   carries things that are easy to omit and quiet when missing: a writable
+   state volume, without which every redeploy re-sends a digest identical to
+   the one already delivered, and the `/data` ownership and health gating the
+   dashboard's two roles need. An earlier version of this page printed a
+   minimal file to copy, and following it now would overwrite the shipped one.
 
    ```sh
-   docker compose up -d
+   cp .env.example .env    # then fill it in; set TWIKI_MODE=enforce when ready
+   make up
    ```
 
 For the full environment-variable reference (model selection, poll interval,

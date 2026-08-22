@@ -67,6 +67,7 @@ per-repo `autoMergeMinor` / `mergeOnly` overrides).
 | `TWIKI_MATRIX_TOKEN` | Matrix access token | — |
 | `TWIKI_MATRIX_ROOM` | Matrix room ID, e.g. `!abc:example.org` | — |
 | `TWIKI_AUDIT_PATH` | Append-only JSONL audit log | `audit.jsonl` |
+| `TWIKI_STATE_DIR` | Where the notifier remembers the last digest it sent, so a restart does not re-send it. Unset keeps a dotfile in the working directory, which in a container is a writable layer that dies on every recreate. | unset |
 
 The chat target is chosen by precedence: **Slack** (if its webhook URL is set),
 then **Discord**, then **Matrix** (when all three `TWIKI_MATRIX_*` vars are

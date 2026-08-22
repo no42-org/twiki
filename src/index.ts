@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { join } from "node:path";
 import {
   type Config,
   isAllowlisted,
@@ -16,6 +15,7 @@ import { ClaudeAdvisor } from "./twiki/advisor.js";
 import { JsonlAudit } from "./twiki/audit.js";
 import {
   ConsoleNotifier,
+  dedupePathFor,
   MatrixNotifier,
   type Notifier,
   WebhookNotifier,
@@ -27,26 +27,6 @@ import { schedule } from "./twiki/scheduler.js";
 // then hands off to the scheduler in src/twiki/. Everything below the handoff
 // is write-side behaviour; everything above it is wiring a second entrypoint
 // could reuse.
-
-/**
- * Where the notifier remembers the last digest it sent.
- *
- * A directory rather than a file, because the path is per transport. Unset
- * keeps the historical behaviour: a dotfile in the working directory.
- *
- * It exists because that working directory is a container's writable layer in
- * any real deployment, so the state died on every recreate and the first run
- * after a redeploy re-sent a notification byte-identical to the one already
- * delivered. De-duplication that a redeploy silently resets is not
- * de-duplication.
- */
-function dedupePathFor(
-  flavor: string,
-  env: NodeJS.ProcessEnv,
-): string | undefined {
-  const dir = (env.TWIKI_STATE_DIR ?? "").trim();
-  return dir === "" ? undefined : join(dir, `.twiki-last-digest.${flavor}`);
-}
 
 function buildNotifier(env = process.env): Notifier {
   if (env.TWIKI_SLACK_WEBHOOK_URL) {
