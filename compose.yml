@@ -22,6 +22,8 @@ services:
       TWIKI_CONFIG: /config/repos.yaml
       TWIKI_GITHUB_APP_ID: ${TWIKI_GITHUB_APP_ID:?set it in .env}
       TWIKI_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/twiki.pem
+      TWIKI_AUDIT_PATH: /state/audit.jsonl
+      TWIKI_STATE_DIR: /state
       TWIKI_MODE: ${TWIKI_MODE:-shadow}
       TWIKI_POLL_MINUTES: ${TWIKI_POLL_MINUTES:-60}
       TWIKI_SLACK_WEBHOOK_URL: ${TWIKI_SLACK_WEBHOOK_URL:-}
@@ -29,6 +31,13 @@ services:
     volumes:
       - ./repos.yaml:/config/repos.yaml:ro
       - ${TWIKI_KEY_PATH:-./twiki.pem}:/secrets/twiki.pem:ro
+      # Not the dashboard's database - twiki has none, and gets none. This is
+      # twiki's own small state, and without it a redeploy is user-visible:
+      # DedupingNotifier keeps the last digest's hash here, so losing it
+      # re-sends a notification byte-identical to the one already delivered.
+      # The audit log lands here too, which makes it survive a restart rather
+      # than dying with the container's writable layer.
+      - twiki-state:/state
 
   # The collector. The only writer of the database, and the only role that
   # migrates the schema. Starts before the dashboard on a cold start: any write
@@ -49,6 +58,31 @@ services:
       - ./repos.yaml:/config/repos.yaml:ro
       - ${TRICORDER_KEY_PATH:-./tricorder.pem}:/secrets/tricorder.pem:ro
       - tricorder-data:/data
+    healthcheck:
+      # Healthy once the database exists and has been written, which is the
+      # thing `web` actually needs. `condition: service_started` is NOT that:
+      # it waits for the container to start, not for the startup migration,
+      # and measured on a genuine cold start `web` lost that race and
+      # crash-looped 7 times before the file appeared. It self-heals, but a
+      # documented constraint that only holds by luck is not a constraint.
+      #
+      # distroless has no shell, so no `CMD-SHELL`. A healthcheck `CMD` bypasses
+      # the entrypoint, so the interpreter is named explicitly - and its path
+      # is /nodejs/bin/node, VERIFIED against the image, not /usr/bin/node as
+      # this comment first claimed. That guess made the healthcheck fail with
+      # "no such file or directory" on every probe, which reports as a broken
+      # dependency rather than as a broken check.
+      test:
+        [
+          "CMD",
+          "/nodejs/bin/node",
+          "-e",
+          "process.exit(require('node:fs').statSync('/data/tricorder.db').size > 0 ? 0 : 1)",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
 
   # The dashboard. Opens the database read-only and never migrates it.
   tricorder-web:
@@ -77,9 +111,13 @@ services:
       - tricorder-data:/data
     depends_on:
       tricorder-collect:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
+  # twiki's notification dedupe state and audit log. Small, and separate from
+  # the dashboard's database on purpose: the two products share no data.
+  twiki-state:
+
   # Deliberately NOT mounted :ro for the dashboard, even though its connection
   # is read-only. WAL keeps its shared memory in a `-shm` file beside the
   # database, so SQLite must be able to write the DIRECTORY even for a

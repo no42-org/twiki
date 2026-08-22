@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { join } from "node:path";
 import {
   type Config,
   isAllowlisted,
@@ -27,12 +28,40 @@ import { schedule } from "./twiki/scheduler.js";
 // is write-side behaviour; everything above it is wiring a second entrypoint
 // could reuse.
 
+/**
+ * Where the notifier remembers the last digest it sent.
+ *
+ * A directory rather than a file, because the path is per transport. Unset
+ * keeps the historical behaviour: a dotfile in the working directory.
+ *
+ * It exists because that working directory is a container's writable layer in
+ * any real deployment, so the state died on every recreate and the first run
+ * after a redeploy re-sent a notification byte-identical to the one already
+ * delivered. De-duplication that a redeploy silently resets is not
+ * de-duplication.
+ */
+function dedupePathFor(
+  flavor: string,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  const dir = (env.TWIKI_STATE_DIR ?? "").trim();
+  return dir === "" ? undefined : join(dir, `.twiki-last-digest.${flavor}`);
+}
+
 function buildNotifier(env = process.env): Notifier {
   if (env.TWIKI_SLACK_WEBHOOK_URL) {
-    return new WebhookNotifier(env.TWIKI_SLACK_WEBHOOK_URL, "slack");
+    return new WebhookNotifier(
+      env.TWIKI_SLACK_WEBHOOK_URL,
+      "slack",
+      dedupePathFor("slack", env),
+    );
   }
   if (env.TWIKI_DISCORD_WEBHOOK_URL) {
-    return new WebhookNotifier(env.TWIKI_DISCORD_WEBHOOK_URL, "discord");
+    return new WebhookNotifier(
+      env.TWIKI_DISCORD_WEBHOOK_URL,
+      "discord",
+      dedupePathFor("discord", env),
+    );
   }
   if (
     env.TWIKI_MATRIX_HOMESERVER &&
@@ -43,6 +72,7 @@ function buildNotifier(env = process.env): Notifier {
       env.TWIKI_MATRIX_HOMESERVER,
       env.TWIKI_MATRIX_TOKEN,
       env.TWIKI_MATRIX_ROOM,
+      dedupePathFor("matrix", env),
     );
   }
   return new ConsoleNotifier();

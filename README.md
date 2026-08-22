@@ -217,6 +217,21 @@ Both products run from **one image**, selected by command (AD-13). `compose.yml`
 runs all three: `twiki` on the image's default command, plus gitricorder's
 `tricorder-collect` and `tricorder-web`.
 
+Three files must exist before the first `make up`, because Docker creates a
+missing bind-mount source as an empty **directory** rather than failing: the
+container then gets a directory where it expected a file, and dies with
+`EISDIR` instead of saying what is missing.
+
+- `repos.yaml` — copy `repos.example.yaml`
+- twiki's App private key, at `TWIKI_KEY_PATH`
+- gitricorder's App private key, at `TRICORDER_KEY_PATH`
+
+Both keys must be **readable by uid 65532**, the image's non-root runtime user.
+A key stored the usual way (`chmod 600`, owned by you) is unreadable inside the
+container on Linux and both services crash-loop with `EACCES`. Docker Desktop
+and OrbStack on macOS mask this, so it will not show up until you deploy on a
+Linux host.
+
 ```sh
 cp .env.example .env      # then fill in the two App IDs and key paths
 make up                   # start
