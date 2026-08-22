@@ -53,8 +53,42 @@ async function applyRepo(
   const repoPlan = plan.repos.find((r) => r.repo === slug);
   const enforce = config.mode === "enforce";
 
+  // Held OUTSIDE the try. Everything below can fail against GitHub, and an
+  // action already performed must survive whatever fails after it: twiki
+  // could merge three pull requests, fail on the fourth, and report `prs: []`
+  // to both the digest and the audit, because this array was a local inside
+  // the try and the catch built a fresh result without it.
+  let prs: PrOutcome[] = [];
+  const stopped = (detail: string, error: string): RepoResult => ({
+    repo: slug,
+    mainRed: facts.mainChecks === "red",
+    prs,
+    release: { status: "waiting", detail },
+    mainFailingChecks: facts.mainFailingChecks,
+    stoppedEarly: true,
+    // Reported rather than derived from the gap: a reader counting
+    // `facts.prs` against `prs` would need facts the result does not carry.
+    notEvaluated: facts.prs.length - prs.length,
+    error,
+  });
+
   try {
-    const prs = await evaluatePrs(facts, policy, repoPlan, github, enforce);
+    const evaluated = await evaluatePrs(
+      facts,
+      policy,
+      repoPlan,
+      github,
+      enforce,
+    );
+    prs = evaluated.prs;
+    if (evaluated.error !== undefined) {
+      // A write refused. Stop this repository rather than issuing the
+      // remaining ones: under a secondary rate limit, carrying on means
+      // hammering the endpoint that just refused (AD-24), and under a
+      // permissions failure it means N identical 403s. The next tick retries
+      // from the beginning with fresh facts.
+      return stopped("stopped after a failed write", evaluated.error);
+    }
     const release = await evaluateRelease(facts, policy, github, enforce);
     const remediations = await remediate(
       facts,
@@ -72,13 +106,12 @@ async function applyRepo(
       remediations,
     };
   } catch (err) {
-    return {
-      repo: slug,
-      mainRed: facts.mainChecks === "red",
-      prs: [],
-      release: { status: "waiting", detail: "repo errored" },
-      error: err instanceof Error ? err.message : String(err),
-    };
+    // The backstop: a release write (pushTag) or anything else unexpected.
+    // `prs` is whatever completed, never discarded.
+    return stopped(
+      "repo errored",
+      err instanceof Error ? err.message : String(err),
+    );
   }
 }
 
@@ -114,16 +147,25 @@ async function remediate(
   // the merge/release outcomes already computed for this repo, nor abort the
   // remaining remediations. The action is simply retried on the next tick.
   for (const run of eligibleRuns.values()) {
-    if (
-      enforce &&
-      !(await tryWrite(() => github.rerunFailedJobs(facts.repo, run.runId)))
-    ) {
-      continue;
+    const ref = `run ${run.runId}`;
+    if (enforce) {
+      const failed = await tryWrite(() =>
+        github.rerunFailedJobs(facts.repo, run.runId),
+      );
+      if (failed !== null) {
+        out.push({
+          kind: "rerun",
+          status: "failed-rerun",
+          ref,
+          detail: failed,
+        });
+        continue;
+      }
     }
     out.push({
       kind: "rerun",
       status: enforce ? "reran" : "would-rerun",
-      ref: `run ${run.runId}`,
+      ref,
       detail: `attempt ${run.runAttempt}/${maxAttempts}`,
     });
   }
@@ -131,18 +173,25 @@ async function remediate(
   // Rebase: per eligible Dependabot PR.
   for (const pr of facts.prs) {
     if (!canRebase(pr, policy)) continue;
-    if (
-      enforce &&
-      !(await tryWrite(() =>
+    const ref = `#${pr.number}`;
+    if (enforce) {
+      const failed = await tryWrite(() =>
         github.requestDependabotRebase(facts.repo, pr.number),
-      ))
-    ) {
-      continue;
+      );
+      if (failed !== null) {
+        out.push({
+          kind: "rebase",
+          status: "failed-rebase",
+          ref,
+          detail: failed,
+        });
+        continue;
+      }
     }
     out.push({
       kind: "rebase",
       status: enforce ? "rebased" : "would-rebase",
-      ref: `#${pr.number}`,
+      ref,
       detail: `behind by ${pr.behindBy}`,
     });
   }
@@ -150,14 +199,30 @@ async function remediate(
   return out;
 }
 
-/** Run a remediation write; return false (and swallow) if it fails. */
-async function tryWrite(fn: () => Promise<void>): Promise<boolean> {
+/**
+ * Run a remediation write. Returns null on success, or the reason it failed.
+ *
+ * The reason is returned rather than swallowed because a bare `false` made
+ * three different facts identical in the output: the grant is not approved
+ * yet, the API errored transiently, and a secondary rate limit refused the
+ * write. All three produced no remediation entry at all - which is also what
+ * an INELIGIBLE pull request produces, since `canRebase` skips it before this
+ * is reached. An operator reading "0 rebases" during a throttling episode saw
+ * exactly what a healthy quiet run looks like.
+ */
+async function tryWrite(fn: () => Promise<void>): Promise<string | null> {
   try {
     await fn();
-    return true;
-  } catch {
-    return false;
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
   }
+}
+
+/** What completed, and - when a write refused - which pull request and why. */
+interface PrEvaluation {
+  prs: PrOutcome[];
+  error?: string;
 }
 
 async function evaluatePrs(
@@ -166,12 +231,19 @@ async function evaluatePrs(
   repoPlan: RepoPlan | undefined,
   github: GitHubPort,
   enforce: boolean,
-): Promise<PrOutcome[]> {
+): Promise<PrEvaluation> {
   const out: PrOutcome[] = [];
   for (const pr of facts.prs) {
-    out.push(await evaluatePr(pr, policy, repoPlan, github, enforce));
+    try {
+      out.push(await evaluatePr(pr, policy, repoPlan, github, enforce));
+    } catch (err) {
+      // Returned, not thrown: throwing is what discarded `out` and cost the
+      // record of every merge that had already landed.
+      const reason = err instanceof Error ? err.message : String(err);
+      return { prs: out, error: `#${pr.number}: ${reason}` };
+    }
   }
-  return out;
+  return { prs: out };
 }
 
 async function evaluatePr(

@@ -546,19 +546,31 @@ export class FakeGitHub extends FakeGitHubReadPort implements GitHubPort {
   reran: { repo: string; runId: number }[] = [];
   rebased: { repo: string; number: number }[] = [];
 
+  /** PR numbers whose merge throws, for exercising partial completion. */
+  failMergeOn = new Map<number, Error>();
+  /** Run ids whose re-run throws, and PR numbers whose rebase throws. */
+  failRerunOn = new Map<number, Error>();
+  failRebaseOn = new Map<number, Error>();
+
   async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
+    const fail = this.failMergeOn.get(prNumber);
+    if (fail) throw fail;
     this.merged.push({ repo: repoSlug(repo), number: prNumber });
   }
   async pushTag(repo: RepoRef, tag: string, sha: string): Promise<void> {
     this.tagged.push({ repo: repoSlug(repo), tag, sha });
   }
   async rerunFailedJobs(repo: RepoRef, runId: number): Promise<void> {
+    const fail = this.failRerunOn.get(runId);
+    if (fail) throw fail;
     this.reran.push({ repo: repoSlug(repo), runId });
   }
   async requestDependabotRebase(
     repo: RepoRef,
     prNumber: number,
   ): Promise<void> {
+    const fail = this.failRebaseOn.get(prNumber);
+    if (fail) throw fail;
     this.rebased.push({ repo: repoSlug(repo), number: prNumber });
   }
 }
