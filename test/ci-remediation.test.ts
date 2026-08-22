@@ -301,7 +301,24 @@ describe("ci-remediation — resilience", () => {
     expect(github.merged).toEqual([{ repo: SLUG, number: 7 }]);
     expect(res.repos[0]?.error).toBeUndefined();
     expect(res.repos[0]?.prs[0]?.status).toBe("merged");
-    // The failed re-run is simply not reported (retried next tick).
-    expect(res.repos[0]?.remediations).toEqual([]);
+    // The merge outcome surviving a later remediation failure is the half of
+    // this that has always held, and still does.
+    //
+    // The other half changed deliberately. This used to assert `[]` - "the
+    // failed re-run is simply not reported (retried next tick)" - which made
+    // a refused write indistinguishable from a pull request that needed no
+    // re-run at all. It is still retried next tick, and now it is also
+    // visible, so an operator can tell a throttled run from a quiet one.
+    expect(res.repos[0]?.remediations).toEqual([
+      {
+        kind: "rerun",
+        status: "failed-rerun",
+        ref: "run 99",
+        detail: "403: Actions permission not yet approved",
+      },
+    ]);
+    // Non-fatal, as the executor's own comment requires: the repository is
+    // not stopped by a remediation that could not be performed.
+    expect(res.repos[0]?.stoppedEarly).toBeFalsy();
   });
 });
