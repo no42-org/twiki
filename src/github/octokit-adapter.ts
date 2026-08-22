@@ -1356,13 +1356,44 @@ export function translateDependabotProbe(err: unknown): DependabotAccess {
 /**
  * Build a GitHubPort from environment, resolving each repo's installation via
  * the App and caching installation-scoped clients.
+ *
+ * Per-repository resolution only, and that is the whole surface `GitHubPort`
+ * offers: twiki acts on the repositories its allowlist names and never
+ * enumerates an account. `GET /repos/{owner}/{repo}/installation` answers for
+ * a user account exactly as for an organisation, measured 2026-08-22 against
+ * `indigo423/opennms-drools-sample`, so every method reachable from here
+ * works whoever owns the repository.
+ *
+ * NO org resolver is wired, deliberately. One arrived here on 2026-08-16 with
+ * the first gitricorder lane, back when no other factory existed; gitricorder
+ * got its own App and `createTricorderReadPort` the next day and never once
+ * called this function. What it left behind was a client whose type promised
+ * six account-scoped reads whose resolver called `getOrgInstallation`, which
+ * 404s on a user account (measured 2026-08-22 against `indigo423`). Three of
+ * those six only ever wanted a token, so they would have failed citing an
+ * orgs endpoint they never needed: honest status code, wrong story. The
+ * narrowed `GitHubPort` now makes reaching for one a compile error, and
+ * `OctokitGitHub`'s own guard names the missing wiring if a cast gets past
+ * that.
  */
 export function createGitHubFromEnv(
   isAllowed: (repo: RepoRef) => boolean,
   env = process.env,
+  /**
+   * Test seam only, like the tricorder factories': the transport handed to
+   * the App client and to each installation client. It exists so a test can
+   * prove what THIS factory wires, which nothing could before - every adapter
+   * test constructs OctokitGitHub directly, so the factory's resolver, its
+   * cache and its allowlist guard were all deletable with a green suite.
+   */
+  fetchImpl?: typeof fetch,
 ): GitHubPort {
   const auth: AppAuthConfig = loadAppAuthFromEnv(env);
-  const appClient = new Octokit({ authStrategy: createAppAuth, auth });
+  const appClient = new Octokit({
+    authStrategy: createAppAuth,
+    auth,
+    ...(fetchImpl ? { request: { fetch: fetchImpl } } : {}),
+  });
   const cache = new Map<number, Octokit>();
 
   const resolver: OctokitResolver = async (repo) => {
@@ -1372,23 +1403,13 @@ export function createGitHubFromEnv(
     });
     let client = cache.get(data.id);
     if (!client) {
-      client = installationOctokit(auth, data.id);
+      client = installationOctokit(auth, data.id, fetchImpl);
       cache.set(data.id, client);
     }
     return client;
   };
 
-  const orgCache = new Map<string, Octokit>();
-  const orgResolver: OrgOctokitResolver = async (org) => {
-    const cached = orgCache.get(org);
-    if (cached) return cached;
-    const { data } = await appClient.apps.getOrgInstallation({ org });
-    const client = installationOctokit(auth, data.id);
-    orgCache.set(org, client);
-    return client;
-  };
-
-  return new OctokitGitHub(resolver, isAllowed, orgResolver);
+  return new OctokitGitHub(resolver, isAllowed);
 }
 
 /**

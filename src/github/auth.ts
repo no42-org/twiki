@@ -51,6 +51,15 @@ export function loadAppAuthFromEnv(
 export function installationOctokit(
   auth: AppAuthConfig,
   installationId: number,
+  /**
+   * Test seam only: the transport this client issues through. It is a
+   * parameter rather than a branch at the call site so that production and
+   * tests build the client the SAME way - a factory that constructs inline
+   * when stubbed and calls this when not would let a wrapper added here
+   * later (request discipline, say) miss the tested path entirely, or vice
+   * versa, with the suite green either way.
+   */
+  fetchImpl?: typeof fetch,
 ): Octokit {
   return new Octokit({
     authStrategy: createAppAuth,
@@ -59,5 +68,6 @@ export function installationOctokit(
       privateKey: auth.privateKey,
       installationId,
     },
+    ...(fetchImpl ? { request: { fetch: fetchImpl } } : {}),
   });
 }

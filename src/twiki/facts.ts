@@ -11,7 +11,7 @@ import type {
   RepoRef,
   WorkflowRunRef,
 } from "../core/types.js";
-import type { GitHubReadPort } from "../github/port.js";
+import type { GitHubRepoReadPort } from "../github/port.js";
 
 /**
  * Gather all decision-relevant facts for one repo, freshly from GitHub.
@@ -21,7 +21,7 @@ import type { GitHubReadPort } from "../github/port.js";
  * untrusted data for the advisor to read; it never influences the gates.
  */
 export async function gatherFacts(
-  github: GitHubReadPort,
+  github: GitHubRepoReadPort,
   repo: RepoRef,
 ): Promise<RepoFacts> {
   const [rawPrs, mainChecks, latestTag, hasTagReleaseWorkflow] =
