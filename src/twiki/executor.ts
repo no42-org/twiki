@@ -59,20 +59,24 @@ async function applyRepo(
   // to both the digest and the audit, because this array was a local inside
   // the try and the catch built a fresh result without it.
   //
-  // ALL THREE are held out here, not just `prs`. Hoisting only the pull
-  // requests would have left the same dishonesty one step later: a release
-  // that really did push a tag, discarded by the catch and reported as
-  // `waiting`, is the identical failure applied to a different outcome.
+  // Only `prs` is hoisted, and deliberately so. Hoisting `release` and
+  // `remediations` too was considered: the worry is a release that really
+  // pushed a tag being discarded by the catch, which would be this same
+  // dishonesty one step later. It cannot happen. `remediate` is the last
+  // step, so if it completes we return normally and never reach `stopped`;
+  // and it cannot throw, because every write in it goes through `tryWrite`
+  // and the rest is pure. Both hoists were therefore unreachable, and a
+  // mutation removing either passed the whole suite - which is the honest
+  // signal that they were dead code, not defence. If a future step is added
+  // after `evaluateRelease`, or an unguarded call appears in `remediate`,
+  // hoist them then and pin it with a test that can fail.
   let prs: PrOutcome[] = [];
-  let release: ReleaseOutcome | undefined;
-  let remediations: RemediationOutcome[] | undefined;
   const stopped = (detail: string, error: string): RepoResult => ({
     repo: slug,
     mainRed: facts.mainChecks === "red",
     prs,
-    release: release ?? { status: "waiting", detail },
+    release: { status: "waiting", detail },
     mainFailingChecks: facts.mainFailingChecks,
-    remediations,
     stoppedEarly: true,
     // Reported rather than derived from the gap: a reader counting
     // `facts.prs` against `prs` would need facts the result does not carry.
@@ -97,8 +101,14 @@ async function applyRepo(
       // from the beginning with fresh facts.
       return stopped("stopped after a failed write", evaluated.error);
     }
-    release = await evaluateRelease(facts, policy, github, enforce);
-    remediations = await remediate(facts, policy, config, github, enforce);
+    const release = await evaluateRelease(facts, policy, github, enforce);
+    const remediations = await remediate(
+      facts,
+      policy,
+      config,
+      github,
+      enforce,
+    );
     return {
       repo: slug,
       mainRed: facts.mainChecks === "red",
@@ -217,6 +227,10 @@ async function remediate(
  * is reached. An operator reading "0 rebases" during a throttling episode saw
  * exactly what a healthy quiet run looks like.
  */
+// Every write in `remediate` goes through this, which is load-bearing beyond
+// this function: because nothing in `remediate` can throw, `applyRepo`'s
+// backstop never has a completed release to preserve, and can build a fresh
+// one. An unguarded call added to `remediate` breaks that assumption silently.
 async function tryWrite(fn: () => Promise<void>): Promise<string | null> {
   try {
     await fn();
