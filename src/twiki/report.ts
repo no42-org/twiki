@@ -15,6 +15,24 @@ const REMEDIATION_VERB = {
   "failed-rebase": "could NOT rebase",
 } as const;
 
+/**
+ * Bound the reason so one failure cannot cost the whole digest.
+ *
+ * safePlan's try block covers PlanSchema.parse, and a ZodError message is a
+ * multi-kilobyte dump of issues. Interpolated raw, that pushes the digest past
+ * Discord's 2000-character limit, the webhook answers 400, `deliver` throws,
+ * and runOnce catches it into "notify failed" - losing the entire digest,
+ * including any merges and releases that DID happen. The Matrix notifier
+ * already bounds its input for the same reason.
+ */
+const MAX_REASON_CHARS = 500;
+
+function truncateReason(reason: string): string {
+  return reason.length <= MAX_REASON_CHARS
+    ? reason
+    : `${reason.slice(0, MAX_REASON_CHARS)}… (truncated; see the log for the rest)`;
+}
+
 /** Failing check names plus a link to the first one with a URL. */
 function summarizeFailing(checks: FailingCheck[]): string {
   const names = checks.map((c) => c.name).join(", ");
@@ -39,6 +57,10 @@ function repoHasActivity(repo: RepoResult): boolean {
 
 /** True when at least one repo has actionable news worth posting this tick. */
 export function hasActionableActivity(result: RunResult): boolean {
+  // An advisor outage is news on its own. Without this, a quiet estate plus a
+  // broken advisor suppresses the digest entirely, and the one run that most
+  // needs reporting is the one nobody hears about.
+  if (result.advisorFailed !== undefined) return true;
   return result.repos.some(repoHasActivity);
 }
 
@@ -54,6 +76,35 @@ export function buildDigest(result: RunResult): string {
 
   const blocks: string[] = [header];
   let anyActivity = false;
+
+  if (result.advisorFailed !== undefined) {
+    // At the top, before the repositories, because it changes how the held
+    // lines below should be read: each is the absence of a decision, not a
+    // decision to hold. The reason is included rather than just the fact -
+    // "the advisor is down" and "the advisor is down because the account has
+    // no credit" call for different actions.
+    //
+    // "did not produce a plan", NOT "could not be reached". safePlan catches
+    // every throw from the advisor, and two of the causes are the opposite of
+    // unreachable: a missing plan tool call, and a schema validation failure,
+    // both of which mean it answered and the answer was unusable. Telling an
+    // operator it was unreachable sends them to check credit and network,
+    // which are fine, and away from the model output - where a validation
+    // failure is also a plausible prompt-injection symptom.
+    //
+    // The scope line is load-bearing too. NOT everything below is advisor-
+    // derived: evaluateRelease gates on isSettled and never consults the
+    // plan, and a major bump is flagged before the plan is read. An earlier
+    // version told the reader to discount everything, which would have
+    // discounted a real tag push and an URGENT security flag.
+    anyActivity = true;
+    blocks.push(
+      `\n🧠 *The advisor did not produce a plan, so nothing was merged on its advice.*` +
+        `\n   Every "held" below is a decision not taken, not a decision to hold.` +
+        `\n   Releases and flagged majors are decided without the advisor and still stand.` +
+        `\n   ${truncateReason(result.advisorFailed)}`,
+    );
+  }
 
   for (const repo of result.repos) {
     const lines = repoLines(repo, shadow);
