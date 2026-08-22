@@ -557,7 +557,11 @@ export class FakeGitHub extends FakeGitHubReadPort implements GitHubPort {
     if (fail) throw fail;
     this.merged.push({ repo: repoSlug(repo), number: prNumber });
   }
+  /** When set, pushTag throws this, for exercising the release-write path. */
+  failTagWith: Error | null = null;
+
   async pushTag(repo: RepoRef, tag: string, sha: string): Promise<void> {
+    if (this.failTagWith) throw this.failTagWith;
     this.tagged.push({ repo: repoSlug(repo), tag, sha });
   }
   async rerunFailedJobs(repo: RepoRef, runId: number): Promise<void> {

@@ -13,7 +13,13 @@ import { JsonlAudit } from "../src/twiki/audit.js";
 import { applyPlan } from "../src/twiki/executor.js";
 import type { Plan } from "../src/twiki/plan.js";
 import { buildDigest, hasActionableActivity } from "../src/twiki/report.js";
-import { FakeGitHub, type FakeRepoData, makeFacts, makePr } from "./fakes.js";
+import {
+  FakeGitHub,
+  type FakeRepoData,
+  makeBump,
+  makeFacts,
+  makePr,
+} from "./fakes.js";
 
 // What a run reports when it stops part-way through a repository.
 //
@@ -128,6 +134,48 @@ describe("a repository that stops part-way still reports what it did", () => {
 
     expect(result.repos[0]?.stoppedEarly).toBeFalsy();
     expect(result.repos[0]?.notEvaluated).toBeFalsy();
+  });
+});
+
+describe("a failure after the merges is caught by the backstop", () => {
+  it("keeps the pull-request outcomes when the RELEASE write fails", async () => {
+    // The other way into applyRepo's catch, and the one the executor cannot
+    // see coming: evaluatePrs returns cleanly, then pushTag throws. Nothing
+    // exercised this path before, so `prs` being held outside the try was
+    // deletable with a green suite - the mutation battery found it, not a
+    // review.
+    const github = gh();
+    github.failTagWith = new Error(
+      "refusing to create tag: ref already exists",
+    );
+
+    // A major bump is out of policy, so it is flagged rather than merged.
+    // That matters here: a MERGEABLE pull request would hold the release
+    // (`isSettled` requires none open), and the release write is the failure
+    // this test needs.
+    const flagged = makePr({ number: 9, bump: makeBump({ level: "major" }) });
+
+    const result = await applyPlan(
+      [makeFacts({ prs: [flagged] })],
+      {
+        repos: [
+          {
+            repo: SLUG,
+            prDecisions: [],
+            release: { action: "release" as const, reason: "settled" },
+          },
+        ],
+      },
+      config(),
+      github,
+    );
+
+    // The outcome computed before the release failed is still reported.
+    expect(result.repos[0]?.prs.map((p) => p.number)).toEqual([9]);
+    expect(result.repos[0]?.error).toMatch(/ref already exists/);
+    // Every pull request WAS evaluated; only the release failed.
+    expect(result.repos[0]?.notEvaluated).toBe(0);
+    expect(buildDigest(result)).toContain("#9");
   });
 });
 
