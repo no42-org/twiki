@@ -222,3 +222,145 @@ describe("the write-side port exposes only what its factory can honour", () => {
     expect(urls).toEqual([]);
   });
 });
+
+describe("the write side flows through the request discipline (AD-24)", () => {
+  // These exist because the wrapper was deletable with a green suite: a
+  // mutation removing `withRequestDiscipline` from the installation client
+  // passed every test. That is the same gap the tricorder factory's own
+  // fetchImpl seam was added to close - every other discipline test builds
+  // its own Octokit, so none of them prove what THIS factory wires.
+
+  /** Answers `attempts` throttled responses, then succeeds. */
+  function throttling(times: number, retryAfter = "0") {
+    const attempts: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/access_tokens")) {
+        return json(
+          {
+            token: "ghs_test",
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            permissions: {},
+            repository_selection: "all",
+          },
+          201,
+        );
+      }
+      if (u.includes("/installation"))
+        return json({ id: PERSONAL_INSTALLATION });
+      if (u.includes("/merge")) {
+        attempts.push(u);
+        if (attempts.length <= times) {
+          return new Response(
+            JSON.stringify({
+              message: "You have exceeded a secondary rate limit",
+            }),
+            {
+              status: 403,
+              headers: {
+                "content-type": "application/json",
+                "retry-after": retryAfter,
+                "x-ratelimit-remaining": "12",
+              },
+            },
+          );
+        }
+        return json({ merged: true });
+      }
+      return json({}, 404);
+    }) as unknown as typeof fetch;
+    return { fetchImpl, attempts };
+  }
+
+  it("honours a retry-after once, and the write then lands", async () => {
+    const { fetchImpl, attempts } = throttling(1);
+    const gh = createGitHubFromEnv(() => true, ENV, fetchImpl);
+
+    await gh.mergePR({ owner: "indigo423", name: "one" }, 7);
+
+    // Replaying a merge is safe precisely because 403 means GitHub REFUSED
+    // it. There is no double-merge here: the first attempt did nothing.
+    expect(attempts).toHaveLength(2);
+  });
+
+  it("retries at most once", async () => {
+    const { fetchImpl, attempts } = throttling(2);
+    const gh = createGitHubFromEnv(() => true, ENV, fetchImpl);
+
+    await expect(
+      gh.mergePR({ owner: "indigo423", name: "one" }, 7),
+    ).rejects.toThrow();
+    expect(attempts).toHaveLength(2);
+  });
+
+  it("does not retry a permissions 403", async () => {
+    // The boundary that makes replaying a mutating request safe at all: only
+    // a rate-limit refusal is retried, never an authorisation failure.
+    const attempts: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/access_tokens")) {
+        return json(
+          {
+            token: "t",
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            permissions: {},
+            repository_selection: "all",
+          },
+          201,
+        );
+      }
+      if (u.includes("/installation"))
+        return json({ id: PERSONAL_INSTALLATION });
+      if (u.includes("/merge")) {
+        attempts.push(u);
+        return new Response(
+          JSON.stringify({ message: "Resource not accessible by integration" }),
+          { status: 403, headers: { "content-type": "application/json" } },
+        );
+      }
+      return json({}, 404);
+    }) as unknown as typeof fetch;
+    const gh = createGitHubFromEnv(() => true, ENV, fetchImpl);
+
+    await expect(
+      gh.mergePR({ owner: "indigo423", name: "one" }, 7),
+    ).rejects.toThrow(/not accessible/);
+    expect(attempts).toHaveLength(1);
+  });
+
+  it("fails fast on primary exhaustion rather than sleeping out the window", async () => {
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/access_tokens")) {
+        return json(
+          {
+            token: "t",
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            permissions: {},
+            repository_selection: "all",
+          },
+          201,
+        );
+      }
+      if (u.includes("/installation"))
+        return json({ id: PERSONAL_INSTALLATION });
+      return new Response(
+        JSON.stringify({ message: "API rate limit exceeded" }),
+        {
+          status: 403,
+          headers: {
+            "content-type": "application/json",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "1790000000",
+          },
+        },
+      );
+    }) as unknown as typeof fetch;
+    const gh = createGitHubFromEnv(() => true, ENV, fetchImpl);
+
+    await expect(
+      gh.mergePR({ owner: "indigo423", name: "one" }, 7),
+    ).rejects.toThrow(/rate limit exhausted, resets at/);
+  });
+});
