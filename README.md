@@ -244,13 +244,17 @@ Linux host.
 
 ```sh
 cp .env.example .env      # then fill in the two App IDs and key paths
-make up                   # start
+make up                   # preflight-checks the image, then starts
 make logs                 # follow
 make ps                   # what is running
 make down                 # stop
 ```
 
 The dashboard is then at <http://127.0.0.1:8787>.
+
+`make up` checks first that the image can actually run the roles compose asks of it.
+Until a release is cut carrying gitricorder, the published `:latest` cannot: it predates the dashboard and has no `dist/tricorder.js`, so starting it fails with `Cannot find module`, which says nothing about images or releases.
+The preflight says that instead, and tells you to `make image` and point `.env` at `IMAGE=twiki` / `TAG=dev`.
 
 Four things the compose file encodes, each of which is easy to get wrong:
 
