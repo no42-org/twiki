@@ -111,6 +111,33 @@ describe("a failed advisor is reported, not just logged", () => {
     expect(digest).toMatch(/held .*because|advisor/i);
   });
 
+  it("carries the cause, where undici hides the actual reason", async () => {
+    // Node's undici surfaces every connection-level failure as a bare
+    // "TypeError: fetch failed" and puts ECONNREFUSED, ENOTFOUND, a
+    // certificate error or a proxy refusal on `cause`. Blocked egress to
+    // api.anthropic.com would otherwise reach the digest as "fetch failed" -
+    // the fact without the reason, which is the thing this change exists to
+    // stop doing.
+    const cap = capturing();
+    const err = new Error("fetch failed", {
+      cause: new Error("connect ECONNREFUSED 160.79.104.10:443"),
+    });
+
+    const result = await runOnce(config(), deps(cap.notifier, err));
+
+    expect(result.advisorFailed).toContain("ECONNREFUSED");
+    expect(cap.sent[0] ?? "").toContain("ECONNREFUSED");
+  });
+
+  it("does not repeat a cause the message already carries", async () => {
+    const cap = capturing();
+    const err = new Error("boom: already said", { cause: "already said" });
+
+    const result = await runOnce(config(), deps(cap.notifier, err));
+
+    expect(result.advisorFailed).toBe("boom: already said");
+  });
+
   it("says nothing about the advisor when it worked", async () => {
     const cap = capturing();
 
