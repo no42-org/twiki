@@ -145,6 +145,10 @@ export class HttpEnrichment implements EnrichmentPort {
         false,
       );
       if (decision.kind === "retry") {
+        // Release the refused response before making another. undici holds a
+        // socket out of the pool until an unread body is collected, and this
+        // path creates one per throttled fetch.
+        await res.body?.cancel().catch(() => {});
         await this.sleep(decision.afterMs);
         // Once. A second refusal is reported, not waited out again: the lane
         // records a failed run and the next cycle tries afresh (AD-16).
@@ -152,6 +156,10 @@ export class HttpEnrichment implements EnrichmentPort {
           signal: AbortSignal.timeout(60_000),
           headers,
         });
+      } else if (decision.kind === "exhausted") {
+        // The table's own wording, which names the reset time. Falling
+        // through would have reported a bare "HTTP 403" and dropped it.
+        throw new Error(`KEV fetch failed: ${decision.detail}`);
       }
     }
     if (res.status === 304) {

@@ -34,15 +34,21 @@ const ENV = { TWIKI_GITHUB_APP_ID: "1", TWIKI_GITHUB_APP_PRIVATE_KEY: KEY };
 /** The live count on no42-org/packyard, 2026-08-22. */
 const OPEN_PRS = 15;
 
-const PRS = Array.from({ length: OPEN_PRS }, (_, i) => ({
-  number: 100 + i,
-  title: `bump dep-${i} from 1.0.0 to 1.0.1`,
-  head: { ref: `dependabot/npm_and_yarn/dep-${i}`, sha: `sha${i}` },
-  user: { login: "dependabot[bot]" },
-  body: "",
-  labels: [],
-  draft: false,
-}));
+/** A quiet fortnight's worth, to prove the shape does not track the count. */
+const MANY_PRS = 40;
+
+const prsOfWidth = (n: number) =>
+  Array.from({ length: n }, (_, i) => ({
+    number: 100 + i,
+    title: `bump dep-${i} from 1.0.0 to 1.0.1`,
+    head: { ref: `dependabot/npm_and_yarn/dep-${i}`, sha: `sha${i}` },
+    user: { login: "dependabot[bot]" },
+    body: "",
+    labels: [],
+    draft: false,
+  }));
+
+const PRS = prsOfWidth(OPEN_PRS);
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -57,7 +63,7 @@ function json(body: unknown, status = 200) {
  * overlap observable at all - with an instantly-resolving stub, concurrent
  * and serial code produce the same peak of 1.
  */
-function shapeRecorder(delayMs = 5) {
+function shapeRecorder(delayMs = 5, prs: unknown[] = PRS) {
   const urls: string[] = [];
   let inFlight = 0;
   let peak = 0;
@@ -80,7 +86,7 @@ function shapeRecorder(delayMs = 5) {
       );
     }
     if (u.includes("/installation")) return json({ id: 1 });
-    if (u.includes("/pulls?") || u.endsWith("/pulls")) return json(PRS);
+    if (u.includes("/pulls?") || u.endsWith("/pulls")) return json(prs);
     if (u.includes("/check-runs") || u.includes("/status")) {
       return json({ state: "failure", check_runs: [], total_count: 0 });
     }
@@ -121,13 +127,30 @@ describe("one tick's request shape", () => {
     // The property that matters more than any single number: the old fan-out
     // was `Promise.all(rawPrs.map(...))`, so its width was whatever had piled
     // up over a quiet fortnight.
-    const rec = shapeRecorder();
-    const gh = createGitHubFromEnv(() => true, ENV, rec.fetchImpl);
+    //
+    // An earlier version of this test re-ran the SAME 15-pull-request fixture
+    // as the one above and asserted `PRS.length === OPEN_PRS`, a constant
+    // against the constant it came from. It could not fail, and it caught
+    // nothing the previous test did not already catch. The point is that the
+    // width is independent of the count, so the count has to vary.
+    const narrow = shapeRecorder(5, prsOfWidth(1));
+    await gatherFacts(
+      createGitHubFromEnv(() => true, ENV, narrow.fetchImpl),
+      REPO,
+    );
 
-    await gatherFacts(gh, REPO);
+    const wide = shapeRecorder(5, prsOfWidth(MANY_PRS));
+    await gatherFacts(
+      createGitHubFromEnv(() => true, ENV, wide.fetchImpl),
+      REPO,
+    );
 
-    expect(rec.peak()).toBeLessThanOrEqual(1);
-    expect(PRS.length).toBe(OPEN_PRS); // the fixture really is 15 wide
+    // Forty times the work, the same shape. A fan-out bounded at any width
+    // above one fails here even though it would pass a single-fixture check.
+    expect(wide.peak()).toBe(narrow.peak());
+    expect(wide.peak()).toBe(1);
+    // ...and the request count really did scale, so the fixture is doing work.
+    expect(wide.urls.length).toBeGreaterThan(narrow.urls.length * 5);
   });
 
   it("resolves the installation once per repository, not once per call", async () => {

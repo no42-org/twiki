@@ -1357,6 +1357,25 @@ export function translateDependabotProbe(err: unknown): DependabotAccess {
 }
 
 /**
+ * How long a repository's installation id is trusted.
+ *
+ * Bounded rather than permanent, and bounded rather than per-request. Per
+ * request was the old behaviour and cost 43% of a tick's traffic: the resolver
+ * asked GitHub which installation a repository belongs to before it could
+ * consult the cache keyed on the answer, so one tick on a 15-pull-request
+ * repository issued 54 identical lookups.
+ *
+ * Permanent would pin a dead id. Installation ids change when an App is
+ * uninstalled and reinstalled, which is exactly what an operator does after
+ * fixing a permissions problem, and a process-lifetime cache would fail every
+ * repository until somebody restarted the container.
+ *
+ * Five minutes is shorter than any sane poll interval, so a tick resolves once
+ * per repository, and a reinstalled App is picked up without a restart.
+ */
+export const INSTALLATION_CACHE_TTL_MS = 5 * 60_000;
+
+/**
  * Build a GitHubPort from environment, resolving each repo's installation via
  * the App and caching installation-scoped clients.
  *
@@ -1379,25 +1398,6 @@ export function translateDependabotProbe(err: unknown): DependabotAccess {
  * `OctokitGitHub`'s own guard names the missing wiring if a cast gets past
  * that.
  */
-/**
- * How long a repository's installation id is trusted.
- *
- * Bounded rather than permanent, and bounded rather than per-request. Per
- * request was the old behaviour and cost 43% of a tick's traffic: the resolver
- * asked GitHub which installation a repository belongs to before it could
- * consult the cache keyed on the answer, so one tick on a 15-pull-request
- * repository issued 54 identical lookups.
- *
- * Permanent would pin a dead id. Installation ids change when an App is
- * uninstalled and reinstalled, which is exactly what an operator does after
- * fixing a permissions problem, and a process-lifetime cache would fail every
- * repository until somebody restarted the container.
- *
- * Five minutes is shorter than any sane poll interval, so a tick resolves once
- * per repository, and a reinstalled App is picked up without a restart.
- */
-export const INSTALLATION_CACHE_TTL_MS = 5 * 60_000;
-
 export function createGitHubFromEnv(
   isAllowed: (repo: RepoRef) => boolean,
   env = process.env,

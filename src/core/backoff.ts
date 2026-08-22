@@ -45,7 +45,18 @@ export function backoffDecision(
   alreadyRetried: boolean,
   message = "",
 ): BackoffDecision {
-  if (status !== 403 && status !== 429) return { kind: "rethrow" };
+  // 503 belongs here as much as 403 and 429 do - more canonically, in fact:
+  // a service naming a wait it wants honoured is what Retry-After is for, and
+  // the KEV catalogue sits behind a CDN that says exactly that under load.
+  // Excluding it meant a request carrying an explicit wait was treated as a
+  // hard failure, and for that lane a hard failure costs a day of KEV answers.
+  //
+  // A 503 with NO usable wait still falls through to rethrow below: the
+  // secondary-limit fallback is gated on GitHub's message, and inventing a
+  // minute for an unexplained server error is not honouring anything.
+  if (status !== 403 && status !== 429 && status !== 503) {
+    return { kind: "rethrow" };
+  }
   // Delta-seconds only, deliberately: GitHub sends seconds, and RFC 9110's
   // HTTP-date form would need a clock this table refuses to own. A date here
   // parses as NaN and falls through.

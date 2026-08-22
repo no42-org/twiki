@@ -921,6 +921,27 @@ describe("the conditional alert listing", () => {
     expect(() => reviewerQueries([tooLong])).toThrow(/exceeds the 256/);
   });
 
+  it("honours a named wait on a 503, and refuses to invent one", () => {
+    // A service naming a wait it wants honoured is what Retry-After is for,
+    // and the KEV catalogue sits behind a CDN that says exactly that under
+    // load. Excluding 503 meant a request carrying an explicit wait was a hard
+    // failure - and for that lane, one costs a day of KEV answers.
+    expect(backoffDecision(503, { "retry-after": "5" }, false)).toEqual({
+      kind: "retry",
+      afterMs: 5000,
+    });
+
+    // Without a named wait it falls through: the secondary-limit fallback is
+    // gated on GitHub's message, and inventing a minute for an unexplained
+    // server error honours nothing.
+    expect(backoffDecision(503, {}, false).kind).toBe("rethrow");
+
+    // And an ordinary server error is still not retryable at all.
+    expect(backoffDecision(500, { "retry-after": "5" }, false).kind).toBe(
+      "rethrow",
+    );
+  });
+
   it("asks for nothing when no reviewers are configured", async () => {
     const gh = {
       graphql: async () => {
