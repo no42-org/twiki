@@ -227,6 +227,15 @@ container then gets a directory where it expected a file, and dies with
 - twiki's App private key, at `TWIKI_KEY_PATH`
 - gitricorder's App private key, at `TRICORDER_KEY_PATH`
 
+Those two `*_KEY_PATH` variables are **host** paths, read only by `compose.yml`
+so it knows what to mount. The variables the application reads are
+`TWIKI_GITHUB_APP_PRIVATE_KEY_PATH` and `TRICORDER_GITHUB_APP_PRIVATE_KEY_PATH`,
+which are **container** paths that `compose.yml` pins to `/secrets/*.pem`.
+Setting those two in `.env` does nothing under compose: they are declared under
+`environment`, which beats `env_file`. Set the `*_KEY_PATH` pair and leave the
+long names alone. Running the binary directly rather than through compose, it
+is the reverse - the long names are the real ones and `*_KEY_PATH` is unused.
+
 Both keys must be **readable by uid 65532**, the image's non-root runtime user.
 A key stored the usual way (`chmod 600`, owned by you) is unreadable inside the
 container on Linux and both services crash-loop with `EACCES`. Docker Desktop
