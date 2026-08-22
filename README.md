@@ -248,7 +248,8 @@ src/
     semver.ts      bump classification + next-patch tag (pure)
     types.ts       domain types
   github/          read/write ports, App auth, Octokit adapter
-    port.ts        GitHubReadPort, GitHubWritePort, GitHubPort
+    port.ts        GitHubRepoReadPort, GitHubAccountReadPort, GitHubReadPort,
+                   GitHubWritePort, GitHubPort
     auth.ts        GitHub App auth + installation token cache
     octokit-adapter.ts   the one adapter, implements both halves
   twiki/           the write side: everything that decides or mutates
@@ -283,10 +284,10 @@ the write path. Anything both sides need moves down into `core/`; neither side
 imports the other. If you are unsure where a new module belongs, ask whether
 both entrypoints would need it. If only one would, it does not go in `core/`.
 
-`src/twiki/` is the write side. `src/github/` splits its port in two:
-`GitHubReadPort` has no mutating method, `GitHubWritePort` has only mutating
-methods, and `GitHubPort` extends both for the one adapter that implements
-them. A consumer given only the read port cannot merge, tag or re-run
-anything, because the type has no such member. `test/ports.test.ts` pins that
-with `@ts-expect-error`, so a write method leaking onto the read port fails
-typecheck rather than review.
+`src/twiki/` is the write side. `src/github/` splits its port along two axes.
+
+The first is mutation. `GitHubReadPort` has no mutating method and `GitHubWritePort` has only mutating ones, so a consumer given the read port cannot merge, tag or re-run anything: the type has no such member. `test/ports.test.ts` pins that with `@ts-expect-error`, so a write method leaking onto the read port fails typecheck rather than review.
+
+The second is what a call names. `GitHubRepoReadPort` names a repository and resolves its installation from that repository, so it works whoever owns it. `GitHubAccountReadPort` names an account, which takes an installation resolved by account plus the account's kind, because a GitHub App on a user account has no org-level endpoint. `GitHubReadPort` is their union, which gitricorder's collector consumes.
+
+`GitHubPort` is therefore NOT both halves of everything: it is `GitHubRepoReadPort` plus `GitHubWritePort`. twiki acts on the repositories its allowlist names and never enumerates an account, so extending the account-scoped half would advertise six methods `createGitHubFromEnv` cannot honour, and did until that was split. `test/write-port.test.ts` pins this boundary the same way, with `@ts-expect-error` per method.

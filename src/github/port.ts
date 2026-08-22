@@ -183,14 +183,21 @@ export interface GitHubRepoReadPort {
  * Reads only, of a whole account.
  *
  * Separate from the repo-scoped half because a per-repository resolver
- * cannot honour these, and on a user account three of them cannot be
- * honoured at all. Measured 2026-08-22 against `indigo423`:
- * `GET /orgs/{login}/installation` and `GET /orgs/{login}/repos` both answer
- * 404, because a GitHub App on a user account has no org-level endpoint.
- * Honouring this half means knowing the account kind and resolving
- * installations by account, which is what `createTricorderReadPort` does
- * from the installation listing, and what `createGitHubFromEnv`
- * deliberately does not do.
+ * cannot honour any of them: each names an account rather than a
+ * repository. Honouring them means resolving an installation by account AND
+ * knowing what kind of account it is, which is what
+ * `createTricorderReadPort` does from the installation listing and what
+ * `createGitHubFromEnv` deliberately does not.
+ *
+ * The account kind is load-bearing, not descriptive. Measured 2026-08-22
+ * against `indigo423`: `GET /orgs/{login}/installation` and
+ * `GET /orgs/{login}/repos` both answer 404, because a GitHub App on a user
+ * account has no org-level endpoint. The adapter routes around that rather
+ * than failing on it - `listOrgRepos` falls back to the installation's own
+ * listing, `listDependabotAlerts` fans out per repository, and `rateLimit`
+ * was never org-scoped at all (its argument only picks the token). So all
+ * six ARE honourable on a user account, given a per-account resolver. What
+ * cannot be honoured there is the org-level ENDPOINT, not the method.
  *
  * The split is a boundary rather than a taxonomy. A port that advertised
  * these without the wiring behind them failed at the call site with an

@@ -1403,13 +1403,7 @@ export function createGitHubFromEnv(
     });
     let client = cache.get(data.id);
     if (!client) {
-      client = fetchImpl
-        ? new Octokit({
-            authStrategy: createAppAuth,
-            auth: { ...auth, installationId: data.id },
-            request: { fetch: fetchImpl },
-          })
-        : installationOctokit(auth, data.id);
+      client = installationOctokit(auth, data.id, fetchImpl);
       cache.set(data.id, client);
     }
     return client;
