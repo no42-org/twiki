@@ -55,9 +55,13 @@ export async function runOnce(
     }
   }
 
-  const plan = await safePlan(good, config, deps, log);
+  const { plan, failure } = await safePlan(good, config, deps, log);
   const result = await applyPlan(good, plan, config, deps.github);
   result.repos.push(...errored);
+  // Carried onto the result so the digest and the audit both see it. An
+  // advisor outage holds every pull request, and holding is what twiki does
+  // when it is being careful, so the two must not look the same.
+  if (failure !== undefined) result.advisorFailed = failure;
 
   // Skip purely-routine ticks (nothing to release, deps up to date) so the
   // channel isn't spammed every poll; the audit log still records every tick.
@@ -76,8 +80,9 @@ export async function runOnce(
 }
 
 /**
- * Get the advisor plan, degrading to an empty plan on failure. An empty plan
- * means no PR has a `merge` decision, so the executor holds everything —
+ * Get the advisor plan, degrading to an empty plan on failure, and reporting
+ * WHY it degraded. An empty plan means no PR has a `merge` decision, so the
+ * executor holds everything —
  * conservative by construction.
  */
 async function safePlan(
@@ -85,18 +90,20 @@ async function safePlan(
   config: Config,
   deps: RunDeps,
   log: (msg: string) => void,
-): Promise<Plan> {
-  if (good.length === 0) return { repos: [] };
+): Promise<{ plan: Plan; failure?: string }> {
+  if (good.length === 0) return { plan: { repos: [] } };
   const input: AdvisorRepoInput[] = good.map((facts) => ({
     facts: toAdvisorFacts(facts),
     policy: resolvePolicy(config, facts.repo),
   }));
   try {
-    return await deps.advisor.plan(input);
+    return { plan: await deps.advisor.plan(input) };
   } catch (err) {
-    log(
-      `advisor failed, holding all: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return { repos: [] };
+    const failure = err instanceof Error ? err.message : String(err);
+    log(`advisor failed, holding all: ${failure}`);
+    // The reason travels with the empty plan. Returning only the plan left
+    // this explanation in stderr, where the person watching the chat channel
+    // never sees it.
+    return { plan: { repos: [] }, failure };
   }
 }
