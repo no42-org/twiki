@@ -7,14 +7,14 @@ Two properties of the codebase shape every decision below:
 1. **All runtime dependencies are pure JavaScript** (`@anthropic-ai/sdk`, `@octokit/*`, `yaml`, `zod`) — no native addons. The same compiled JS runs on every architecture; only the base image differs by arch. Multi-arch is therefore a *base-image* concern, not a *compile* concern — buildx emits both platforms with no QEMU-emulated build.
 2. **twiki is a high-authority autonomous actor** holding a GitHub App private key and an Anthropic key, with merge/release power across many repos. Supply-chain hardening (SAST, image scan, SBOM, signing) is proportionate, not gold-plating.
 
-Locked decisions from exploration: container + npm-tarball artifacts; full hardening; auto GitHub Release from the tag; `main` builds are a single **rolling `edge` pre-release** of the **next patch** version.
+Locked decisions from exploration: container + npm-tarball artifacts; full hardening; auto GitHub Release from the tag; `main` builds are a single **rolling `edge` pre-release** of the **next patch** version. (Superseded 2026-08-24: `main` publishes only `:rc` — see D2/D5.)
 
 ## Goals / Non-Goals
 
 **Goals:**
 - One deterministic mapping from trigger → published image tags, traceable to a commit.
-- `main` continuously publishes a verifiable pre-release of the next version; tags publish stable releases.
-- `:latest` always points to the highest shipped **stable** version — never a backport, never a pre-release.
+- `main` continuously publishes a verifiable image (`:rc`); tags publish stable releases. (Amended 2026-08-24: `main` no longer carries a version — see D2.)
+- `:latest` points to the most recently pushed **stable** version, never a pre-release. (Amended 2026-08-24: "highest" was dropped with the guard — see D3.)
 - Every gate runs through Makefile targets so local and CI commands cannot drift.
 - Every published image is signed and carries an SBOM; the gate blocks merges on lint/type/test/SAST failures.
 
@@ -27,26 +27,38 @@ Locked decisions from exploration: container + npm-tarball artifacts; full harde
 
 ## Decisions
 
-### D1 — One release workflow, parameterized stable vs. pre-release
-A single workflow handles both `push: tags: v*` and `push: branches: main`. The trigger selects a `prerelease` boolean and the version; everything downstream (multi-arch build, GHCR push, signing, SBOM, Release publication, tarball) is shared.
+### D1 — ~~One release workflow, parameterized stable vs. pre-release~~ SUPERSEDED
 
-- *Why:* "main is the next release" and "main builds are pre-releases" describe the *same* artifact set as a stable release, only flagged. One workflow removes duplicated build/sign/publish logic and guarantees the two paths stay identical except for the flag.
-- *Alternative:* Separate `ci-publish-main.yml` and `release.yml`. Rejected — drift between the two is exactly the failure mode (e.g. signing added to one, not the other).
+Superseded by `simplify-release-tagging` (2026-08-24). `release.yml` handles tags; `publish-rc.yml` handles `main`.
 
-### D2 — `main` version = the **next patch**, pre-released
-For `main`, the version is derived from `git describe --tags --match 'v*'`: with last tag `vX.Y.Z` and `n` commits since, the build is **`X.Y.(Z+1)-dev.<n>+<shortsha>`**.
+The original *Why* was that both paths produce the same artifact set, differing only by a flag. That stopped being true once `main` produced only an image: it publishes no tarball, no GitHub Release, and no version, so the shared parameterization had almost nothing left to share.
 
-- *Why (the load-bearing reason):* SemVer precedence. Labeling main `X.Y.Z-dev.n` sorts *below* the already-released `X.Y.Z` — main would look older than what's shipped. `X.Y.(Z+1)-dev.n` is strictly greater than every released version yet strictly less than **any** real next bump:
-  `2.3.1 < 2.3.2-dev.5 < 2.3.2 < 2.4.0 < 3.0.0`.
-  So it is unambiguously "the next release in progress" regardless of whether the next tag turns out to be patch, minor, or major — no need to predict the bump.
-- *Bonus:* The `-dev` pre-release segment makes the D3 `:latest` guard exclude it for free, exactly as it excludes `-rc.N`.
-- *Alternative:* `0.0.0-main.<sha>`. Rejected — discards "next release" ordering semantics.
+The rejected alternative named the real risk, and it still stands: **drift between the two files is the failure mode** — signing or scanning added to one and not the other. Both currently sign the index digest, scan with Trivy, and emit an SBOM. Keep it that way, or merge them back.
 
-### D3 — `:latest` = highest **non-prerelease** semver, guarded
-`:latest` is applied only when the pushed tag is the highest non-prerelease version across all tags (`git tag --sort=-v:refname` filtered to stable). Pre-releases (`-rc.N`, `-dev.N`) and `main` builds never receive `:latest`, `:X.Y`, or `:X`.
+Note the two need *opposite* concurrency: `main` cancels superseded runs because only the newest commit needs to be `:rc`, while a tag must never cancel because a half-published release leaves some tags pushed and others not.
 
-- *Why:* `docker/metadata-action`'s `latest=auto` only checks "is this a tag event," not "is this the newest version." A backport tag (`v1.4.9` pushed after `v2.0.0` exists) would wrongly repoint `:latest` backward. An explicit highest-semver guard prevents that.
-- *Alternative:* `latest=auto`. Rejected — silently wrong on backports.
+### D2 — ~~`main` version = the **next patch**, pre-released~~ SUPERSEDED
+
+Superseded by `simplify-release-tagging` (2026-08-24). `main` no longer produces a versioned artifact at all: it publishes a single overwriting `:rc` image and nothing else, so there is no version string to derive and no `edge` pre-release to attach it to.
+
+The original reasoning was sound and is kept because the ordering argument still applies to anyone tempted to reintroduce a `main` version: `2.3.1 < 2.3.2-dev.5 < 2.3.2 < 2.4.0 < 3.0.0`, so `X.Y.(Z+1)-dev.<n>` is unambiguously "the next release in progress" without predicting the bump, whereas `X.Y.Z-dev.n` would sort *below* the already-released `X.Y.Z`.
+
+What actually retired it was cost, not correctness: deriving it required the full tag list on every build, and the per-commit `:sha-<short>` tags that accompanied it accumulated 53 permanent multi-arch manifests with nothing consuming them.
+
+### D3 — ~~`:latest` = highest **non-prerelease** semver, guarded~~ SUPERSEDED
+
+Superseded by `simplify-release-tagging` (2026-08-24). There is no guard. `:latest` follows whichever stable tag was pushed most recently, and no floating major tag `:X` is published at all.
+
+The original *Why* remains correct and is worth keeping, because it named a real failure: `docker/metadata-action`'s `latest=auto` checks "is this a tag event," not "is this the newest version," so a backport would repoint `:latest` backward.
+
+Two things retired it.
+
+First, it was **under-applied**. The guard consulted the highest version for `:latest` only, while `:X` and `:X.Y` were written unconditionally one line above. A backport across a *minor* boundary therefore moved `:X` backward, which is [#66](https://github.com/no42-org/twiki/issues/66). The example chosen above (`v1.4.9` after `v2.0.0`) crosses a *major* boundary, which is the one backport shape where `:X` happens to be correct — so neither this design, nor the spec, nor the unit test ever probed it.
+
+Second, it was **load-bearing for the wrong reasons**. Answering "is this the highest" required the whole tag list, which required `fetch-depth: 0` as its own spec requirement, plus a semver comparison implementation and its tests. Roughly 190 lines existed to defend against a backport this project has never performed except to test the guard.
+
+**When this must come back:** the moment a maintained older release line exists. Restore a highest-stable comparison, and apply it to *every* floating tag published, not only `:latest` — that is the lesson of #66.
+
 
 ### D4 — Multi-arch via buildx base image only (no QEMU compile)
 `docker buildx build --platform linux/amd64,linux/arm64` produces a manifest list. Because the app is pure JS (Context #1), no cross-compilation or emulated build step is needed — each platform is the same `dist/` on an arch-appropriate Node base.
@@ -54,11 +66,13 @@ For `main`, the version is derived from `git describe --tags --match 'v*'`: with
 - *Why:* Cheap, fast multi-arch with no QEMU build emulation.
 - *Watch item:* If a native-addon dependency is ever added, this assumption breaks and the build stage would need per-arch emulation or cross-build; called out so a future dep change revisits it.
 
-### D5 — `main` pre-releases are a single rolling `edge` entry
-Pushes to `main` update one GitHub pre-release attached to a moving `edge` tag (assets replaced each push), rather than creating a new pre-release per commit.
+### D5 — ~~`main` pre-releases are a single rolling `edge` entry~~ SUPERSEDED
 
-- *Why:* Clean Releases page, a stable download URL (`/releases/tag/edge`), and the `+<sha>` build metadata plus the immutable container `:sha-<short>` tag preserve exact per-commit traceability. Per-commit GitHub releases would flood the list and need retention cleanup.
-- *Alternative:* One pre-release per commit. Rejected — clutter and cleanup burden for no traceability gain over the container `:sha` tag.
+Superseded by `simplify-release-tagging` (2026-08-24). `main` publishes a single overwriting `:rc` image and no GitHub release at all.
+
+The original reasoning — avoid flooding the Releases page, keep per-commit traceability via `:sha-<short>` — was right about the first half and paid too much for the second. The `:sha-<short>` tags were never consumed and 53 of them accumulated as permanent multi-arch manifests. `:rc` still resolves to a digest, so anyone needing an immutable reference pins that.
+
+**Trade accepted:** `main` now leaves nothing on the Releases page, so there is no stable download URL for a `main` build.
 
 ### D6 — CI is Makefile-driven; add `lint` and `image`
 Workflows call `make verify`, `make lint`, `make image` — never `npx biome`, `tsc`, `vitest`, or `docker build` directly (per repo convention). New targets: `lint` (Biome check) and `image` (buildx build).
