@@ -94,4 +94,16 @@ This needs a token with `write:packages` (`gh auth refresh -s write:packages`).
 
 Never run a blanket untagged-version cleanup.
 A multi-arch image is a tagged manifest list plus untagged per-architecture children, so deleting untagged versions breaks already-published releases.
-Delete specific versions by ID instead.
+Delete specific versions by ID instead:
+
+```sh
+gh api --paginate /orgs/no42-org/packages/container/twiki/versions \
+  --jq '.[] | "id=\(.id) tags=[\(.metadata.container.tags | join(","))]"'
+gh api -X DELETE /orgs/no42-org/packages/container/twiki/versions/<id>
+```
+
+**GHCR cannot remove a single tag.** Deletion works on a *version*, and a version carries every tag pointing at it, so a version shared between a retired tag and a real release cannot be cleaned up without destroying the release.
+
+That is why `:0` is still published and frozen at `0.0.5`: it shares a version with `:0.0.5`. It is documented as dead in the README rather than deleted.
+
+The lesson for anything published in future: a floating tag you might later want to retire should not be the only thing standing between you and a version you need to keep.

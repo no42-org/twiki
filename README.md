@@ -272,6 +272,10 @@ There is no floating major tag (`:X`), and `main` publishes no versioned tag.
 For an immutable reference, pin the digest a tag resolves to.
 `:latest` and `:rc` both move, so `make up` pulls before starting rather than trusting a local copy.
 
+> **`:0` still exists and is frozen at `0.0.5`.** It was published before `:X` was retired, and nothing writes it any more.
+> It could not be deleted: GHCR removes a whole version rather than a single tag, and that version also carries `:0.0.5`, a real release.
+> Do not pull `:0` — it will silently serve old code forever. Use `:latest`.
+
 Four things the compose file encodes, each of which is easy to get wrong:
 
 - **The dashboard is published on `127.0.0.1` only.** There is no
