@@ -253,8 +253,24 @@ make down                 # stop
 The dashboard is then at <http://127.0.0.1:8787>.
 
 `make up` checks first that the image can actually run the roles compose asks of it.
-Until a release is cut carrying gitricorder, the published `:latest` cannot: it predates the dashboard and has no `dist/tricorder.js`, so starting it fails with `Cannot find module`, which says nothing about images or releases.
-The preflight says that instead, and tells you to `make image` and point `.env` at `IMAGE=twiki` / `TAG=dev`.
+It probes the resolved image for `dist/tricorder.js` and judges on capability, not on which tag you picked, so any image that can do the job is accepted.
+An image that cannot fails with `Cannot find module`, which says nothing about images or releases; the preflight says it instead and tells you how to fix it.
+
+Published image tags:
+
+| tag | what it is |
+| --- | --- |
+| `:latest` | the most recently *pushed* stable release |
+| `:X.Y` | the most recently pushed patch of that minor line |
+| `:X.Y.Z` | one exact release, immutable |
+| `:rc` | the current state of `main`, overwritten on every merge |
+
+"Most recently pushed", not "highest": there is no guard, so pushing a stable tag lower than an existing one moves both floating tags backward.
+`RELEASING.md` covers why and what to do instead.
+
+There is no floating major tag (`:X`), and `main` publishes no versioned tag.
+For an immutable reference, pin the digest a tag resolves to.
+`:latest` and `:rc` both move, so `make up` pulls before starting rather than trusting a local copy.
 
 Four things the compose file encodes, each of which is easy to get wrong:
 
@@ -348,7 +364,7 @@ src/
     collect/       one lane per source; dependabot-alerts.ts is the first
     web/           freshness policy, view model, JSX components, routes, server
 test/              pure-logic suites + ports + injection + shadow e2e (fakes, no network)
-scripts/           release-plan (CI release glue), matrix-smoke
+scripts/           preflight-image (make up gate), matrix-smoke
 ```
 
 ### Module boundaries

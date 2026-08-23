@@ -8,11 +8,13 @@ import { execFileSync, spawnSync } from "node:child_process";
 // Preflight for `make up`: refuse to start an image that cannot run the roles
 // compose asks it to run.
 //
-// `.env.example` defaults to the published image, and no release has been cut
-// since gitricorder was built - so `ghcr.io/no42-org/twiki:latest` still
-// carries the pre-story-2 layout, with no `dist/tricorder.js` and no `core/`
-// or `tricorder/` directories at all. Following the quickstart therefore ends
-// in the collector crash-looping on:
+// This judges the image on capability, never on which tag was chosen. Any
+// image carrying the entrypoint is accepted, wherever it came from.
+//
+// It was written when the published `:latest` predated gitricorder and could
+// not run it; v0.0.5 fixed that, and the check is still worth keeping, because
+// the failure it prevents is illegible. A missing entrypoint crash-loops the
+// collector on:
 //
 //   Error: Cannot find module '/app/dist/tricorder.js'
 //
@@ -60,19 +62,36 @@ function resolveImage(): string {
 }
 
 const image = resolveImage();
-
-// Pull only when it is not already local, so a freshly built `twiki:dev` is
-// not clobbered by a registry lookup that would fail anyway.
-if (
+const local =
   spawnSync("docker", ["image", "inspect", image], { stdio: "ignore" })
-    .status !== 0
-) {
-  process.stderr.write(`[preflight] pulling ${image}\n`);
-  const pull = spawnSync("docker", ["pull", image], { stdio: "inherit" });
-  if (pull.status !== 0) {
+    .status === 0;
+
+// Always try to pull, because every tag worth running here is mutable: `:rc`
+// is overwritten on every merge to main, and `:latest` moves on every release.
+// Checking only for a local copy meant a cached image was started silently and
+// indefinitely - a week-old `:rc` looks exactly like a current one, and the
+// stale copy also makes this very check refuse an image that is actually fine.
+//
+// A failed pull is only fatal when there is nothing local to fall back on. A
+// locally built `twiki:dev` exists in no registry, so its pull always fails and
+// must not be treated as an error.
+process.stderr.write(`[preflight] pulling ${image}\n`);
+// Progress on stdout stays visible; stderr is captured so that the expected
+// failure for a local-only build ("pull access denied for twiki") is not
+// printed as if something had gone wrong. It is shown only when it is fatal.
+const pull = spawnSync("docker", ["pull", image], {
+  stdio: ["ignore", "inherit", "pipe"],
+  encoding: "utf8",
+});
+if (pull.status !== 0) {
+  if (!local) {
+    process.stderr.write(pull.stderr ?? "");
     process.stderr.write(`\n[preflight] could not pull ${image}.\n`);
     process.exit(1);
   }
+  process.stderr.write(
+    `[preflight] ${image} is not in a registry; using the local copy.\n`,
+  );
 }
 
 const check = spawnSync(
@@ -94,10 +113,12 @@ if (check.status !== 0) {
     `\n[preflight] ${image} cannot run gitricorder.\n\n` +
       `  It carries no ${ENTRYPOINT}, which means it predates the dashboard.\n` +
       `  Starting it would fail with "Cannot find module", which does not say this.\n\n` +
-      "  Either build the current source and point compose at it:\n\n" +
+      "  Point .env at a tag that carries it:\n\n" +
+      "      TAG=latest   # newest stable release\n" +
+      "      TAG=rc       # current state of main\n\n" +
+      "  or build the current source and run that instead:\n\n" +
       "      make image\n" +
-      "      # then in .env:  IMAGE=twiki  TAG=dev\n\n" +
-      "  or cut a release, after which the published tag carries it.\n\n",
+      "      # then in .env:  IMAGE=twiki  TAG=dev\n\n",
   );
   process.exit(1);
 }
