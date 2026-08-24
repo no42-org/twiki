@@ -118,9 +118,109 @@ describe("counting unreleased dependency commits", () => {
     await expect(github.dependabotCommitsSince(REPO, null)).resolves.toBe(1);
   });
 
-  it("both branches agree about the same commit", async () => {
-    // The two branches drifted because nothing compared them. A commit that
-    // one counts and the other does not is the shape of #90.
+  it("walks past a page that contains no Dependabot commits", async () => {
+    // Filtering locally moved the bound from "the first 100 matches" to "the
+    // first 100 commits scanned". A repository whose Dependabot merges sit
+    // behind newer human commits would count 0 and be told there was nothing
+    // to release - #90 again, through a narrower window. Review caught it.
+    //
+    // Page one here is recorded and contains only human commits; page two
+    // carries the Dependabot ones. Reading one page returns 0.
+    const pages = ["commits-humans-only.json", "commits-mixed.json"];
+    let served = 0;
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/commits")) {
+        return new Response(
+          JSON.stringify(
+            url.pathname.endsWith("/installation")
+              ? { id: 7 }
+              : url.pathname.endsWith("/access_tokens")
+                ? {
+                    token: "ghs_test",
+                    expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+                  }
+                : {},
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      const body = load(pages[served] ?? "commits-humans-only.json");
+      served++;
+      const more = served < pages.length;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          ...(more
+            ? {
+                link: `<https://api.github.com/repos/no42-org/blitsbom/commits?page=${served + 1}>; rel="next"`,
+              }
+            : {}),
+        },
+      });
+    }) as typeof fetch;
+    const github = createGitHubFromEnv(
+      () => true,
+      {
+        TWIKI_GITHUB_APP_ID: "1",
+        TWIKI_GITHUB_APP_PRIVATE_KEY: TEST_KEY,
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+    );
+
+    await expect(github.dependabotCommitsSince(REPO, null)).resolves.toBe(2);
+    expect(served).toBe(2);
+  });
+
+  it("refuses to report zero from a comparison it could not see all of", async () => {
+    // GitHub caps the commits on a comparison and reports the true size
+    // separately. Zero matches out of a truncated view is not evidence that
+    // there is nothing to release, and the return type cannot say "unknown" -
+    // so it fails loudly instead. run.ts catches this per repository and the
+    // message reaches the digest.
+    const truncated = {
+      total_commits: 400,
+      commits: load("commits-humans-only.json"),
+    };
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const body = url.pathname.includes("/compare/")
+        ? truncated
+        : url.pathname.endsWith("/installation")
+          ? { id: 7 }
+          : url.pathname.endsWith("/access_tokens")
+            ? {
+                token: "ghs_test",
+                expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+              }
+            : {};
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const github = createGitHubFromEnv(
+      () => true,
+      {
+        TWIKI_GITHUB_APP_ID: "1",
+        TWIKI_GITHUB_APP_PRIVATE_KEY: TEST_KEY,
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+    );
+
+    await expect(github.dependabotCommitsSince(REPO, "v0.8.0")).rejects.toThrow(
+      /4 of 400 commits/,
+    );
+  });
+
+  it("both branches apply the same predicate", async () => {
+    // NOT a guard against #90 returning: the mock ignores query parameters, so
+    // re-adding `author: DEPENDABOT_LOGIN` would serve the same payload and
+    // this would stay green. `does not ask GitHub to filter by author` is the
+    // test that covers that. What this binds is narrower and still worth
+    // having - the two branches drifted apart once because nothing compared
+    // them, and this fails if they are given different predicates again.
     const single = "commits-unmapped-author.derived.json";
     const commits = load(single) as unknown[];
     const asCompare = { commits, total_commits: commits.length };

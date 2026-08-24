@@ -61,10 +61,12 @@ const DEPENDABOT_LOGIN = "dependabot[bot]";
  * commit in this estate is currently in that state; it is covered by a derived
  * fixture rather than left to be assumed.
  */
-function isDependabotCommit(c: {
+interface CommitLike {
   author?: { login?: string } | null;
   commit: { author?: { name?: string } | null };
-}): boolean {
+}
+
+function isDependabotCommit(c: CommitLike): boolean {
   return (
     c.author?.login === DEPENDABOT_LOGIN ||
     /dependabot/i.test(c.commit.author?.name ?? "")
@@ -920,25 +922,53 @@ export class OctokitGitHub implements GitHubPort {
   ): Promise<number> {
     const gh = await this.client(repo);
     if (!tag) {
-      // No release yet, so every commit is unreleased. Bounded to one page:
-      // this count only has to answer "is there anything to release", and the
-      // caller tests it with `> 0`. It is also shown to the advisor verbatim,
-      // so a repository with more than 100 commits and no release will
-      // under-report the number while still answering that question
-      // correctly. NOT filtered by GitHub - see below.
-      const { data } = await gh.repos.listCommits({
-        owner: repo.owner,
-        repo: repo.name,
-        per_page: 100,
-      });
-      return data.filter(isDependabotCommit).length;
+      // No release yet, so every commit in history is unreleased and there is
+      // no base to compare against. NOT filtered by GitHub - see the predicate.
+      //
+      // This MUST walk rather than read one page. Filtering locally moved the
+      // bound from "the first 100 matches" to "the first 100 commits scanned",
+      // so a repository whose Dependabot merges sit behind 100 newer human
+      // commits would count 0 and be told there was nothing to release - #90
+      // again, through a narrower window. Review caught it; the first version
+      // of this fix read one page and claimed in a comment that it merely
+      // under-reported, which was not true of the 0 case.
+      const walked = await walkLinkedPages(
+        `commit listing for ${repoSlug(repo)}`,
+        () =>
+          gh.request("GET /repos/{owner}/{repo}/commits", {
+            owner: repo.owner,
+            repo: repo.name,
+            per_page: 100,
+          }),
+        (url) => gh.request(`GET ${url}`),
+      );
+      // Residual, stated rather than implied: if the walk hit its page cap
+      // AND matched nothing, 0 means "not in the first MAX_ALERT_PAGES pages",
+      // not "none exist". That needs a repository with no release and tens of
+      // thousands of commits, none of them Dependabot's. Not engineered for,
+      // but not silently claimed correct either.
+      return (walked.items as CommitLike[]).filter(isDependabotCommit).length;
     }
     const { data } = await gh.repos.compareCommitsWithBasehead({
       owner: repo.owner,
       repo: repo.name,
       basehead: `${tag}...HEAD`,
     });
-    return data.commits.filter(isDependabotCommit).length;
+    // The sibling bound, which the first version of this fix documented on the
+    // listing branch while leaving silent here. GitHub caps `commits` on a
+    // comparison and reports the true size separately, so the two disagreeing
+    // is how truncation shows. Undercounting is harmless while something
+    // matched - the gate reads `> 0` - and only misleads the advisor, which
+    // sees the number.
+    const seen = data.commits.filter(isDependabotCommit).length;
+    if (seen === 0 && data.total_commits > data.commits.length) {
+      throw new Error(
+        `comparison ${tag}...HEAD for ${repoSlug(repo)} returned ${data.commits.length} ` +
+          `of ${data.total_commits} commits and none of them were Dependabot's; ` +
+          `a 0 here cannot be trusted`,
+      );
+    }
+    return seen;
   }
 
   async hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean> {
