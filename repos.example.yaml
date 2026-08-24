@@ -1,7 +1,11 @@
 # Copyright 2026 Ronny Trommer <ronny@no42.org>
 # SPDX-License-Identifier: MIT
 #
-# Copy to repos.yaml and edit. Unknown keys are rejected so typos fail loudly.
+# Copy to repos.yaml and edit.
+#
+# Unknown keys are rejected, and there are two reasons one shows up: a typo, or
+# a config written against a newer twiki than the image reading it. The error
+# names both, because from inside the parser they are indistinguishable.
 
 # Start in shadow: twiki reports what it WOULD do and writes nothing.
 # Flip to "enforce" (or set TWIKI_MODE=enforce) once you trust the digests.

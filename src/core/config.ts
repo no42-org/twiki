@@ -88,14 +88,82 @@ export interface Config {
   reviewers: readonly string[];
 }
 
+/**
+ * Where a problem sits in the document, as a reader would write it:
+ * `repos[0].mergeOnyl`, not a JSON array. Empty path means the top level.
+ */
+function locate(segments: readonly PropertyKey[]): string {
+  return segments.reduce<string>((acc, seg) => {
+    if (typeof seg === "number") return `${acc}[${seg}]`;
+    return acc === "" ? String(seg) : `${acc}.${String(seg)}`;
+  }, "");
+}
+
+/**
+ * One sentence per problem, built from the issue's structured fields rather
+ * than by matching text zod owns - a zod upgrade that changes the wording
+ * must not silently change ours.
+ *
+ * An unrecognized key names BOTH causes. This parser cannot detect a key from
+ * the future and does not need to; it only has to stop asserting the one
+ * explanation. Version skew produces exactly this error whenever a config is
+ * written against a newer build than the image running it, and saying only
+ * "typo" sends the reader hunting for a mistake they did not make.
+ */
+function renderIssue(issue: z.core.$ZodIssue): string[] {
+  const at = locate(issue.path);
+  if (issue.code === "unrecognized_keys") {
+    return issue.keys.map((key) => {
+      const where = at === "" ? key : `${at}.${key}`;
+      return (
+        `${where}: unrecognized key. Either a typo, or this config was ` +
+        "written for a newer twiki than the one reading it."
+      );
+    });
+  }
+  return [at === "" ? issue.message : `${at}: ${issue.message}`];
+}
+
+/**
+ * Read and validate the repo allowlist.
+ *
+ * Every failure here is something the operator supplied - a path, a file, a
+ * document - so each one names what was being read and what is wrong with it.
+ * Unwrapped, a schema failure surfaced as zod's serialised issue array plus a
+ * stack trace into this file, naming the parser and never the config.
+ */
 export function loadConfig(
   path: string,
   modeOverride?: Mode,
   remediation?: RemediationConfig,
 ): Config {
-  const raw = readFileSync(path, "utf8");
-  const parsed = ConfigSchema.parse(parseYaml(raw));
-  return buildConfig(parsed, modeOverride, remediation);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    throw new Error(
+      `cannot read the config at ${path}: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+
+  let doc: unknown;
+  try {
+    doc = parseYaml(raw);
+  } catch (err) {
+    throw new Error(
+      `${path} is not valid YAML: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+
+  const parsed = ConfigSchema.safeParse(doc);
+  if (!parsed.success) {
+    const problems = parsed.error.issues.flatMap(renderIssue);
+    throw new Error(
+      `${path} is not a valid twiki config:\n` +
+        problems.map((p) => `  - ${p}`).join("\n"),
+    );
+  }
+  return buildConfig(parsed.data, modeOverride, remediation);
 }
 
 export function buildConfig(
