@@ -4,7 +4,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -489,6 +489,33 @@ describe("the CLI still offers what it advertises", () => {
       expect(out, `${role} fell through to usage`).not.toContain(
         "usage: tricorder",
       );
+    }
+  });
+
+  it("reports an unreadable config from doctor rather than dying on it", () => {
+    // doctor is what an operator reaches for when startup fails, and a bad
+    // repos.yaml is among the likeliest reasons it did. Loading the config
+    // unguarded meant the diagnostic died on the thing it should diagnose.
+    const dir = mkdtempSync(join(tmpdir(), "twiki-doctor-"));
+    const cfg = join(dir, "repos.yaml");
+    writeFileSync(
+      cfg,
+      "mode: shadow\nrepos:\n  - repo: no42-org/a\n    nope: 1\n",
+    );
+    try {
+      const out = runRole("doctor", { TWIKI_CONFIG: cfg });
+      expect(out, "doctor did not run at all").not.toContain(
+        "MODULE_NOT_FOUND",
+      );
+      // The finding, named and located.
+      expect(out).toContain(cfg);
+      expect(out).toContain("repos[0].nope");
+      // Not a raw throw: the zod issue array must not reach the operator.
+      expect(out).not.toContain("unrecognized_keys");
+      // And the checks it could not run are not silently counted as passing.
+      expect(out.toLowerCase()).toContain("not performed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

@@ -4,7 +4,7 @@
  */
 
 import { pathToFileURL } from "node:url";
-import { loadConfig } from "./core/config.js";
+import { type Config, loadConfig } from "./core/config.js";
 import {
   assertRankPolicy,
   DEFAULT_RANK_POLICY,
@@ -671,7 +671,25 @@ async function main(): Promise<void> {
   if (role === "doctor") {
     // Setup diagnostics. Reads GitHub, writes nothing, touches no store, so it
     // is safe to run against a live installation before anything is wired up.
-    const config = loadConfig(configPath);
+    //
+    // An unreadable config is a FINDING, not a reason to abort before
+    // reporting one. This command is what an operator reaches for when
+    // startup fails, and a bad repos.yaml is among the likeliest reasons it
+    // did - so dying here left the diagnostic unable to diagnose the thing
+    // that sent them to it.
+    let config: Config;
+    try {
+      config = loadConfig(configPath);
+    } catch (err) {
+      console.log(
+        `config: CANNOT READ\n  ${err instanceof Error ? err.message : err}\n\n` +
+          "Checks needing the repository allowlist were NOT performed. That is\n" +
+          "not the same as their having passed: nothing here vouches for the\n" +
+          "App's permissions or installations.",
+      );
+      process.exitCode = 1;
+      return;
+    }
     const report = await diagnose(createTricorderAppFromEnv(env), config.repos);
     console.log(formatReport(report));
     // Non-zero on a bad setup, so this is usable as a gate rather than
