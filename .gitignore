@@ -1,8 +1,16 @@
 node_modules/
 dist/
 *.log
+
+# Artifacts of running the thing, in the repo root because that is where the
+# defaults put them. TRICORDER_DB defaults to ./tricorder.db, TWIKI_AUDIT_PATH
+# to ./audit.jsonl, and `make pack` writes the tarball beside them.
 audit.jsonl
 .twiki-last-digest*
+tricorder.db
+tricorder.db-shm
+tricorder.db-wal
+twiki-*.tgz
 
 # Secrets — never commit
 .env
