@@ -1,0 +1,505 @@
+{
+  "url": "https://api.github.com/repos/no42-org/blitsbom/compare/v0.7.0...HEAD",
+  "html_url": "https://github.com/no42-org/blitsbom/compare/v0.7.0...HEAD",
+  "permalink_url": "https://github.com/no42-org/blitsbom/compare/no42-org:fe66bcc...no42-org:48e615d",
+  "diff_url": "https://github.com/no42-org/blitsbom/compare/v0.7.0...HEAD.diff",
+  "patch_url": "https://github.com/no42-org/blitsbom/compare/v0.7.0...HEAD.patch",
+  "base_commit": {
+    "sha": "fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+    "node_id": "C_kwDOSN_U7toAKGZlNjZiY2MwOGI5Y2RmMmFjM2ZiYjViMDBiOWQ3NjFhM2VlYzFlODQ",
+    "commit": {
+      "author": {
+        "name": "Ronny Trommer",
+        "email": "ronny@no42.org",
+        "date": "2026-08-01T21:09:35Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-08-01T21:09:35Z"
+      },
+      "message": "chore(release): v0.7.0 (#183)\n\nEleven commits since v0.6.1: three feat, four fix, no breaking changes.\n\nThe README's version examples move in the same commit. It doubles as the\nMarketplace listing body, so leaving them at 0.6.1 would advertise a\nsuperseded release to anyone copy-pasting from the listing \u2014 the defect\nrecorded as #165. marketplace-check enforces it. The v0.6.0/v0.5.0 refs\ninside blockquotes are deliberately historical and stay.\n\n\nAssisted-by: ClaudeCode:claude-opus-5\nSigned-off-by: Ronny Trommer <ronny@no42.org>",
+      "tree": {
+        "sha": "722387e469fedb0e4de04f9431df794bb4fae7d9",
+        "url": "https://api.github.com/repos/no42-org/blitsbom/git/trees/722387e469fedb0e4de04f9431df794bb4fae7d9"
+      },
+      "url": "https://api.github.com/repos/no42-org/blitsbom/git/commits/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqbmCPCRC1aQ7uu5UhlAAA0hYQAKQe86kObVt/Al76W+j2kNcC\nJhNVFXG0GbdLANwwXgq6JbE691nV84Cy8NeCIuHDcE8rDcDF+Y5YnrzSfvnPfY+/\nTNbvuCvTEaCs3fLlNthKzU0fyXgsS8HNPS4yIj78utAxOYFcy/9PJcUjGmoWGvrV\nj5zWPvN7hHHjQICUjvt+w+E40VpDuEHFTNyOpQqCtFaiDLbL1DgGc+YQwgzHlpzT\nvlLuJ/VbW/7lNtt31GdgamqG2JgzJWMpL7C3haAL+DomEI2+dc5ed2eKVhws0nwV\ntM4fJMME2kftapZBFoNdk51PXK6o+MIV/qGvxx6KF+aCY4QK/RDEpcr8VzzLbwD3\nFo/PGtSb+MVCYxs3FRfhCyH3nc40yVmPVQ1BZcHoCl5KMem8yvHNK7Fbrc2Jx7cS\nzsYR+fGofsKthZyx1rZFqMxXmMCpmRr/4tBgeiX8TrSZ7vgk7CloUIOJckD4syYv\nRBkfjWYKFX5FSXV9AztgA8qP6Wgj4klh4Ha3B1rTyW295RqHEHejlRJi7ohyi4Sj\nTFWJPMX8uLmQEzrui95dmA4acfaTH6h779eW6UFnogh9wxqlz3P+P+wMSV+uByIj\nIkUA1Yw/U/8oGFJ7NhxyDUN5gf9x/uaSgkBAEAgbZJqojxFBn1sfV4td3KlBz5Hb\nDL3UDtal7U8MxStRuxuW\n=OcgR\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 722387e469fedb0e4de04f9431df794bb4fae7d9\nparent 7a68a967d65f6027588670a922bc86f23de03f17\nauthor Ronny Trommer <ronny@no42.org> 1785618575 +0200\ncommitter GitHub <noreply@github.com> 1785618575 +0200\n\nchore(release): v0.7.0 (#183)\n\nEleven commits since v0.6.1: three feat, four fix, no breaking changes.\n\nThe README's version examples move in the same commit. It doubles as the\nMarketplace listing body, so leaving them at 0.6.1 would advertise a\nsuperseded release to anyone copy-pasting from the listing \u2014 the defect\nrecorded as #165. marketplace-check enforces it. The v0.6.0/v0.5.0 refs\ninside blockquotes are deliberately historical and stay.\n\n\nAssisted-by: ClaudeCode:claude-opus-5\nSigned-off-by: Ronny Trommer <ronny@no42.org>",
+        "verified_at": "2026-08-01T21:09:36Z"
+      }
+    },
+    "url": "https://api.github.com/repos/no42-org/blitsbom/commits/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+    "html_url": "https://github.com/no42-org/blitsbom/commit/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+    "comments_url": "https://api.github.com/repos/no42-org/blitsbom/commits/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84/comments",
+    "author": {
+      "login": "indigo423",
+      "id": 1095181,
+      "node_id": "MDQ6VXNlcjEwOTUxODE=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1095181?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/indigo423",
+      "html_url": "https://github.com/indigo423",
+      "followers_url": "https://api.github.com/users/indigo423/followers",
+      "following_url": "https://api.github.com/users/indigo423/following{/other_user}",
+      "gists_url": "https://api.github.com/users/indigo423/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/indigo423/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/indigo423/subscriptions",
+      "organizations_url": "https://api.github.com/users/indigo423/orgs",
+      "repos_url": "https://api.github.com/users/indigo423/repos",
+      "events_url": "https://api.github.com/users/indigo423/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/indigo423/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "7a68a967d65f6027588670a922bc86f23de03f17",
+        "url": "https://api.github.com/repos/no42-org/blitsbom/commits/7a68a967d65f6027588670a922bc86f23de03f17",
+        "html_url": "https://github.com/no42-org/blitsbom/commit/7a68a967d65f6027588670a922bc86f23de03f17"
+      }
+    ]
+  },
+  "merge_base_commit": {
+    "sha": "fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+    "node_id": "C_kwDOSN_U7toAKGZlNjZiY2MwOGI5Y2RmMmFjM2ZiYjViMDBiOWQ3NjFhM2VlYzFlODQ",
+    "commit": {
+      "author": {
+        "name": "Ronny Trommer",
+        "email": "ronny@no42.org",
+        "date": "2026-08-01T21:09:35Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-08-01T21:09:35Z"
+      },
+      "message": "chore(release): v0.7.0 (#183)\n\nEleven commits since v0.6.1: three feat, four fix, no breaking changes.\n\nThe README's version examples move in the same commit. It doubles as the\nMarketplace listing body, so leaving them at 0.6.1 would advertise a\nsuperseded release to anyone copy-pasting from the listing \u2014 the defect\nrecorded as #165. marketplace-check enforces it. The v0.6.0/v0.5.0 refs\ninside blockquotes are deliberately historical and stay.\n\n\nAssisted-by: ClaudeCode:claude-opus-5\nSigned-off-by: Ronny Trommer <ronny@no42.org>",
+      "tree": {
+        "sha": "722387e469fedb0e4de04f9431df794bb4fae7d9",
+        "url": "https://api.github.com/repos/no42-org/blitsbom/git/trees/722387e469fedb0e4de04f9431df794bb4fae7d9"
+      },
+      "url": "https://api.github.com/repos/no42-org/blitsbom/git/commits/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqbmCPCRC1aQ7uu5UhlAAA0hYQAKQe86kObVt/Al76W+j2kNcC\nJhNVFXG0GbdLANwwXgq6JbE691nV84Cy8NeCIuHDcE8rDcDF+Y5YnrzSfvnPfY+/\nTNbvuCvTEaCs3fLlNthKzU0fyXgsS8HNPS4yIj78utAxOYFcy/9PJcUjGmoWGvrV\nj5zWPvN7hHHjQICUjvt+w+E40VpDuEHFTNyOpQqCtFaiDLbL1DgGc+YQwgzHlpzT\nvlLuJ/VbW/7lNtt31GdgamqG2JgzJWMpL7C3haAL+DomEI2+dc5ed2eKVhws0nwV\ntM4fJMME2kftapZBFoNdk51PXK6o+MIV/qGvxx6KF+aCY4QK/RDEpcr8VzzLbwD3\nFo/PGtSb+MVCYxs3FRfhCyH3nc40yVmPVQ1BZcHoCl5KMem8yvHNK7Fbrc2Jx7cS\nzsYR+fGofsKthZyx1rZFqMxXmMCpmRr/4tBgeiX8TrSZ7vgk7CloUIOJckD4syYv\nRBkfjWYKFX5FSXV9AztgA8qP6Wgj4klh4Ha3B1rTyW295RqHEHejlRJi7ohyi4Sj\nTFWJPMX8uLmQEzrui95dmA4acfaTH6h779eW6UFnogh9wxqlz3P+P+wMSV+uByIj\nIkUA1Yw/U/8oGFJ7NhxyDUN5gf9x/uaSgkBAEAgbZJqojxFBn1sfV4td3KlBz5Hb\nDL3UDtal7U8MxStRuxuW\n=OcgR\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 722387e469fedb0e4de04f9431df794bb4fae7d9\nparent 7a68a967d65f6027588670a922bc86f23de03f17\nauthor Ronny Trommer <ronny@no42.org> 1785618575 +0200\ncommitter GitHub <noreply@github.com> 1785618575 +0200\n\nchore(release): v0.7.0 (#183)\n\nEleven commits since v0.6.1: three feat, four fix, no breaking changes.\n\nThe README's version examples move in the same commit. It doubles as the\nMarketplace listing body, so leaving them at 0.6.1 would advertise a\nsuperseded release to anyone copy-pasting from the listing \u2014 the defect\nrecorded as #165. marketplace-check enforces it. The v0.6.0/v0.5.0 refs\ninside blockquotes are deliberately historical and stay.\n\n\nAssisted-by: ClaudeCode:claude-opus-5\nSigned-off-by: Ronny Trommer <ronny@no42.org>",
+        "verified_at": "2026-08-01T21:09:36Z"
+      }
+    },
+    "url": "https://api.github.com/repos/no42-org/blitsbom/commits/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+    "html_url": "https://github.com/no42-org/blitsbom/commit/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+    "comments_url": "https://api.github.com/repos/no42-org/blitsbom/commits/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84/comments",
+    "author": {
+      "login": "indigo423",
+      "id": 1095181,
+      "node_id": "MDQ6VXNlcjEwOTUxODE=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1095181?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/indigo423",
+      "html_url": "https://github.com/indigo423",
+      "followers_url": "https://api.github.com/users/indigo423/followers",
+      "following_url": "https://api.github.com/users/indigo423/following{/other_user}",
+      "gists_url": "https://api.github.com/users/indigo423/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/indigo423/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/indigo423/subscriptions",
+      "organizations_url": "https://api.github.com/users/indigo423/orgs",
+      "repos_url": "https://api.github.com/users/indigo423/repos",
+      "events_url": "https://api.github.com/users/indigo423/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/indigo423/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "7a68a967d65f6027588670a922bc86f23de03f17",
+        "url": "https://api.github.com/repos/no42-org/blitsbom/commits/7a68a967d65f6027588670a922bc86f23de03f17",
+        "html_url": "https://github.com/no42-org/blitsbom/commit/7a68a967d65f6027588670a922bc86f23de03f17"
+      }
+    ]
+  },
+  "status": "ahead",
+  "ahead_by": 35,
+  "behind_by": 0,
+  "total_commits": 4,
+  "commits": [
+    {
+      "sha": "bf0b7d92988804f7a2ef6a42225fa44472ca0d75",
+      "node_id": "C_kwDOSN_U7toAKGJmMGI3ZDkyOTg4ODA0ZjdhMmVmNmE0MjIyNWZhNDQ0NzJjYTBkNzU",
+      "commit": {
+        "author": {
+          "name": "Ronny Trommer",
+          "email": "ronny@no42.org",
+          "date": "2026-08-04T13:07:47Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2026-08-04T13:07:47Z"
+        },
+        "message": "ci(deps): bump github/codeql-action from 4.37.2 to 4.37.3 as one pair (#198)\n\nDependabot bumped init and analyze in separate PRs (#191, #192); each\nleaves the two steps on different versions and CodeQL fails with a\nconfiguration error. Bump both pins together and add a Dependabot\ngroup so future codeql-action updates arrive as a single PR.\n\nCloses #197\n\nAssisted-by: ClaudeCode:claude-fable-5\n\nSigned-off-by: Ronny Trommer <ronny@no42.org>",
+        "tree": {
+          "sha": "692f2bea25196f744c19a5263d134c836e6d7f0d",
+          "url": "https://api.github.com/repos/no42-org/blitsbom/git/trees/692f2bea25196f744c19a5263d134c836e6d7f0d"
+        },
+        "url": "https://api.github.com/repos/no42-org/blitsbom/git/commits/bf0b7d92988804f7a2ef6a42225fa44472ca0d75",
+        "comment_count": 0,
+        "verification": {
+          "verified": true,
+          "reason": "valid",
+          "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqceQjCRC1aQ7uu5UhlAAATSkQAE1ZCYDs0md5fJp7R7IYtZz8\nlFndxVjkfLaF4C193l+L50ulnUPmN6Ji8BddBlv3vEnbPm5kjZ5KrnnwumJQkNHq\nK6Vb0VKZ8E1K1gfa/oHzt4rgq7uKqo0OOjXHFbiBbgQ23kRjMDN913ehgLrxTZOA\nxXzl/Hn0tOdDdjq4nsRtDl28T3ibi/ZzbPS+/DITwwNxBOHFg/U5US+TiL33WKl8\noMIv9R0PC71OGA3ufc4JDV8aU20tov4Li8MdqHiTxn69wErfx0vT6CK4DxOSH+oZ\nNLm1FVE66H0mIWyG+AD5QhUVq+9UoipETFfpkzCHp6vI//NcSKlWmHfNB0qxMlJ1\n7LkiyTDqwP7bA28GSJ7az4xqyW8hCyXbBi1k+ACpoR6ToRUKvY6x5GQzXDDrTrI5\neZwc4HP2t24tTz/EBtD9Ah1ivfmSGTsD4tV/vrJUc2S8lFhn5Cfgu/eP645OmTMS\no4+BsgSk9fAwA+AISCaNEcVHmuVP84YQKd88wB6CwvgVfedMYtrX+vBKDnAN+uPg\n0ePKL8ik+5QfiWr33XbKZcb5WV94fXwfEs0L/1c6NIiGcedK/slYARQBNt7YGyKT\nEpBGC6ah1B+xkd5Q/sec2S1ahdniA52XIRtZfH3FYtntG9qsL52bNdYsHkWEzqOU\nah8b38ZLRDXJ/1zZ2o49\n=8PaN\n-----END PGP SIGNATURE-----\n",
+          "payload": "tree 692f2bea25196f744c19a5263d134c836e6d7f0d\nparent f30da0b9af6fd44e159e1702d7d21e49ec19fc56\nauthor Ronny Trommer <ronny@no42.org> 1785848867 +0200\ncommitter GitHub <noreply@github.com> 1785848867 +0200\n\nci(deps): bump github/codeql-action from 4.37.2 to 4.37.3 as one pair (#198)\n\nDependabot bumped init and analyze in separate PRs (#191, #192); each\nleaves the two steps on different versions and CodeQL fails with a\nconfiguration error. Bump both pins together and add a Dependabot\ngroup so future codeql-action updates arrive as a single PR.\n\nCloses #197\n\nAssisted-by: ClaudeCode:claude-fable-5\n\nSigned-off-by: Ronny Trommer <ronny@no42.org>",
+          "verified_at": "2026-08-04T13:08:12Z"
+        }
+      },
+      "url": "https://api.github.com/repos/no42-org/blitsbom/commits/bf0b7d92988804f7a2ef6a42225fa44472ca0d75",
+      "html_url": "https://github.com/no42-org/blitsbom/commit/bf0b7d92988804f7a2ef6a42225fa44472ca0d75",
+      "comments_url": "https://api.github.com/repos/no42-org/blitsbom/commits/bf0b7d92988804f7a2ef6a42225fa44472ca0d75/comments",
+      "author": {
+        "login": "indigo423",
+        "id": 1095181,
+        "node_id": "MDQ6VXNlcjEwOTUxODE=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/1095181?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/indigo423",
+        "html_url": "https://github.com/indigo423",
+        "followers_url": "https://api.github.com/users/indigo423/followers",
+        "following_url": "https://api.github.com/users/indigo423/following{/other_user}",
+        "gists_url": "https://api.github.com/users/indigo423/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/indigo423/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/indigo423/subscriptions",
+        "organizations_url": "https://api.github.com/users/indigo423/orgs",
+        "repos_url": "https://api.github.com/users/indigo423/repos",
+        "events_url": "https://api.github.com/users/indigo423/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/indigo423/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "web-flow",
+        "id": 19864447,
+        "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/web-flow",
+        "html_url": "https://github.com/web-flow",
+        "followers_url": "https://api.github.com/users/web-flow/followers",
+        "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+        "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+        "organizations_url": "https://api.github.com/users/web-flow/orgs",
+        "repos_url": "https://api.github.com/users/web-flow/repos",
+        "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/web-flow/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "f30da0b9af6fd44e159e1702d7d21e49ec19fc56",
+          "url": "https://api.github.com/repos/no42-org/blitsbom/commits/f30da0b9af6fd44e159e1702d7d21e49ec19fc56",
+          "html_url": "https://github.com/no42-org/blitsbom/commit/f30da0b9af6fd44e159e1702d7d21e49ec19fc56"
+        }
+      ]
+    },
+    {
+      "sha": "cccda93796fe0de2359f40462ebe3a31544f3720",
+      "node_id": "C_kwDOSN_U7toAKGNjY2RhOTM3OTZmZTBkZTIzNTlmNDA0NjJlYmUzYTMxNTQ0ZjM3MjA",
+      "commit": {
+        "author": {
+          "name": "dependabot[bot]",
+          "email": "49699333+dependabot[bot]@users.noreply.github.com",
+          "date": "2026-08-04T11:39:37Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2026-08-04T11:39:37Z"
+        },
+        "message": "ci(deps): Bump docker/login-action from 4.4.0 to 4.5.2 (#194)\n\nBumps [docker/login-action](https://github.com/docker/login-action) from 4.4.0 to 4.5.2.\n- [Release notes](https://github.com/docker/login-action/releases)\n- [Commits](https://github.com/docker/login-action/compare/af1e73f918a031802d376d3c8bbc3fe56130a9b0...371161bbe7024a29a25c5e19bfcbc0804fe9ad2c)\n\n---\nupdated-dependencies:\n- dependency-name: docker/login-action\n  dependency-version: 4.5.2\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+        "tree": {
+          "sha": "abfb66fb37649b7982e2c0772f2085989bc7cfd8",
+          "url": "https://api.github.com/repos/no42-org/blitsbom/git/trees/abfb66fb37649b7982e2c0772f2085989bc7cfd8"
+        },
+        "url": "https://api.github.com/repos/no42-org/blitsbom/git/commits/cccda93796fe0de2359f40462ebe3a31544f3720",
+        "comment_count": 0,
+        "verification": {
+          "verified": true,
+          "reason": "valid",
+          "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqcc95CRC1aQ7uu5UhlAAA7ZsQAANt8CUTEvydpQ/dDoRfI9W7\nw6L6Eylk8KGQEeOPkcaus0J3b6/kTd/dpSqBpjUbsLs+o6mYHPImeiEyZEde1RMf\nh5hHt2jEuq6m41qUGnxp4Cc4BJpNL70on9tghLSADtfYn6t4EG31GgEEGRnFGiAq\nW1s1f3JPJxMswpaz+0+8ZGtZZt2HI8fNaFkxjOzz9sB5KjFVZom9FiLkFrRSzuoS\nsbKaCTdiK8a1NDcqxk1CnemdXbHLHU55uCqW6rKH8sBp5OUUQXJE1MTnWuqHvUuU\nBklKAR1Oi7dyEEgIRbwq1h8qsm920/8NFcz//IQTJrFiSmsQvGGITpEM2Gn2nU3b\nRWDZERGP1f7muxAqhxDr3NgnQOu8NlzB8yAmIa2UNLitySLbtKLXme+WnAsMwHk2\n+02jJ4FBxb3Jg0oc671V8ItBPjgmkNDILMCAXL9QvOY+yao7z8c00Wrhvnr4cr9f\n0P5/eU6/AFKMLHb+oM3Ua8bUHVYOMnqemcco4wbdbVEeYs2RIkrgsrlRlaJpzumd\n/JqKUZE1v0g4WiDc6a8VT4T+vI1hqvOFnHsS3Gr7B9sOkiFYD1MVvpR05tr3EkdU\nrm/AaLAX2t6gtpG6f6XkqYcRPZKiU1UwM/Wz/+C7GLjZUyHEl1cOsjz7MfScYyEc\nQr9p0oT/7c34zHJvm+Or\n=UOz0\n-----END PGP SIGNATURE-----\n",
+          "payload": "tree abfb66fb37649b7982e2c0772f2085989bc7cfd8\nparent fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84\nauthor dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com> 1785843577 +0200\ncommitter GitHub <noreply@github.com> 1785843577 +0200\n\nci(deps): Bump docker/login-action from 4.4.0 to 4.5.2 (#194)\n\nBumps [docker/login-action](https://github.com/docker/login-action) from 4.4.0 to 4.5.2.\n- [Release notes](https://github.com/docker/login-action/releases)\n- [Commits](https://github.com/docker/login-action/compare/af1e73f918a031802d376d3c8bbc3fe56130a9b0...371161bbe7024a29a25c5e19bfcbc0804fe9ad2c)\n\n---\nupdated-dependencies:\n- dependency-name: docker/login-action\n  dependency-version: 4.5.2\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "verified_at": "2026-08-04T11:40:06Z"
+        }
+      },
+      "url": "https://api.github.com/repos/no42-org/blitsbom/commits/cccda93796fe0de2359f40462ebe3a31544f3720",
+      "html_url": "https://github.com/no42-org/blitsbom/commit/cccda93796fe0de2359f40462ebe3a31544f3720",
+      "comments_url": "https://api.github.com/repos/no42-org/blitsbom/commits/cccda93796fe0de2359f40462ebe3a31544f3720/comments",
+      "author": {
+        "login": "dependabot[bot]",
+        "id": 49699333,
+        "node_id": "MDM6Qm90NDk2OTkzMzM=",
+        "avatar_url": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/dependabot%5Bbot%5D",
+        "html_url": "https://github.com/apps/dependabot",
+        "followers_url": "https://api.github.com/users/dependabot%5Bbot%5D/followers",
+        "following_url": "https://api.github.com/users/dependabot%5Bbot%5D/following{/other_user}",
+        "gists_url": "https://api.github.com/users/dependabot%5Bbot%5D/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/dependabot%5Bbot%5D/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/dependabot%5Bbot%5D/subscriptions",
+        "organizations_url": "https://api.github.com/users/dependabot%5Bbot%5D/orgs",
+        "repos_url": "https://api.github.com/users/dependabot%5Bbot%5D/repos",
+        "events_url": "https://api.github.com/users/dependabot%5Bbot%5D/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/dependabot%5Bbot%5D/received_events",
+        "type": "Bot",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "web-flow",
+        "id": 19864447,
+        "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/web-flow",
+        "html_url": "https://github.com/web-flow",
+        "followers_url": "https://api.github.com/users/web-flow/followers",
+        "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+        "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+        "organizations_url": "https://api.github.com/users/web-flow/orgs",
+        "repos_url": "https://api.github.com/users/web-flow/repos",
+        "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/web-flow/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+          "url": "https://api.github.com/repos/no42-org/blitsbom/commits/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84",
+          "html_url": "https://github.com/no42-org/blitsbom/commit/fe66bcc08b9cdf2ac3fbb5b00b9d761a3eec1e84"
+        }
+      ]
+    },
+    {
+      "sha": "831660b3ad894515c4ed70297ba1f7fa6aecc0d1",
+      "node_id": "C_kwDOSN_U7toAKDgzMTY2MGIzYWQ4OTQ1MTVjNGVkNzAyOTdiYTFmN2ZhNmFlY2MwZDE",
+      "commit": {
+        "author": {
+          "name": "dependabot[bot]",
+          "email": "49699333+dependabot[bot]@users.noreply.github.com",
+          "date": "2026-08-04T11:39:46Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2026-08-04T11:39:46Z"
+        },
+        "message": "ci(deps): Bump zizmorcore/zizmor-action from 0.6.0 to 0.6.1 (#193)\n\nBumps [zizmorcore/zizmor-action](https://github.com/zizmorcore/zizmor-action) from 0.6.0 to 0.6.1.\n- [Release notes](https://github.com/zizmorcore/zizmor-action/releases)\n- [Commits](https://github.com/zizmorcore/zizmor-action/compare/6599ee8b7a49aef6a770f63d261d214911a7ce02...6fc4b006235f201fdab3722e17240ab420d580e5)\n\n---\nupdated-dependencies:\n- dependency-name: zizmorcore/zizmor-action\n  dependency-version: 0.6.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+        "tree": {
+          "sha": "b6ab9912a0a229ef10d58f649aa9d2b906f1eaaf",
+          "url": "https://api.github.com/repos/no42-org/blitsbom/git/trees/b6ab9912a0a229ef10d58f649aa9d2b906f1eaaf"
+        },
+        "url": "https://api.github.com/repos/no42-org/blitsbom/git/commits/831660b3ad894515c4ed70297ba1f7fa6aecc0d1",
+        "comment_count": 0,
+        "verification": {
+          "verified": true,
+          "reason": "valid",
+          "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqcc+CCRC1aQ7uu5UhlAAAKcYQAEA177r0OvBJ7rQfw+MNLXWK\n70+CGMm8pbT5x94Q8JkIVsM4MCqKdFAebrrV44G3hHHsU8owzh7EEeTEsTzK7n0B\nJBpzNI/QY5G21k1Z/GWW+C0V/uXJc4R3qhtH8aWMxGdJWeffakyIkFJmPk3bVqGp\nz14OeVlL5zqo/4XB7FeM3bOzmTbB1EWaIvxKUwRxrI0zvscXkoEQiq7wtUgZCHpf\nNziE8SPrY16L1il6oQI5K3+YwEmyrZA98nntnMLb1DVyEv7LgTJ3EDFS+NmJE2+g\nogxczLm58gP5+0neFeqTE5M2w0yzymOZCQ4wWKWc13pk+OaLrBlyqJWpL5lYSRiW\n6QGRH7uUz1LLzJQr23cf1e1CAw10kXBhKuNw7lcpDGK6dS8HF8rRPNPmuONNJ4bs\nrD/VwOr4L1p02VbmSi/7ME2NDcKx8pY4VXs76Io4ugH2bR9WCnwZTWvMsYofY4MV\nMAy6uziUcSx0wolVqXCTQsu7ruQzLyS08jMvCvvRV/7JkJ4aFQSDjnrc+y9Qm2D5\niTmSN9TYMTwLxW5Q4gON5ABtKYmCc+jTm5VsqJafnael5UEt+5qzOHAO3l1rguvG\nzOFXCbE/mNOIvT4m193umkI0MKN2jrhglQL0U40KhOURombMaG0w0E/lIM7BVpZ5\numjNr5PfsYmzXlZJzEdh\n=RM7b\n-----END PGP SIGNATURE-----\n",
+          "payload": "tree b6ab9912a0a229ef10d58f649aa9d2b906f1eaaf\nparent cccda93796fe0de2359f40462ebe3a31544f3720\nauthor dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com> 1785843586 +0200\ncommitter GitHub <noreply@github.com> 1785843586 +0200\n\nci(deps): Bump zizmorcore/zizmor-action from 0.6.0 to 0.6.1 (#193)\n\nBumps [zizmorcore/zizmor-action](https://github.com/zizmorcore/zizmor-action) from 0.6.0 to 0.6.1.\n- [Release notes](https://github.com/zizmorcore/zizmor-action/releases)\n- [Commits](https://github.com/zizmorcore/zizmor-action/compare/6599ee8b7a49aef6a770f63d261d214911a7ce02...6fc4b006235f201fdab3722e17240ab420d580e5)\n\n---\nupdated-dependencies:\n- dependency-name: zizmorcore/zizmor-action\n  dependency-version: 0.6.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "verified_at": "2026-08-04T11:40:06Z"
+        }
+      },
+      "url": "https://api.github.com/repos/no42-org/blitsbom/commits/831660b3ad894515c4ed70297ba1f7fa6aecc0d1",
+      "html_url": "https://github.com/no42-org/blitsbom/commit/831660b3ad894515c4ed70297ba1f7fa6aecc0d1",
+      "comments_url": "https://api.github.com/repos/no42-org/blitsbom/commits/831660b3ad894515c4ed70297ba1f7fa6aecc0d1/comments",
+      "author": {
+        "login": "dependabot[bot]",
+        "id": 49699333,
+        "node_id": "MDM6Qm90NDk2OTkzMzM=",
+        "avatar_url": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/dependabot%5Bbot%5D",
+        "html_url": "https://github.com/apps/dependabot",
+        "followers_url": "https://api.github.com/users/dependabot%5Bbot%5D/followers",
+        "following_url": "https://api.github.com/users/dependabot%5Bbot%5D/following{/other_user}",
+        "gists_url": "https://api.github.com/users/dependabot%5Bbot%5D/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/dependabot%5Bbot%5D/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/dependabot%5Bbot%5D/subscriptions",
+        "organizations_url": "https://api.github.com/users/dependabot%5Bbot%5D/orgs",
+        "repos_url": "https://api.github.com/users/dependabot%5Bbot%5D/repos",
+        "events_url": "https://api.github.com/users/dependabot%5Bbot%5D/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/dependabot%5Bbot%5D/received_events",
+        "type": "Bot",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "web-flow",
+        "id": 19864447,
+        "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/web-flow",
+        "html_url": "https://github.com/web-flow",
+        "followers_url": "https://api.github.com/users/web-flow/followers",
+        "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+        "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+        "organizations_url": "https://api.github.com/users/web-flow/orgs",
+        "repos_url": "https://api.github.com/users/web-flow/repos",
+        "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/web-flow/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "cccda93796fe0de2359f40462ebe3a31544f3720",
+          "url": "https://api.github.com/repos/no42-org/blitsbom/commits/cccda93796fe0de2359f40462ebe3a31544f3720",
+          "html_url": "https://github.com/no42-org/blitsbom/commit/cccda93796fe0de2359f40462ebe3a31544f3720"
+        }
+      ]
+    },
+    {
+      "sha": "535902769290a13a520cd1512704b4f40f057c84",
+      "node_id": "C_kwDOSN_U7toAKDUzNTkwMjc2OTI5MGExM2E1MjBjZDE1MTI3MDRiNGY0MGYwNTdjODQ",
+      "commit": {
+        "author": {
+          "name": "dependabot[bot]",
+          "email": "49699333+dependabot[bot]@users.noreply.github.com",
+          "date": "2026-08-04T11:40:02Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2026-08-04T11:40:02Z"
+        },
+        "message": "build(deps): Bump anchore/syft from v1.42.3 to v1.49.0 (#190)\n\nBumps [anchore/syft](https://github.com/anchore/syft) from v1.42.3 to v1.49.0.\n- [Release notes](https://github.com/anchore/syft/releases)\n- [Changelog](https://github.com/anchore/syft/blob/main/RELEASE.md)\n- [Commits](https://github.com/anchore/syft/compare/v1.42.3...v1.49.0)\n\n---\nupdated-dependencies:\n- dependency-name: anchore/syft\n  dependency-version: v1.49.0\n  dependency-type: direct:production\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+        "tree": {
+          "sha": "6aa206f381e899f412cdc31f8128af5bb5ab84c0",
+          "url": "https://api.github.com/repos/no42-org/blitsbom/git/trees/6aa206f381e899f412cdc31f8128af5bb5ab84c0"
+        },
+        "url": "https://api.github.com/repos/no42-org/blitsbom/git/commits/535902769290a13a520cd1512704b4f40f057c84",
+        "comment_count": 0,
+        "verification": {
+          "verified": true,
+          "reason": "valid",
+          "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqcc+SCRC1aQ7uu5UhlAAAQJ4QAHw1yB138RSVWV75cmnyxdnt\ni5i3G5n7k4VzASn8Ky+oFxtgAtsti2ByrW8DY33TB6NomfeANtCIXCR4eUxiAhgU\nuHodZRXL2D+Poz5p7MBCrMNsBGqdOdcTds2s+SI5bq4a8Bqkv1u1rSPZtVgo7luk\nYbXJuFhczwywTpKbfPm42KwP8D3f/l01D2cniDIdCvxqe5bjGLWl1QJcIutrVk1Q\nKZibdae0Cmi95EmIh++hkPQSck0a/AMF8oWPJeAGJ1bCgg5gHVKplfnl8bHTTigg\niU7SyVBOsb/3KcgI6aXwh+2Xx1wnxWkA6i8hHr9oEeWWlU0h5F8Ge1Rzy1wlTv9l\nTfTENW0VXAzF7T2ZtSPjt5ZlUU6iZPqkh4yvjDCDb9qa6m3CU1I8MMINRB05G09R\ng9Qitynttf0i5TQgC/8yWFBeTh8aGkhfLujN9Oiy1Vr6AQcfl50yL9bOa9aaM4ic\n59NLxwY8MGjJF6wjsCskaCR26Pb3tJqnXAZk1fYILAcO8660jqkMD05dsZO2KZ+P\nnBG5UcuRcOExyFC6/AVvrG/xXX0BmyX7uU5OiXiCxe6l9TDeLZH8Vm4vOmU3HM6i\nuUNJZJsDtBpDHsaHMaeOVOvUOOi2CjpSfB7Pu8REg4/fXnzIVo/RN2E4Z8fjWZSE\n8JzoqX3IYb8i/99M3ggd\n=CmYK\n-----END PGP SIGNATURE-----\n",
+          "payload": "tree 6aa206f381e899f412cdc31f8128af5bb5ab84c0\nparent 831660b3ad894515c4ed70297ba1f7fa6aecc0d1\nauthor dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com> 1785843602 +0200\ncommitter GitHub <noreply@github.com> 1785843602 +0200\n\nbuild(deps): Bump anchore/syft from v1.42.3 to v1.49.0 (#190)\n\nBumps [anchore/syft](https://github.com/anchore/syft) from v1.42.3 to v1.49.0.\n- [Release notes](https://github.com/anchore/syft/releases)\n- [Changelog](https://github.com/anchore/syft/blob/main/RELEASE.md)\n- [Commits](https://github.com/anchore/syft/compare/v1.42.3...v1.49.0)\n\n---\nupdated-dependencies:\n- dependency-name: anchore/syft\n  dependency-version: v1.49.0\n  dependency-type: direct:production\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "verified_at": "2026-08-04T11:40:06Z"
+        }
+      },
+      "url": "https://api.github.com/repos/no42-org/blitsbom/commits/535902769290a13a520cd1512704b4f40f057c84",
+      "html_url": "https://github.com/no42-org/blitsbom/commit/535902769290a13a520cd1512704b4f40f057c84",
+      "comments_url": "https://api.github.com/repos/no42-org/blitsbom/commits/535902769290a13a520cd1512704b4f40f057c84/comments",
+      "author": {
+        "login": "dependabot[bot]",
+        "id": 49699333,
+        "node_id": "MDM6Qm90NDk2OTkzMzM=",
+        "avatar_url": "https://avatars.githubusercontent.com/in/29110?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/dependabot%5Bbot%5D",
+        "html_url": "https://github.com/apps/dependabot",
+        "followers_url": "https://api.github.com/users/dependabot%5Bbot%5D/followers",
+        "following_url": "https://api.github.com/users/dependabot%5Bbot%5D/following{/other_user}",
+        "gists_url": "https://api.github.com/users/dependabot%5Bbot%5D/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/dependabot%5Bbot%5D/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/dependabot%5Bbot%5D/subscriptions",
+        "organizations_url": "https://api.github.com/users/dependabot%5Bbot%5D/orgs",
+        "repos_url": "https://api.github.com/users/dependabot%5Bbot%5D/repos",
+        "events_url": "https://api.github.com/users/dependabot%5Bbot%5D/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/dependabot%5Bbot%5D/received_events",
+        "type": "Bot",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "web-flow",
+        "id": 19864447,
+        "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/web-flow",
+        "html_url": "https://github.com/web-flow",
+        "followers_url": "https://api.github.com/users/web-flow/followers",
+        "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+        "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+        "organizations_url": "https://api.github.com/users/web-flow/orgs",
+        "repos_url": "https://api.github.com/users/web-flow/repos",
+        "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/web-flow/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "831660b3ad894515c4ed70297ba1f7fa6aecc0d1",
+          "url": "https://api.github.com/repos/no42-org/blitsbom/commits/831660b3ad894515c4ed70297ba1f7fa6aecc0d1",
+          "html_url": "https://github.com/no42-org/blitsbom/commit/831660b3ad894515c4ed70297ba1f7fa6aecc0d1"
+        }
+      ]
+    }
+  ]
+}

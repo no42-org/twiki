@@ -1,0 +1,64 @@
+[
+  {
+    "sha": "c4c142d77fc2bfe893dd24eb86c8c851fc59b20f",
+    "node_id": "C_kwDOSN_U7toAKGM0YzE0MmQ3N2ZjMmJmZTg5M2RkMjRlYjg2YzhjODUxZmM1OWIyMGY",
+    "commit": {
+      "author": {
+        "name": "dependabot[bot]",
+        "email": "49699333+dependabot[bot]@users.noreply.github.com",
+        "date": "2026-08-19T04:29:37Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-08-19T04:29:37Z"
+      },
+      "message": "chore(deps-dev): Bump @sveltejs/vite-plugin-svelte from 7.2.0 to 7.3.0 (#216)\n\nBumps [@sveltejs/vite-plugin-svelte](https://github.com/sveltejs/vite-plugin-svelte/tree/HEAD/packages/vite-plugin-svelte) from 7.2.0 to 7.3.0.\n- [Release notes](https://github.com/sveltejs/vite-plugin-svelte/releases)\n- [Changelog](https://github.com/sveltejs/vite-plugin-svelte/blob/main/packages/vite-plugin-svelte/CHANGELOG.md)\n- [Commits](https://github.com/sveltejs/vite-plugin-svelte/commits/@sveltejs/vite-plugin-svelte@7.3.0/packages/vite-plugin-svelte)\n\n---\nupdated-dependencies:\n- dependency-name: \"@sveltejs/vite-plugin-svelte\"\n  dependency-version: 7.3.0\n  dependency-type: direct:development\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+      "tree": {
+        "sha": "ada3b1f8b257c013cfa3f102c4abbe7c82f3be9e",
+        "url": "https://api.github.com/repos/no42-org/blitsbom/git/trees/ada3b1f8b257c013cfa3f102c4abbe7c82f3be9e"
+      },
+      "url": "https://api.github.com/repos/no42-org/blitsbom/git/commits/c4c142d77fc2bfe893dd24eb86c8c851fc59b20f",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqhTExCRC1aQ7uu5UhlAAAxbAQAAqE47Ggh1BecC0L34b2a705\n9g63yMKkgkIRJqfmkP04ObTDxX2LgVkncy7I0LpcALxIyXkmYEnDMa5vJmWY39zj\n+Y3AxLKc5CFyrbrkLItxsixYucomvStnbTSOIv6GyBwnVPgPCbCJK1Jzl+1oS5Bd\n72f9oGvKpAXqLpnlK2uvaY6t+1RiyH523f4PMmAfG0Kr5VJj93EBVD8OkX8ID0xt\nGGcTGIUNb2EPc54kq6xKKA/NOK1eBwpTG3n1hK6X9heNkBTmmW8yDhTydtm+OvAU\nrr0HI5gg/D74fsQgV7wltSQL6rWm21of/KARHGGFFLRA3Eos0Zsn4PWbeZS25dSi\nrWplsJfePBIP4zL8lRyCz48uFGjP4gO1bjzPtoEm7jick6WdLkBMaWsYUSMtCOOf\nxzVKA4LCObG/U2L6rNwxokxwuf11dQ+u1Tx3h7iG3ShCUjnEH2ahvINxIwC/ISXJ\nXRF8+kNhkICaFfevOkQaLKIDJaOV2NA3lLGWI2W41KHLLJDwQZ9scI6CGskQQ7m5\nuYSAPGaE7ZHpcGZJyLOXtC7g6oers3NIeoLwFLjc09MpVXTfSUYAJcQT9X7Zu8DB\nE17RPBEs3s4KfeQDIRQPrZWt6Wi8cwmw+7jWLkTgjrXDltkCWenU7bf47tG+J4Tq\nvHe8+5D5GIJn+KcWTkHD\n=8s8E\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree ada3b1f8b257c013cfa3f102c4abbe7c82f3be9e\nparent 6ecf21100823d30260d9801f332fd3cffc0962f1\nauthor dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com> 1787113777 +0200\ncommitter GitHub <noreply@github.com> 1787113777 +0200\n\nchore(deps-dev): Bump @sveltejs/vite-plugin-svelte from 7.2.0 to 7.3.0 (#216)\n\nBumps [@sveltejs/vite-plugin-svelte](https://github.com/sveltejs/vite-plugin-svelte/tree/HEAD/packages/vite-plugin-svelte) from 7.2.0 to 7.3.0.\n- [Release notes](https://github.com/sveltejs/vite-plugin-svelte/releases)\n- [Changelog](https://github.com/sveltejs/vite-plugin-svelte/blob/main/packages/vite-plugin-svelte/CHANGELOG.md)\n- [Commits](https://github.com/sveltejs/vite-plugin-svelte/commits/@sveltejs/vite-plugin-svelte@7.3.0/packages/vite-plugin-svelte)\n\n---\nupdated-dependencies:\n- dependency-name: \"@sveltejs/vite-plugin-svelte\"\n  dependency-version: 7.3.0\n  dependency-type: direct:development\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+        "verified_at": "2026-08-19T04:29:38Z"
+      }
+    },
+    "url": "https://api.github.com/repos/no42-org/blitsbom/commits/c4c142d77fc2bfe893dd24eb86c8c851fc59b20f",
+    "html_url": "https://github.com/no42-org/blitsbom/commit/c4c142d77fc2bfe893dd24eb86c8c851fc59b20f",
+    "comments_url": "https://api.github.com/repos/no42-org/blitsbom/commits/c4c142d77fc2bfe893dd24eb86c8c851fc59b20f/comments",
+    "author": null,
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "6ecf21100823d30260d9801f332fd3cffc0962f1",
+        "url": "https://api.github.com/repos/no42-org/blitsbom/commits/6ecf21100823d30260d9801f332fd3cffc0962f1",
+        "html_url": "https://github.com/no42-org/blitsbom/commit/6ecf21100823d30260d9801f332fd3cffc0962f1"
+      }
+    ]
+  }
+]

@@ -45,6 +45,34 @@ import type {
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
 
+/**
+ * Whether a commit came from Dependabot, decided HERE rather than by GitHub.
+ *
+ * GitHub's `author` query parameter on the commit-listing endpoint does not
+ * match bot logins: `?author=dependabot%5Bbot%5D` returns zero results for
+ * repositories whose unfiltered listing plainly contains commits with
+ * `author.login === "dependabot[bot]"` - measured at 0 against 42 on one
+ * repository and 0 against 28 on another (#90). Asking the API to filter
+ * silently returned nothing, which read as "no unreleased work" and meant no
+ * repository could ever be released for the first time.
+ *
+ * The `name` fallback covers a commit GitHub could not map to an account, so
+ * `author` is null while the git author name still identifies Dependabot. No
+ * commit in this estate is currently in that state; it is covered by a derived
+ * fixture rather than left to be assumed.
+ */
+interface CommitLike {
+  author?: { login?: string } | null;
+  commit: { author?: { name?: string } | null };
+}
+
+function isDependabotCommit(c: CommitLike): boolean {
+  return (
+    c.author?.login === DEPENDABOT_LOGIN ||
+    /dependabot/i.test(c.commit.author?.name ?? "")
+  );
+}
+
 /** Check-run conclusions that count as a red/failing result. */
 const FAILED_CONCLUSIONS = [
   "failure",
@@ -833,8 +861,11 @@ export class OctokitGitHub implements GitHubPort {
     // than one page holds would hide a failure on page two, and this function
     // would report green on a truncated view - the same merge-on-no-evidence
     // hole the `none` branch below exists to close, entering by a different
-    // door. Measured on this estate: 31 and 43 runs on the busiest
-    // repositories, so the bound holds today and is not load-bearing.
+    // door. Measured across this estate: the busiest commit carries 62 runs
+    // against a per_page of 100, so the bound holds today - but 62 is close
+    // enough that this guard should not be assumed decorative. (An earlier
+    // version of this comment said 31 and 43; those were default-branch heads
+    // only, which is not where the busiest commits are.)
     const truncated = checks.data.total_count > runs.length;
     const failedRun = runs.some(
       (r) => r.conclusion !== null && FAILED_CONCLUSIONS.includes(r.conclusion),
@@ -891,24 +922,53 @@ export class OctokitGitHub implements GitHubPort {
   ): Promise<number> {
     const gh = await this.client(repo);
     if (!tag) {
-      const { data } = await gh.repos.listCommits({
-        owner: repo.owner,
-        repo: repo.name,
-        author: DEPENDABOT_LOGIN,
-        per_page: 100,
-      });
-      return data.length;
+      // No release yet, so every commit in history is unreleased and there is
+      // no base to compare against. NOT filtered by GitHub - see the predicate.
+      //
+      // This MUST walk rather than read one page. Filtering locally moved the
+      // bound from "the first 100 matches" to "the first 100 commits scanned",
+      // so a repository whose Dependabot merges sit behind 100 newer human
+      // commits would count 0 and be told there was nothing to release - #90
+      // again, through a narrower window. Review caught it; the first version
+      // of this fix read one page and claimed in a comment that it merely
+      // under-reported, which was not true of the 0 case.
+      const walked = await walkLinkedPages(
+        `commit listing for ${repoSlug(repo)}`,
+        () =>
+          gh.request("GET /repos/{owner}/{repo}/commits", {
+            owner: repo.owner,
+            repo: repo.name,
+            per_page: 100,
+          }),
+        (url) => gh.request(`GET ${url}`),
+      );
+      // Residual, stated rather than implied: if the walk hit its page cap
+      // AND matched nothing, 0 means "not in the first MAX_ALERT_PAGES pages",
+      // not "none exist". That needs a repository with no release and tens of
+      // thousands of commits, none of them Dependabot's. Not engineered for,
+      // but not silently claimed correct either.
+      return (walked.items as CommitLike[]).filter(isDependabotCommit).length;
     }
     const { data } = await gh.repos.compareCommitsWithBasehead({
       owner: repo.owner,
       repo: repo.name,
       basehead: `${tag}...HEAD`,
     });
-    return data.commits.filter(
-      (c) =>
-        c.author?.login === DEPENDABOT_LOGIN ||
-        /dependabot/i.test(c.commit.author?.name ?? ""),
-    ).length;
+    // The sibling bound, which the first version of this fix documented on the
+    // listing branch while leaving silent here. GitHub caps `commits` on a
+    // comparison and reports the true size separately, so the two disagreeing
+    // is how truncation shows. Undercounting is harmless while something
+    // matched - the gate reads `> 0` - and only misleads the advisor, which
+    // sees the number.
+    const seen = data.commits.filter(isDependabotCommit).length;
+    if (seen === 0 && data.total_commits > data.commits.length) {
+      throw new Error(
+        `comparison ${tag}...HEAD for ${repoSlug(repo)} returned ${data.commits.length} ` +
+          `of ${data.total_commits} commits and none of them were Dependabot's; ` +
+          `a 0 here cannot be trusted`,
+      );
+    }
+    return seen;
   }
 
   async hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean> {
