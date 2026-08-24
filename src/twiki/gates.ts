@@ -107,11 +107,18 @@ export function canRebase(pr: PullRequest, policy: RepoPolicy): boolean {
     withinMergePolicy(pr, policy) &&
     pr.behindBy != null &&
     pr.behindBy > 0 &&
-    // Positive test, not `!== "red"`. This was the one decision site written
-    // with the opposite polarity, so a status meaning "nothing reported" read
-    // as PERMISSION - contradicting the docblock above, which says an unknown
-    // `behindBy` is fail-closed. Acting requires an affirmative signal, never
-    // the absence of a negative one.
-    (pr.checks === "green" || pr.checks === "pending")
+    // Explicit list rather than `!== "red"`, so a future status has to be
+    // considered rather than silently included. `none` IS permitted here, and
+    // that is the one place it differs from the merge gate.
+    //
+    // A rebase publishes nothing. It asks Dependabot to refresh its own pull
+    // request, so the "never act without a positive signal" rule that governs
+    // merging does not carry - and refusing here removes the only path out of
+    // a real deadlock. A repository that adds its first workflow while older
+    // Dependabot pull requests are open leaves those heads with no checks
+    // forever: the merge gate blocks on `no-checks`, `canRerunCi` has no runs
+    // to re-run, and without this a human has to intervene. Rebasing produces
+    // a new head, which the workflow then runs against.
+    (pr.checks === "green" || pr.checks === "pending" || pr.checks === "none")
   );
 }

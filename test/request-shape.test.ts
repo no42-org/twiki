@@ -88,13 +88,15 @@ function shapeRecorder(delayMs = 5, prs: unknown[] = PRS) {
     if (u.includes("/installation")) return json({ id: 1 });
     if (u.includes("/pulls?") || u.endsWith("/pulls")) return json(prs);
     if (u.includes("/check-runs") || u.includes("/status")) {
-      // One body serves both endpoints, so it must be plausible as
-      // either. It used to say `state: "failure"` with `total_count: 0`,
-      // which GitHub cannot return - a failure state requires at least one
-      // failing status - and the old aggregation read `.state`
-      // unconditionally, so the red here came from an impossible payload.
-      // A failed check run is how an Actions repository is actually red,
-      // and the status half is correctly ignored for carrying nothing.
+      // One body serves both endpoints, which is why the status half is still
+      // implausible: `state: "failure"` with `total_count: 0` is something
+      // GitHub cannot return, a failure state requiring at least one failing
+      // status. It is now INERT rather than fixed - the aggregation gates
+      // `.state` on `total_count > 0`, so the impossible pair is ignored.
+      //
+      // What changed is the check-runs half. The red here used to come from
+      // that impossible status; it now comes from a failed check run, which is
+      // how an Actions repository is actually red.
       return json({
         state: "failure",
         total_count: 0,

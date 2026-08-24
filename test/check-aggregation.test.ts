@@ -103,6 +103,35 @@ describe("CI status is aggregated from two systems that disagree", () => {
     });
   }
 
+  it("a truncated page cannot support green", async () => {
+    // DERIVED, not recorded: this estate cannot produce a commit with more
+    // than one page of check runs (the busiest are 31 and 43 against a
+    // per_page of 100). The shape is the recorded green payload with
+    // total_count raised above the array length, which is exactly what GitHub
+    // returns when the page is short.
+    //
+    // Without this, a failing run on page two is invisible, nothing failed as
+    // far as the code can see, and a truncated view reports green - the same
+    // merge-on-no-evidence hole the `none` branch closes, by another door.
+    // Review caught it; the first version of this fix was untested and a
+    // mutation removing it passed the whole suite.
+    const github = githubServing(
+      "check-runs-truncated.derived",
+      "status-empty",
+    );
+    await expect(github.prChecks(REPO, "deadbeef")).resolves.toBe("pending");
+  });
+
+  it("emptiness is what GitHub counts, not what one page returned", async () => {
+    // `runs.length === 0` and `total_count === 0` differ exactly when a page
+    // is short. Using the array length would call a truncated-to-zero view
+    // "nothing reported" rather than "we did not see it all".
+    const empty = recorded("check-runs-empty") as { total_count: number };
+    expect(empty.total_count).toBe(0);
+    const github = githubServing("check-runs-empty", "status-empty");
+    await expect(github.prChecks(REPO, "deadbeef")).resolves.toBe("none");
+  });
+
   it("an empty combined status is not evidence of anything", async () => {
     // The whole defect in one assertion. The recorded payload really does say
     // `pending` while carrying no statuses, and green must survive it.
@@ -144,7 +173,14 @@ describe("every status decides the same way at every gate", () => {
     ["green", true, true],
     ["red", false, false],
     ["pending", false, true],
-    ["none", false, false],
+    // `none` is the one row where the two columns disagree, and deliberately.
+    // A merge publishes; a rebase asks Dependabot to refresh its own pull
+    // request and publishes nothing. Refusing both would deadlock a repository
+    // that adds its first workflow while older Dependabot PRs are open: those
+    // heads never get checks, the merge gate blocks, there are no runs to
+    // re-run, and nothing can produce a new head. Review caught this - the
+    // first version of this row said false, false.
+    ["none", false, true],
   ];
 
   for (const [checks, mayMerge, mayRebase] of table) {

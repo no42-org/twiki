@@ -828,6 +828,14 @@ export class OctokitGitHub implements GitHubPort {
     });
 
     const runs = checks.data.check_runs;
+    // One page, deliberately bounded (per_page: 100). `total_count` is what
+    // GitHub says exists; `runs` is what came back. A commit with more runs
+    // than one page holds would hide a failure on page two, and this function
+    // would report green on a truncated view - the same merge-on-no-evidence
+    // hole the `none` branch below exists to close, entering by a different
+    // door. Measured on this estate: 31 and 43 runs on the busiest
+    // repositories, so the bound holds today and is not load-bearing.
+    const truncated = checks.data.total_count > runs.length;
     const failedRun = runs.some(
       (r) => r.conclusion !== null && FAILED_CONCLUSIONS.includes(r.conclusion),
     );
@@ -844,7 +852,9 @@ export class OctokitGitHub implements GitHubPort {
     const statusState = hasStatuses ? status.data.state : null;
 
     if (failedRun || statusState === "failure") return "red";
-    if (pendingRun || statusState === "pending") return "pending";
+    // A truncated view cannot support "everything that ran passed", so it is
+    // reported as still-unknown rather than green.
+    if (pendingRun || truncated || statusState === "pending") return "pending";
 
     // Green means something ran and everything that ran passed - never merely
     // that nothing objected. Without this, a commit with no runs AND no
@@ -852,7 +862,13 @@ export class OctokitGitHub implements GitHubPort {
     // would merge every dependency PR on no evidence. That is the fail-OPEN
     // hole the obvious `total_count > 0` fix opens; today's bug at least
     // fails closed. Absence is its own answer (AD-28).
-    if (runs.length === 0 && !hasStatuses) return "none";
+    // `total_count` rather than `runs.length` because it says what is meant.
+    // The two are behaviourally identical here - total_count 0 implies an
+    // empty array, and an empty array with total_count > 0 is caught by
+    // `truncated` above - so no test distinguishes them, and a mutation
+    // swapping one for the other passes. Noted rather than left to be
+    // rediscovered as a coverage gap.
+    if (checks.data.total_count === 0 && !hasStatuses) return "none";
     return "green";
   }
 
