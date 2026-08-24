@@ -1,6 +1,6 @@
 {
   "name": "twiki",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Autonomous Dependabot/Security PR manager: merges green PRs within policy, batch-cuts patch releases, reports to chat. Safe by construction.",
   "type": "module",
   "engines": {
