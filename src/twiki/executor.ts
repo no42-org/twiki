@@ -368,10 +368,15 @@ function settledBlockers(facts: RepoFacts, policy: RepoPolicy): string[] {
     reasons.push("🎉 Dependencies up to date.");
   }
   if (facts.mainChecks !== "green") {
+    // "nothing reported" must not render as red or as running. "main is RED"
+    // sends the reader hunting a failing build that does not exist, and
+    // "CI/CD is running" is untrue of a repository with no CI at all.
     reasons.push(
       facts.mainChecks === "pending"
         ? "⚙️ CI/CD is running."
-        : `main is ${facts.mainChecks}.`,
+        : facts.mainChecks === "none"
+          ? "❔ main reported no checks at all."
+          : `main is ${facts.mainChecks}.`,
     );
   }
   return reasons.length > 0 ? reasons : ["not settled."];

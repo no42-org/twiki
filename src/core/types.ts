@@ -25,7 +25,20 @@ export function parseRepoSlug(slug: string): RepoRef {
 }
 
 /** Aggregate CI status for a ref or PR. */
-export type CheckStatus = "green" | "red" | "pending";
+/**
+ * What twiki concludes about a commit's CI.
+ *
+ * `green` means something ran and everything that ran passed - NOT merely that
+ * nothing objected. `none` is the difference: a commit that reported nothing at
+ * all is not green, not red and not pending, and saying so is the point.
+ *
+ * Three values could not express absence, so it landed on whichever neighbour
+ * happened to catch it. It landed on `pending`, by accident of GitHub's
+ * combined-status endpoint reporting `pending` for a commit with zero legacy
+ * statuses - which made every Actions-only repository permanently unmergeable
+ * (#87). Absence must be stated, not inherited (AD-28).
+ */
+export type CheckStatus = "green" | "red" | "pending" | "none";
 
 /** A single failing check run, surfaced for diagnostics (read-only). */
 export interface FailingCheck {

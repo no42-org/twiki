@@ -14,8 +14,14 @@ import type {
 // dependency on the LLM. The executor re-validates them immediately before any
 // action, so the LLM plan can only ever narrow what happens — never widen it.
 
-/** Which gate, if any, blocks a merge. `null` means the PR may be merged. */
-export type MergeBlock = "ci-not-green" | "above-minor" | null;
+/**
+ * Which gate, if any, blocks a merge. `null` means the PR may be merged.
+ *
+ * `no-checks` is distinct from `ci-not-green` on purpose: one means a build
+ * failed or is running, the other means nothing reported. Collapsing them
+ * sends the reader hunting a failing build that does not exist.
+ */
+export type MergeBlock = "ci-not-green" | "no-checks" | "above-minor" | null;
 
 /** Patch always; minor only when policy allows; major/indeterminate never. */
 export function withinMergePolicy(
@@ -35,6 +41,7 @@ export function withinMergePolicy(
 
 /** Re-validates every merge gate; returns the first blocking gate or null. */
 export function mergeBlock(pr: PullRequest, policy: RepoPolicy): MergeBlock {
+  if (pr.checks === "none") return "no-checks";
   if (pr.checks !== "green") return "ci-not-green";
   if (!withinMergePolicy(pr, policy)) return "above-minor";
   return null;
@@ -100,6 +107,11 @@ export function canRebase(pr: PullRequest, policy: RepoPolicy): boolean {
     withinMergePolicy(pr, policy) &&
     pr.behindBy != null &&
     pr.behindBy > 0 &&
-    pr.checks !== "red"
+    // Positive test, not `!== "red"`. This was the one decision site written
+    // with the opposite polarity, so a status meaning "nothing reported" read
+    // as PERMISSION - contradicting the docblock above, which says an unknown
+    // `behindBy` is fail-closed. Acting requires an affirmative signal, never
+    // the absence of a negative one.
+    (pr.checks === "green" || pr.checks === "pending")
   );
 }

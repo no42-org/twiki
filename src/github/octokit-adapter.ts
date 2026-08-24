@@ -832,10 +832,27 @@ export class OctokitGitHub implements GitHubPort {
       (r) => r.conclusion !== null && FAILED_CONCLUSIONS.includes(r.conclusion),
     );
     const pendingRun = runs.some((r) => r.status !== "completed");
-    const statusState = status.data.state; // success | failure | pending
+
+    // The combined status is only evidence when it HAS statuses. GitHub
+    // returns `state: "pending"` for a commit carrying zero of them - not an
+    // empty success, `pending` - so reading `.state` unconditionally made
+    // every Actions-only repository permanently not-green, and nothing could
+    // ever merge (#87). Measured on this estate: all three allowlisted
+    // repositories report `pending` with total_count 0 on every commit, green
+    // or red alike, so the field was pure noise deciding the outcome.
+    const hasStatuses = status.data.total_count > 0;
+    const statusState = hasStatuses ? status.data.state : null;
 
     if (failedRun || statusState === "failure") return "red";
     if (pendingRun || statusState === "pending") return "pending";
+
+    // Green means something ran and everything that ran passed - never merely
+    // that nothing objected. Without this, a commit with no runs AND no
+    // statuses falls through to green, and a repository with no CI at all
+    // would merge every dependency PR on no evidence. That is the fail-OPEN
+    // hole the obvious `total_count > 0` fix opens; today's bug at least
+    // fails closed. Absence is its own answer (AD-28).
+    if (runs.length === 0 && !hasStatuses) return "none";
     return "green";
   }
 

@@ -88,7 +88,19 @@ function shapeRecorder(delayMs = 5, prs: unknown[] = PRS) {
     if (u.includes("/installation")) return json({ id: 1 });
     if (u.includes("/pulls?") || u.endsWith("/pulls")) return json(prs);
     if (u.includes("/check-runs") || u.includes("/status")) {
-      return json({ state: "failure", check_runs: [], total_count: 0 });
+      // One body serves both endpoints, so it must be plausible as
+      // either. It used to say `state: "failure"` with `total_count: 0`,
+      // which GitHub cannot return - a failure state requires at least one
+      // failing status - and the old aggregation read `.state`
+      // unconditionally, so the red here came from an impossible payload.
+      // A failed check run is how an Actions repository is actually red,
+      // and the status half is correctly ignored for carrying nothing.
+      return json({
+        state: "failure",
+        total_count: 0,
+        statuses: [],
+        check_runs: [{ status: "completed", conclusion: "failure" }],
+      });
     }
     if (u.includes("/actions/runs")) return json({ workflow_runs: [] });
     if (u.includes("/compare/")) return json({ behind_by: 0 });
