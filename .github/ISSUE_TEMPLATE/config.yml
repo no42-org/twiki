@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/no42-org/twiki/security/advisories/new
+    about: Report privately. Never open a public issue for a security problem.
+  - name: How do I ...?
+    url: https://github.com/no42-org/twiki/blob/main/README.md
+    about: The README covers the safety model, configuration and deployment.

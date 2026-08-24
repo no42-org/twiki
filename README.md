@@ -1,5 +1,9 @@
 # twiki
 
+[![CI](https://github.com/no42-org/twiki/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/no42-org/twiki/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/no42-org/twiki?sort=semver)](https://github.com/no42-org/twiki/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Autonomous Dependabot/Security PR manager for a set of GitHub repositories.
 It merges green dependency PRs that are within policy, batch-cuts a single
 patch release once the queue settles, and reports to chat — **safe by
@@ -390,3 +394,13 @@ The first is mutation. `GitHubReadPort` has no mutating method and `GitHubWriteP
 The second is what a call names. `GitHubRepoReadPort` names a repository and resolves its installation from that repository, so it works whoever owns it. `GitHubAccountReadPort` names an account, which takes an installation resolved by account plus the account's kind, because a GitHub App on a user account has no org-level endpoint. `GitHubReadPort` is their union, which gitricorder's collector consumes.
 
 `GitHubPort` is therefore NOT both halves of everything: it is `GitHubRepoReadPort` plus `GitHubWritePort`. twiki acts on the repositories its allowlist names and never enumerates an account, so extending the account-scoped half would advertise six methods `createGitHubFromEnv` cannot honour, and did until that was split. `test/write-port.test.ts` pins this boundary the same way, with `@ts-expect-error` per method.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Two things are non-negotiable and both are enforced: every commit needs a DCO sign-off (`git commit -s`) from a human identity, and AI-assisted commits carry an `Assisted-by:` trailer.
+
+Releases are documented in [RELEASING.md](RELEASING.md). Vulnerabilities go through [SECURITY.md](SECURITY.md) — privately, never a public issue.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
