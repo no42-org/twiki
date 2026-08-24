@@ -45,6 +45,32 @@ import type {
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
 
+/**
+ * Whether a commit came from Dependabot, decided HERE rather than by GitHub.
+ *
+ * GitHub's `author` query parameter on the commit-listing endpoint does not
+ * match bot logins: `?author=dependabot%5Bbot%5D` returns zero results for
+ * repositories whose unfiltered listing plainly contains commits with
+ * `author.login === "dependabot[bot]"` - measured at 0 against 42 on one
+ * repository and 0 against 28 on another (#90). Asking the API to filter
+ * silently returned nothing, which read as "no unreleased work" and meant no
+ * repository could ever be released for the first time.
+ *
+ * The `name` fallback covers a commit GitHub could not map to an account, so
+ * `author` is null while the git author name still identifies Dependabot. No
+ * commit in this estate is currently in that state; it is covered by a derived
+ * fixture rather than left to be assumed.
+ */
+function isDependabotCommit(c: {
+  author?: { login?: string } | null;
+  commit: { author?: { name?: string } | null };
+}): boolean {
+  return (
+    c.author?.login === DEPENDABOT_LOGIN ||
+    /dependabot/i.test(c.commit.author?.name ?? "")
+  );
+}
+
 /** Check-run conclusions that count as a red/failing result. */
 const FAILED_CONCLUSIONS = [
   "failure",
@@ -833,8 +859,11 @@ export class OctokitGitHub implements GitHubPort {
     // than one page holds would hide a failure on page two, and this function
     // would report green on a truncated view - the same merge-on-no-evidence
     // hole the `none` branch below exists to close, entering by a different
-    // door. Measured on this estate: 31 and 43 runs on the busiest
-    // repositories, so the bound holds today and is not load-bearing.
+    // door. Measured across this estate: the busiest commit carries 62 runs
+    // against a per_page of 100, so the bound holds today - but 62 is close
+    // enough that this guard should not be assumed decorative. (An earlier
+    // version of this comment said 31 and 43; those were default-branch heads
+    // only, which is not where the busiest commits are.)
     const truncated = checks.data.total_count > runs.length;
     const failedRun = runs.some(
       (r) => r.conclusion !== null && FAILED_CONCLUSIONS.includes(r.conclusion),
@@ -891,24 +920,25 @@ export class OctokitGitHub implements GitHubPort {
   ): Promise<number> {
     const gh = await this.client(repo);
     if (!tag) {
+      // No release yet, so every commit is unreleased. Bounded to one page:
+      // this count only has to answer "is there anything to release", and the
+      // caller tests it with `> 0`. It is also shown to the advisor verbatim,
+      // so a repository with more than 100 commits and no release will
+      // under-report the number while still answering that question
+      // correctly. NOT filtered by GitHub - see below.
       const { data } = await gh.repos.listCommits({
         owner: repo.owner,
         repo: repo.name,
-        author: DEPENDABOT_LOGIN,
         per_page: 100,
       });
-      return data.length;
+      return data.filter(isDependabotCommit).length;
     }
     const { data } = await gh.repos.compareCommitsWithBasehead({
       owner: repo.owner,
       repo: repo.name,
       basehead: `${tag}...HEAD`,
     });
-    return data.commits.filter(
-      (c) =>
-        c.author?.login === DEPENDABOT_LOGIN ||
-        /dependabot/i.test(c.commit.author?.name ?? ""),
-    ).length;
+    return data.commits.filter(isDependabotCommit).length;
   }
 
   async hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean> {

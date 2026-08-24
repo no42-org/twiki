@@ -104,9 +104,10 @@ describe("CI status is aggregated from two systems that disagree", () => {
   }
 
   it("a truncated page cannot support green", async () => {
-    // DERIVED, not recorded: this estate cannot produce a commit with more
-    // than one page of check runs (the busiest are 31 and 43 against a
-    // per_page of 100). The shape is the recorded green payload with
+    // DERIVED, not recorded: this estate does not currently produce a commit
+    // with more than one page of check runs - the busiest measured is 62
+    // against a per_page of 100, which is closer to the bound than is
+    // comfortable. The shape is the recorded green payload with
     // total_count raised above the array length, which is exactly what GitHub
     // returns when the page is short.
     //
