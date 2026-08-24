@@ -7,8 +7,13 @@ import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { PullRequest, RepoPolicy } from "../src/core/types.js";
+import type {
+  CheckStatus,
+  PullRequest,
+  RepoPolicy,
+} from "../src/core/types.js";
 import { createGitHubFromEnv } from "../src/github/octokit-adapter.js";
+import { settledBlockers } from "../src/twiki/executor.js";
 import { canRebase, isSettled, mergeBlock } from "../src/twiki/gates.js";
 
 // What twiki concludes about a commit's CI, from two GitHub systems that
@@ -167,5 +172,32 @@ describe("every status decides the same way at every gate", () => {
     };
     expect(isSettled(facts, policy)).toBe(false);
     expect(isSettled({ ...facts, mainChecks: "green" }, policy)).toBe(true);
+  });
+});
+
+describe("the operator is told what is absent, not what is failing", () => {
+  const policy: RepoPolicy = { autoMergeMinor: true, mergeOnly: false };
+  const facts = (mainChecks: CheckStatus) => ({
+    repo: REPO,
+    mainChecks,
+    latestTag: "v1.0.0",
+    hasTagReleaseWorkflow: true,
+    unreleasedDependencyCommits: 3,
+    prs: [],
+  });
+
+  it("a branch that reported nothing is neither red nor running", () => {
+    const said = settledBlockers(facts("none"), policy).join(" ");
+    expect(said).toContain("no checks");
+    // The two lies the three-value vocabulary forced it to choose between.
+    expect(said).not.toContain("RED");
+    expect(said.toLowerCase()).not.toContain("is running");
+  });
+
+  it("a red branch still says red, and a running one still says running", () => {
+    expect(settledBlockers(facts("red"), policy).join(" ")).toContain("red");
+    expect(settledBlockers(facts("pending"), policy).join(" ")).toContain(
+      "running",
+    );
   });
 });

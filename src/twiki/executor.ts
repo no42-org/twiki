@@ -359,7 +359,18 @@ async function evaluateRelease(
   };
 }
 
-function settledBlockers(facts: RepoFacts, policy: RepoPolicy): string[] {
+/**
+ * Why a repository is not settled, in the operator's words.
+ *
+ * Exported for test only. The wording is the point: "main is RED" sends the
+ * reader hunting a failing build, and "CI/CD is running" is untrue of a
+ * repository where nothing ran - both were reachable from the same branch
+ * before `none` existed.
+ */
+export function settledBlockers(
+  facts: RepoFacts,
+  policy: RepoPolicy,
+): string[] {
   const reasons: string[] = [];
   if (facts.prs.some((pr) => mergeBlock(pr, policy) === null)) {
     reasons.push("mergeable Dependabot PRs still open.");
