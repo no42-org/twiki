@@ -12,6 +12,11 @@ tricorder.db-shm
 tricorder.db-wal
 twiki-*.tgz
 
+# Spike recordings. They hold raw GitHub request/response pairs; the recorder
+# excludes the token exchange and redacts token-shaped strings, but this is the
+# belt to that pair of braces.
+write-spike*.json
+
 # Secrets — never commit
 .env
 .env.*
