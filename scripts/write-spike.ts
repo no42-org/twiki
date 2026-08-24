@@ -41,9 +41,10 @@ usage: npx tsx scripts/write-spike.ts --repo <owner/name> [--plan <file>] [--rec
             which issues no writes - use it to check the wiring first.
   --record  directory to write the observed requests and responses into.
   --direct  PASS A: call the write port directly, bypassing the executor and
-            its preconditions. Comma-separated, or "all". One of:
+            its preconditions. Comma-separated. One of:
             mergePR:<pr>  pushTag:<tag>@<sha>  rerunFailedJobs:<runId>
             requestDependabotRebase:<pr>
+            (each needs its argument; "all" alone is not enough)
 
   Set SPIKE_I_MEAN_IT=yes to actually issue writes. Without it this prints what
   it would do and exits, which is the same shadow/enforce split twiki itself
@@ -102,15 +103,24 @@ function guard(args: Args): void {
     console.error("refusing to run in CI: this issues real writes.");
     process.exit(1);
   }
-  const ref = parseRepoSlug(args.repo);
-  if (!ref) {
+  // parseRepoSlug THROWS on a bad slug rather than returning null, so an
+  // `if (!ref)` check here was dead code and a malformed --repo produced a
+  // stack trace instead of the one-line refusal.
+  try {
+    parseRepoSlug(args.repo);
+  } catch {
     console.error(`--repo ${args.repo} is not owner/name.`);
     process.exit(1);
   }
   const configured = process.env.TWIKI_CONFIG ?? "repos.yaml";
   try {
-    const text = readFileSync(configured, "utf8");
-    if (text.includes(args.repo)) {
+    // Lowercased on both sides. GitHub resolves owner/name case-insensitively
+    // and this comparison did not, so `--repo No42-Org/twiki` slipped past a
+    // repos.yaml naming `no42-org/twiki` - and the script would then merge and
+    // tag in a repository twiki actually manages, which is the exact outcome
+    // this guard exists to prevent.
+    const text = readFileSync(configured, "utf8").toLowerCase();
+    if (text.includes(args.repo.toLowerCase())) {
       console.error(
         `refusing: ${args.repo} appears in ${configured}. Use a scratch ` +
           "repository that twiki does not manage, so a mistake here cannot " +
@@ -122,6 +132,53 @@ function guard(args: Args): void {
     // No config present is fine - it only means there is nothing to collide
     // with. The --repo flag remains the only source of the target.
   }
+}
+
+/**
+ * A transport that records what it sends, shared by both passes.
+ *
+ * ONE implementation on purpose. There were two, and when the credential leak
+ * was found and fixed in pass A's copy, pass B's kept recording live
+ * installation tokens - a review caught it, not the fix. Two recorders means
+ * two chances to get the redaction wrong.
+ *
+ * The token exchange is never recorded: its response body IS a credential.
+ * The redaction below is belt-and-braces for anything else token-shaped.
+ */
+function makeRecorder(sink: () => unknown[]): typeof fetch {
+  const redact = (text: string | undefined): string | undefined =>
+    text
+      ?.replace(/ghs_[A-Za-z0-9]+/g, "ghs_REDACTED")
+      .replace(/eyJ[A-Za-z0-9_-]{10,}/g, "JWT_REDACTED");
+
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    const url = String(input);
+    const res = await fetch(input, init);
+    if (method !== "GET" && !url.includes("/access_tokens")) {
+      const body = await res
+        .clone()
+        .text()
+        .catch(() => undefined);
+      let requestBody: unknown;
+      try {
+        // Guarded: a non-JSON body must not turn an ACCEPTED write into a
+        // reported REJECTION, which is the one signal this spike produces.
+        requestBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+      } catch {
+        requestBody = String(init?.body);
+      }
+      sink().push({
+        method,
+        url,
+        requestBody,
+        status: res.status,
+        responseBody: redact(body)?.slice(0, 4000),
+      });
+      console.error(`[spike]   ${method} ${url} → ${res.status}`);
+    }
+    return res;
+  }) as typeof fetch;
 }
 
 /** A plan the executor will act on, with no LLM involved. */
@@ -151,7 +208,7 @@ function holdEverything(repo: string): Plan {
   };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (!args) {
     console.error(USAGE);
@@ -197,31 +254,14 @@ function main(): void {
   }
 
   if (args.direct) {
-    void runDirect(args);
-    return;
+    return runDirect(args);
   }
-  void run(args, plan);
+  return run(args, plan);
 }
 
 async function run(args: Args, plan: Plan): Promise<void> {
   const observed: unknown[] = [];
-  const recordingFetch: typeof fetch = async (input, init) => {
-    const method = init?.method ?? "GET";
-    const url = String(input);
-    const res = await fetch(input, init);
-    if (method !== "GET") {
-      const clone = res.clone();
-      observed.push({
-        method,
-        url,
-        requestBody: init?.body ? JSON.parse(String(init.body)) : undefined,
-        status: res.status,
-        responseBody: await clone.text().catch(() => undefined),
-      });
-      console.error(`[spike] ${method} ${url} → ${res.status}`);
-    }
-    return res;
-  };
+  const recordingFetch = makeRecorder(() => observed);
 
   const config: Config = buildConfig(
     { mode: "enforce", repos: [{ repo: args.repo }] },
@@ -252,7 +292,10 @@ async function run(args: Args, plan: Plan): Promise<void> {
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(`[spike] failed: ${err instanceof Error ? err.message : err}`);
+  process.exit(1);
+});
 
 /**
  * Pass A: call each write method on the port, bypassing the executor (D7).
@@ -269,38 +312,7 @@ async function runDirect(args: Args): Promise<void> {
   const outcomes: Outcome[] = [];
   let current: unknown[] = [];
 
-  // Never record the token-minting call. Its response body IS a credential:
-  // a scrub of the first recording found one live installation token and two
-  // JWTs sitting in the file. Excluding it here is safer than remembering to
-  // strip it afterwards, and it is not a write we are testing - it is auth
-  // plumbing. The redaction below is belt-and-braces for anything else that
-  // comes back token-shaped.
-  const redact = (text: string | undefined): string | undefined =>
-    text
-      ?.replace(/ghs_[A-Za-z0-9]+/g, "ghs_REDACTED")
-      .replace(/eyJ[A-Za-z0-9_-]{10,}/g, "JWT_REDACTED");
-
-  const recordingFetch: typeof fetch = async (input, init) => {
-    const method = init?.method ?? "GET";
-    const url = String(input);
-    const res = await fetch(input, init);
-    const isAuth = url.includes("/access_tokens");
-    if (method !== "GET" && !isAuth) {
-      const body = await res
-        .clone()
-        .text()
-        .catch(() => undefined);
-      current.push({
-        method,
-        url,
-        requestBody: init?.body ? JSON.parse(String(init.body)) : undefined,
-        status: res.status,
-        responseBody: redact(body)?.slice(0, 4000),
-      });
-      console.error(`[spike]   ${method} ${url} → ${res.status}`);
-    }
-    return res;
-  };
+  const recordingFetch = makeRecorder(() => current);
 
   const github = createGitHubFromEnv(
     (r) => `${r.owner}/${r.name}` === args.repo,
@@ -308,12 +320,20 @@ async function runDirect(args: Args): Promise<void> {
     recordingFetch,
   );
   const ref = parseRepoSlug(args.repo);
-  if (!ref) return;
 
   const flush = () => {
     if (!args.record) return;
-    const path = `${args.record.replace(/\/$/, "")}/write-spike-direct.json`;
-    writeFileSync(path, `${JSON.stringify(outcomes, null, 2)}\n`);
+    try {
+      const path = `${args.record.replace(/\/$/, "")}/write-spike-direct.json`;
+      writeFileSync(path, `${JSON.stringify(outcomes, null, 2)}\n`);
+    } catch (err) {
+      // Never abort the remaining writes because the recording failed. The
+      // flush sat outside the try/catch, so a bad --record directory killed
+      // the loop after the first write had ALREADY been issued.
+      console.error(
+        `[spike] could not write the recording: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   };
 
   // Each write is isolated: a rejection is recorded and the next one still
@@ -334,22 +354,55 @@ async function runDirect(args: Args): Promise<void> {
     flush(); // incremental: a crash mid-run must not lose what was learned
   };
 
-  for (const raw of args.direct?.split(",") ?? []) {
+  const ALL = "mergePR,pushTag,rerunFailedJobs,requestDependabotRebase";
+  const spec = args.direct === "all" ? ALL : (args.direct ?? "");
+  if (args.direct === "all") {
+    console.error(
+      "[spike] --direct all needs arguments per write; " +
+        `expand it yourself, e.g. ${ALL.split(",").join(":<arg>,")}:<arg>`,
+    );
+    return;
+  }
+
+  for (const raw of spec.split(",")) {
     const step = raw.trim();
+    if (!step) continue;
     const [name, arg] = step.split(":");
-    if (name === "mergePR") {
-      await attempt(step, () => github.mergePR(ref, Number(arg)));
+    // Validate before issuing. Without this, `mergePR` with no colon requested
+    // /pulls/NaN/merge and `pushTag:v1` sent an undefined sha - both surfacing
+    // as REJECTED, which is the one signal this spike exists to produce. A bad
+    // argument must not be mistakable for a genuine adapter defect.
+    const num = (v: string | undefined): number | null => {
+      const n = Number(v);
+      return v && Number.isInteger(n) && n > 0 ? n : null;
+    };
+    if (name === "mergePR" || name === "requestDependabotRebase") {
+      const n = num(arg);
+      if (n === null) {
+        console.error(`[spike] ${step}: needs ${name}:<pr number>; skipped`);
+        continue;
+      }
+      await attempt(step, () =>
+        name === "mergePR"
+          ? github.mergePR(ref, n)
+          : github.requestDependabotRebase(ref, n),
+      );
     } else if (name === "pushTag") {
       const [tag, sha] = (arg ?? "").split("@");
-      await attempt(step, () =>
-        github.pushTag(ref, tag as string, sha as string),
-      );
+      if (!tag || !sha) {
+        console.error(`[spike] ${step}: needs pushTag:<tag>@<sha>; skipped`);
+        continue;
+      }
+      await attempt(step, () => github.pushTag(ref, tag, sha));
     } else if (name === "rerunFailedJobs") {
-      await attempt(step, () => github.rerunFailedJobs(ref, Number(arg)));
-    } else if (name === "requestDependabotRebase") {
-      await attempt(step, () =>
-        github.requestDependabotRebase(ref, Number(arg)),
-      );
+      const n = num(arg);
+      if (n === null) {
+        console.error(
+          `[spike] ${step}: needs rerunFailedJobs:<run id>; skipped`,
+        );
+        continue;
+      }
+      await attempt(step, () => github.rerunFailedJobs(ref, n));
     } else {
       console.error(`[spike] unknown write "${step}"`);
     }
