@@ -40,6 +40,10 @@ usage: npx tsx scripts/write-spike.ts --repo <owner/name> [--plan <file>] [--rec
   --plan    JSON plan to feed the executor. Defaults to a hold-everything plan,
             which issues no writes - use it to check the wiring first.
   --record  directory to write the observed requests and responses into.
+  --direct  PASS A: call the write port directly, bypassing the executor and
+            its preconditions. Comma-separated, or "all". One of:
+            mergePR:<pr>  pushTag:<tag>@<sha>  rerunFailedJobs:<runId>
+            requestDependabotRebase:<pr>
 
   Set SPIKE_I_MEAN_IT=yes to actually issue writes. Without it this prints what
   it would do and exits, which is the same shadow/enforce split twiki itself
@@ -50,6 +54,23 @@ interface Args {
   repo: string;
   plan?: string;
   record?: string;
+  /** Pass A: call the write port directly, bypassing the executor (D7). */
+  direct?: string;
+}
+
+/**
+ * One direct write, and what came back.
+ *
+ * A rejection is a RESULT, not a reason to stop. If GitHub refuses a request
+ * the adapter believed correct, that is the finding this whole exercise is
+ * hunting - and stopping on the first one would hide the state of the other
+ * three. Each write runs independently and records its own outcome.
+ */
+interface Outcome {
+  write: string;
+  ok: boolean;
+  error?: string;
+  requests: unknown[];
 }
 
 function parseArgs(argv: string[]): Args | null {
@@ -61,6 +82,7 @@ function parseArgs(argv: string[]): Args | null {
     if (flag === "--repo") out.repo = value;
     else if (flag === "--plan") out.plan = value;
     else if (flag === "--record") out.record = value;
+    else if (flag === "--direct") out.direct = value;
     else return null;
   }
   return out.repo ? (out as Args) : null;
@@ -152,6 +174,12 @@ function main(): void {
   console.error(
     `[spike] plan        ${args.plan ?? "(default: hold everything)"}`,
   );
+  if (args.direct) {
+    console.error(`[spike] direct      ${args.direct}`);
+    for (const step of args.direct.split(",")) {
+      console.error(`[spike]   will call ${step.trim()}`);
+    }
+  }
   for (const r of plan.repos) {
     for (const d of r.prDecisions) {
       console.error(`[spike]   PR #${d.number}: ${d.action} — ${d.reason}`);
@@ -168,6 +196,10 @@ function main(): void {
     return;
   }
 
+  if (args.direct) {
+    void runDirect(args);
+    return;
+  }
   void run(args, plan);
 }
 
@@ -221,3 +253,116 @@ async function run(args: Args, plan: Plan): Promise<void> {
 }
 
 main();
+
+/**
+ * Pass A: call each write method on the port, bypassing the executor (D7).
+ *
+ * The executor cannot reach all four in one repository state - `mergePR` needs
+ * an open Dependabot pull request while `pushTag` needs `isSettled()` with
+ * none, and `rerunFailedJobs` needs main red while `pushTag` needs it green.
+ * This answers the narrower question the contract test cannot: does GitHub
+ * accept the request the adapter builds.
+ *
+ * It proves NOTHING about the gates. Pass B does that.
+ */
+async function runDirect(args: Args): Promise<void> {
+  const outcomes: Outcome[] = [];
+  let current: unknown[] = [];
+
+  // Never record the token-minting call. Its response body IS a credential:
+  // a scrub of the first recording found one live installation token and two
+  // JWTs sitting in the file. Excluding it here is safer than remembering to
+  // strip it afterwards, and it is not a write we are testing - it is auth
+  // plumbing. The redaction below is belt-and-braces for anything else that
+  // comes back token-shaped.
+  const redact = (text: string | undefined): string | undefined =>
+    text
+      ?.replace(/ghs_[A-Za-z0-9]+/g, "ghs_REDACTED")
+      .replace(/eyJ[A-Za-z0-9_-]{10,}/g, "JWT_REDACTED");
+
+  const recordingFetch: typeof fetch = async (input, init) => {
+    const method = init?.method ?? "GET";
+    const url = String(input);
+    const res = await fetch(input, init);
+    const isAuth = url.includes("/access_tokens");
+    if (method !== "GET" && !isAuth) {
+      const body = await res
+        .clone()
+        .text()
+        .catch(() => undefined);
+      current.push({
+        method,
+        url,
+        requestBody: init?.body ? JSON.parse(String(init.body)) : undefined,
+        status: res.status,
+        responseBody: redact(body)?.slice(0, 4000),
+      });
+      console.error(`[spike]   ${method} ${url} → ${res.status}`);
+    }
+    return res;
+  };
+
+  const github = createGitHubFromEnv(
+    (r) => `${r.owner}/${r.name}` === args.repo,
+    process.env,
+    recordingFetch,
+  );
+  const ref = parseRepoSlug(args.repo);
+  if (!ref) return;
+
+  const flush = () => {
+    if (!args.record) return;
+    const path = `${args.record.replace(/\/$/, "")}/write-spike-direct.json`;
+    writeFileSync(path, `${JSON.stringify(outcomes, null, 2)}\n`);
+  };
+
+  // Each write is isolated: a rejection is recorded and the next one still
+  // runs. Stopping on the first failure would hide the state of the rest,
+  // and "GitHub refused this" is the finding, not an error to bail on.
+  const attempt = async (name: string, fn: () => Promise<unknown>) => {
+    current = [];
+    console.error(`\n[spike] ${name}`);
+    try {
+      await fn();
+      outcomes.push({ write: name, ok: true, requests: current });
+      console.error(`[spike] ${name}: ACCEPTED`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      outcomes.push({ write: name, ok: false, error: msg, requests: current });
+      console.error(`[spike] ${name}: REJECTED — ${msg.slice(0, 200)}`);
+    }
+    flush(); // incremental: a crash mid-run must not lose what was learned
+  };
+
+  for (const raw of args.direct?.split(",") ?? []) {
+    const step = raw.trim();
+    const [name, arg] = step.split(":");
+    if (name === "mergePR") {
+      await attempt(step, () => github.mergePR(ref, Number(arg)));
+    } else if (name === "pushTag") {
+      const [tag, sha] = (arg ?? "").split("@");
+      await attempt(step, () =>
+        github.pushTag(ref, tag as string, sha as string),
+      );
+    } else if (name === "rerunFailedJobs") {
+      await attempt(step, () => github.rerunFailedJobs(ref, Number(arg)));
+    } else if (name === "requestDependabotRebase") {
+      await attempt(step, () =>
+        github.requestDependabotRebase(ref, Number(arg)),
+      );
+    } else {
+      console.error(`[spike] unknown write "${step}"`);
+    }
+  }
+
+  console.error("\n[spike] ── summary ──");
+  for (const o of outcomes) {
+    console.error(`[spike]   ${o.ok ? "ACCEPTED" : "REJECTED"}  ${o.write}`);
+  }
+  if (args.record) {
+    console.error(
+      `[spike] recorded to ${args.record}/write-spike-direct.json` +
+        "\n[spike] SCRUB BEFORE COMMITTING: read the diff, do not trust this.\n",
+    );
+  }
+}
