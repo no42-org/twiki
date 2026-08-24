@@ -25,19 +25,41 @@ jobs:
     name: Build, publish & sign :rc
     # :rc always reflects main — also guards manual dispatches from other refs.
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write # push the :rc image to GHCR
       id-token: write # cosign keyless (OIDC)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
+      # No dependency cache on a publishing workflow. A pull request can
+      # populate the npm cache, and this job would then build the signed,
+      # released artifact out of whatever was cached (zizmor: cache-poisoning).
+      # CI still caches - it publishes nothing.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          cache: npm
+          # The real off switch. `cache: ""` does NOT disable caching: an empty
+          # `cache` falls through to setup-node's automatic package-manager
+          # cache, which defaults to true and activates as soon as package.json
+          # gains a top-level `packageManager` or `devEngines.packageManager`
+          # naming npm. Neither exists today, so nothing caches - but a future
+          # corepack change would silently start restoring a pull-request-
+          # populated cache into the job that signs and publishes.
+          package-manager-cache: false
       - run: npm ci
+
+      # ---- The quality gate, on the path that ships ----
+      # Pull requests were gated and releases were not: this workflow built,
+      # signed and published without lint, typecheck or the test suite ever
+      # running (#78). `make verify` is the single definition of the gate -
+      # the Makefile is the reusable unit here, and CI invokes the same target
+      # - so this consults it rather than restating it.
+      - run: make verify
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 

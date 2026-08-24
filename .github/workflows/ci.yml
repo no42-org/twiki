@@ -20,11 +20,14 @@ concurrency:
 jobs:
   verify:
     name: Lint, typecheck & test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -34,12 +37,15 @@ jobs:
 
   image-scan:
     name: Build image & Trivy scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write # upload Trivy SARIF to the security tab
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       # Build only (make image uses --load); never pushed on pull requests.
       - run: make image
@@ -64,11 +70,14 @@ jobs:
 
   audit:
     name: npm audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -77,3 +86,52 @@ jobs:
       # Report advisories; do not block merges on findings without a fix.
       - run: make audit
         continue-on-error: true
+
+  # ---- Workflows lint their own workflows ----
+  # Pinning, least privilege, timeouts, injection safety and the rest were
+  # enforced by whoever remembered to check. actionlint covers syntax and shell
+  # correctness; zizmor covers the security rules. Both fail the build, so a
+  # regression is caught on the pull request that introduces it.
+  actions:
+    name: Lint workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write # zizmor uploads SARIF
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Downloaded by checksum rather than `uses: rhysd/actionlint@<sha>`.
+      # That repo ships no action.yml, so the runner falls back to its
+      # Dockerfile and rebuilds from golang:latest and alpine:latest on every
+      # run - three mutable tags, in a container the runner mounts the docker
+      # socket into, in a job holding security-events: write. Pinning the SHA
+      # of a repo whose base images float buys very little.
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL "$url" -o actionlint.tar.gz
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint -color
+      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          # Pin the TOOL as well as the action. The action's `version` input
+          # defaults to `latest`, so an unpinned zizmor would download a new
+          # release on every run - turning CI red on an unchanged repository
+          # when an audit is added, or silently dropping one when it is not.
+          # Dependabot cannot see this pin; bump it deliberately.
+          version: "1.29.0"
+          # Findings BELOW this severity are filtered out entirely - not
+          # logged, not in the SARIF. So `low` means informational findings
+          # disappear rather than being reported-but-tolerated. Chosen anyway:
+          # the one open informational finding suggests replacing
+          # action-gh-release with `gh release` in a script, which would mean
+          # re-validating the whole publish path.
+          min-severity: low
