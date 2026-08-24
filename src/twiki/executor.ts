@@ -359,7 +359,18 @@ async function evaluateRelease(
   };
 }
 
-function settledBlockers(facts: RepoFacts, policy: RepoPolicy): string[] {
+/**
+ * Why a repository is not settled, in the operator's words.
+ *
+ * Exported for test only. The wording is the point: "main is RED" sends the
+ * reader hunting a failing build, and "CI/CD is running" is untrue of a
+ * repository where nothing ran - both were reachable from the same branch
+ * before `none` existed.
+ */
+export function settledBlockers(
+  facts: RepoFacts,
+  policy: RepoPolicy,
+): string[] {
   const reasons: string[] = [];
   if (facts.prs.some((pr) => mergeBlock(pr, policy) === null)) {
     reasons.push("mergeable Dependabot PRs still open.");
@@ -368,10 +379,15 @@ function settledBlockers(facts: RepoFacts, policy: RepoPolicy): string[] {
     reasons.push("🎉 Dependencies up to date.");
   }
   if (facts.mainChecks !== "green") {
+    // "nothing reported" must not render as red or as running. "main is RED"
+    // sends the reader hunting a failing build that does not exist, and
+    // "CI/CD is running" is untrue of a repository with no CI at all.
     reasons.push(
       facts.mainChecks === "pending"
         ? "⚙️ CI/CD is running."
-        : `main is ${facts.mainChecks}.`,
+        : facts.mainChecks === "none"
+          ? "❔ main reported no checks at all."
+          : `main is ${facts.mainChecks}.`,
     );
   }
   return reasons.length > 0 ? reasons : ["not settled."];

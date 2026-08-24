@@ -88,7 +88,21 @@ function shapeRecorder(delayMs = 5, prs: unknown[] = PRS) {
     if (u.includes("/installation")) return json({ id: 1 });
     if (u.includes("/pulls?") || u.endsWith("/pulls")) return json(prs);
     if (u.includes("/check-runs") || u.includes("/status")) {
-      return json({ state: "failure", check_runs: [], total_count: 0 });
+      // One body serves both endpoints, which is why the status half is still
+      // implausible: `state: "failure"` with `total_count: 0` is something
+      // GitHub cannot return, a failure state requiring at least one failing
+      // status. It is now INERT rather than fixed - the aggregation gates
+      // `.state` on `total_count > 0`, so the impossible pair is ignored.
+      //
+      // What changed is the check-runs half. The red here used to come from
+      // that impossible status; it now comes from a failed check run, which is
+      // how an Actions repository is actually red.
+      return json({
+        state: "failure",
+        total_count: 0,
+        statuses: [],
+        check_runs: [{ status: "completed", conclusion: "failure" }],
+      });
     }
     if (u.includes("/actions/runs")) return json({ workflow_runs: [] });
     if (u.includes("/compare/")) return json({ behind_by: 0 });
