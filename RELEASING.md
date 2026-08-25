@@ -77,6 +77,52 @@ gh release download v0.0.6 --pattern 'twiki.sbom.spdx.json'
 jq '.packages | length' twiki.sbom.spdx.json
 ```
 
+### Verifying the release files
+
+The image and the files are signed separately, and verifying one says nothing about the other.
+Through v0.0.8 the files shipped unsigned entirely (#97).
+
+Download everything and check the artifacts against the checksums:
+
+```sh
+gh release download v0.0.9
+sha256sum -c checksums.txt
+```
+
+Then verify that the checksums file itself was produced by this repository's release workflow:
+
+```sh
+cosign verify-blob \
+  --certificate-identity-regexp '^https://github\.com/no42-org/twiki/\.github/workflows/release\.yml@refs/tags/v0\.0\.9$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate checksums.txt.pem \
+  --signature checksums.txt.sig \
+  checksums.txt
+```
+
+Checking `sha256sum -c` alone proves only that the files match a list an attacker could have replaced along with them.
+The signature is what makes the list trustworthy, so both steps are needed.
+
+### Verifying build provenance
+
+Every released artifact carries a SLSA provenance attestation recording which workflow, at which commit, built it.
+
+For the image, against the index digest:
+
+```sh
+gh attestation verify oci://ghcr.io/no42-org/twiki@sha256:<index-digest> \
+  --repo no42-org/twiki
+```
+
+For the files:
+
+```sh
+gh attestation verify twiki-0.0.9.tgz --repo no42-org/twiki
+```
+
+`--repo` is the point of the command.
+Without it the attestation is checked for internal consistency and not against who was entitled to produce it.
+
 ## Repairing a floating tag
 
 If `:latest` or `:X.Y` ends up pointing at the wrong image, retag in the registry.

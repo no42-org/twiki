@@ -29,6 +29,7 @@ jobs:
       contents: write # create the GitHub Release
       packages: write # push to GHCR
       id-token: write # cosign keyless (OIDC)
+      attestations: write # SLSA build provenance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -163,6 +164,52 @@ jobs:
           format: spdx-json
           output-file: twiki.sbom.spdx.json
 
+      # ---- Checksums over everything the release ships ----
+      # One file to sign and one file for a consumer to verify downloads
+      # against. Without it each artifact needs its own signature, and nothing
+      # ties the set together.
+      - id: sums
+        name: Checksum the release artifacts
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          sha256sum "${TARBALL}" twiki.sbom.spdx.json > checksums.txt
+          cat checksums.txt
+
+      # ---- Sign the checksums (cosign keyless / OIDC) ----
+      # The image was already signed above; this covers the FILES, which
+      # shipped unsigned through v0.0.8 (#97). Signature and certificate are
+      # attached beside the checksums so verification needs nothing but the
+      # release page.
+      - name: Sign checksums
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --output-signature checksums.txt.sig \
+            --output-certificate checksums.txt.pem \
+            checksums.txt
+
+      # ---- SLSA build provenance ----
+      # `provenance: true` on build-push-action produces BUILDKIT provenance
+      # attached in the registry, which is NOT what `gh attestation verify`
+      # resolves - that reads GitHub's attestation API, which had nothing for
+      # v0.0.8 and returned a 404 that looked like a lookup failure (#97).
+      # These two steps are what put it there.
+      - name: Attest the image build
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest the release artifacts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ steps.pack.outputs.tarball }}
+            twiki.sbom.spdx.json
+
       # ---- Publish the GitHub Release ----
       # `make_latest` follows the tag: a prerelease never becomes latest, and
       # a stable tag always does. There is no highest-version guard — pushing a
@@ -180,3 +227,6 @@ jobs:
           files: |
             ${{ steps.pack.outputs.tarball }}
             twiki.sbom.spdx.json
+            checksums.txt
+            checksums.txt.sig
+            checksums.txt.pem
