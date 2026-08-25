@@ -48,6 +48,22 @@ import type {
 const DEPENDABOT_LOGIN = "dependabot[bot]";
 
 /**
+ * Branch rules that gate what LANDS on a branch, as opposed to what survives.
+ *
+ * `deletion` and `non_fast_forward` are deliberately absent: they prevent the
+ * branch being destroyed or rewritten, which is not the same claim as
+ * "everything on it was verified", and treating them as protection made a
+ * branch defended by neither read as defended.
+ */
+const GATING_RULES = [
+  "pull_request",
+  "required_status_checks",
+  "required_signatures",
+  "required_linear_history",
+  "required_deployments",
+];
+
+/**
  * Whether a commit came from Dependabot, decided HERE rather than by GitHub.
  *
  * GitHub's `author` query parameter on the commit-listing endpoint does not
@@ -984,21 +1000,25 @@ export class OctokitGitHub implements GitHubPort {
     // PRIMARY SOURCE: what is in force on the branch, not what objects exist.
     // The distinction is the whole point - a ruleset can exist, target this
     // branch, declare required checks, and enforce nothing.
-    let rulesInForce: string[];
+    let rulesInForce: string[] = [];
     try {
       const { data } = await gh.request(
         "GET /repos/{owner}/{repo}/rules/branches/{branch}",
-        { owner: repo.owner, repo: repo.name, branch },
+        { owner: repo.owner, repo: repo.name, branch, per_page: 100 },
       );
       if (!Array.isArray(data)) {
         throw new Error("expected an array of rules");
       }
       rulesInForce = data.map((r) => String((r as { type: string }).type));
     } catch (err) {
-      throw new Error(
-        `could not read the rules in force on ${slug}@${branch}, which is how ` +
-          `twiki decides whether the branch it merges into is defended: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
+      // MUST NOT throw. `gatherFacts` is unwrapped, so a throw here reaches
+      // run.ts and drops the whole repository out of the tick - no merges, no
+      // release, digest reads "fact-gathering failed". That would make a fact
+      // nothing gates on into the most load-bearing read in the function, on
+      // a transient 5xx or a secondary rate limit. Review caught it.
+      unreadableSources.push(
+        `the rules in force on ${slug}@${branch} ` +
+          `(${err instanceof Error ? err.message : String(err)})`,
       );
     }
 
@@ -1015,6 +1035,10 @@ export class OctokitGitHub implements GitHubPort {
       const { data } = await gh.request("GET /repos/{owner}/{repo}/rulesets", {
         owner: repo.owner,
         repo: repo.name,
+        // GitHub defaults to 30. One page, and a repository with more than
+        // 100 rulesets loses the inert ones past it - the explanatory hint
+        // this read exists to produce. No repository here has more than one.
+        per_page: 100,
       });
       inertRulesets = (
         data as { name: string; enforcement: string; target?: string }[]
@@ -1022,7 +1046,10 @@ export class OctokitGitHub implements GitHubPort {
         .filter((r) => r.target === "branch" && r.enforcement !== "active")
         .map((r) => ({ name: r.name, enforcement: r.enforcement }));
     } catch {
-      // Explanatory only. Losing it costs detail, never correctness.
+      // Explanatory in the normal case - but recording it here also flips a
+      // would-be `undefended` to `unknown` below, so it IS load-bearing, in
+      // the safe direction. An earlier version of this comment said it was
+      // not, which claimed more than was true.
       unreadableSources.push("ruleset listing");
     }
 
@@ -1055,8 +1082,17 @@ export class OctokitGitHub implements GitHubPort {
     // While legacy protection is unreadable it never is, so `undefended` is
     // currently unreachable - deliberately, because concluding it from a
     // partial view is the exact inference this fact exists to prevent (D6).
+    // Not every rule defends the CONTENT of the branch. `deletion` and
+    // `non_fast_forward` stop it being destroyed or rewritten, which is worth
+    // having and says nothing about whether what lands on it was verified.
+    // Counting them made a branch whose only rule was `deletion` read as
+    // protected - and since the digest stays silent for `protected`, that
+    // silence is what an operator reads as "main is defended". Review caught
+    // it. Signed commits count: they gate who may write, not merely what
+    // survives.
+    const gating = rulesInForce.filter((r) => GATING_RULES.includes(r));
     const state: BranchProtection =
-      rulesInForce.length > 0
+      gating.length > 0
         ? "protected"
         : unreadableSources.length > 0
           ? "unknown"

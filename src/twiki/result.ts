@@ -59,9 +59,14 @@ export interface RepoResult {
   /** Failing checks on `main` when it is red, for the digest. */
   mainFailingChecks?: FailingCheck[];
   /**
-   * Set ONLY when `main` could not be confirmed defended. Absent means
-   * confirmed protected - never "not looked at", because the fact is
-   * gathered for every repository on every tick.
+   * Set ONLY when `main` could not be confirmed defended.
+   *
+   * Absent means confirmed protected, WITH ONE EXCEPTION: a repository whose
+   * fact-gathering threw never reaches the executor, and run.ts builds its
+   * result without this field. Read `error` first - if it is set, absence
+   * here means "never looked", not "protected". An earlier version of this
+   * comment claimed no exception, which would have had a reader of
+   * audit.jsonl conclude a repository was defended when twiki never saw it.
    */
   protection?: ProtectionFact;
   /** CI-remediation actions taken (or would-do) this tick. */

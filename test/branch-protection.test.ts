@@ -10,6 +10,8 @@ import { describe, expect, it } from "vitest";
 import type { ProtectionFact, RepoPolicy } from "../src/core/types.js";
 import { createGitHubFromEnv } from "../src/github/octokit-adapter.js";
 import { canRebase, isSettled, mergeBlock } from "../src/twiki/gates.js";
+import { buildDigest, hasActionableActivity } from "../src/twiki/report.js";
+import type { RepoResult, RunResult } from "../src/twiki/result.js";
 
 // Whether the branch twiki merges into and releases from is defended.
 //
@@ -264,5 +266,147 @@ describe("protection is reported, never gated on", () => {
       "utf8",
     );
     expect(src).not.toContain("protection");
+  });
+});
+
+describe("a fact nothing gates on must not be able to stop a tick", () => {
+  it("an unreadable rules endpoint yields unknown, not a throw", async () => {
+    // `gatherFacts` is NOT wrapped: a throw here reaches run.ts, which drops
+    // the whole repository out of the tick - no merges, no release, digest
+    // reads "fact-gathering failed". A transient 5xx on a read that nothing
+    // gates on would have blocked all of twiki's real work for that
+    // repository. Review caught it; the first version threw.
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const p = new URL(String(input)).pathname;
+      const body = p.endsWith("/installation")
+        ? { id: 7 }
+        : p.endsWith("/access_tokens")
+          ? {
+              token: "ghs_test",
+              expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            }
+          : {};
+      const status = p.includes("/rules/branches/") ? 500 : 200;
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const github = createGitHubFromEnv(
+      () => true,
+      {
+        TWIKI_GITHUB_APP_ID: "1",
+        TWIKI_GITHUB_APP_PRIVATE_KEY: TEST_KEY,
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+    );
+
+    const fact = await github.branchProtection(REPO, "main");
+    expect(fact.state).toBe("unknown");
+    expect(fact.unreadableSources.join(" ")).toContain("rules in force");
+  });
+
+  it("rules that only stop destruction are not a defence", async () => {
+    // DERIVED: no branch here has only non-gating rules. `deletion` and
+    // `non_fast_forward` stop the branch being destroyed or rewritten, which
+    // says nothing about whether what lands on it was verified. Counting them
+    // made such a branch read `protected` - and since the digest is SILENT
+    // for `protected`, that silence is what an operator reads as "defended".
+    const github = githubServing({
+      rules: "branch-rules-non-gating.derived.json",
+      legacyStatus: 404,
+    });
+    const fact = await github.branchProtection(REPO, "main");
+    expect(fact.state).toBe("undefended");
+    expect(fact.rulesInForce).toStrictEqual(["deletion", "non_fast_forward"]);
+  });
+
+  it("a pull-request rule alone is a defence", async () => {
+    const github = githubServing({
+      rules: "branch-rules-no-required-checks.json",
+      legacyStatus: 404,
+    });
+    await expect(
+      github.branchProtection(REPO, "main").then((f) => f.state),
+    ).resolves.toBe("protected");
+  });
+});
+
+describe("the operator actually gets told", () => {
+  const repoResult = (protection?: RepoResult["protection"]): RepoResult => ({
+    repo: "no42-org/blitsbom",
+    mainRed: false,
+    prs: [],
+    release: { status: "waiting", detail: "nothing to release" },
+    ...(protection ? { protection } : {}),
+  });
+  const run = (repo: RepoResult): RunResult => ({
+    mode: "enforce",
+    repos: [repo],
+  });
+
+  it("a quiet repository still reports an unconfirmed branch", () => {
+    // The repository most likely to be undefended is the quiet one: nothing
+    // merging, nothing releasing. Without this the digest is suppressed
+    // entirely and the fact is gathered every tick and shown on none of them.
+    expect(hasActionableActivity(run(repoResult()))).toBe(false);
+    expect(
+      hasActionableActivity(
+        run(
+          repoResult({
+            state: "undefended",
+            rulesInForce: [],
+            inertRulesets: [],
+            unreadableSources: [],
+          }),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("says undefended, names the inert ruleset and what it could not read", () => {
+    // 28 lines of rendering had no test at all, and the fakes default every
+    // repository to `protected` - the one value that makes this block emit
+    // nothing.
+    const digest = buildDigest(
+      run(
+        repoResult({
+          state: "unknown",
+          rulesInForce: [],
+          inertRulesets: [{ name: "main protection", enforcement: "disabled" }],
+          unreadableSources: [
+            "legacy branch protection (needs the App permission `administration: read`)",
+          ],
+        }),
+      ),
+    );
+    expect(digest).toContain("could not be confirmed");
+    expect(digest).toContain('ruleset "main protection"');
+    expect(digest).toContain("does not enforce (disabled)");
+    expect(digest).toContain("administration: read");
+    // Not the other wording - "undefended" would be a claim, not a report.
+    expect(digest).not.toContain("main is undefended");
+  });
+
+  it("says undefended when that is what it means", () => {
+    const digest = buildDigest(
+      run(
+        repoResult({
+          state: "undefended",
+          rulesInForce: ["deletion"],
+          inertRulesets: [],
+          unreadableSources: [],
+        }),
+      ),
+    );
+    expect(digest).toContain("main is undefended");
+    expect(digest).not.toContain("could not be confirmed");
+  });
+
+  it("a confirmed branch adds no line", () => {
+    // A report that speaks every tick stops being read.
+    const digest = buildDigest(run(repoResult()));
+    expect(digest).not.toContain("undefended");
+    expect(digest).not.toContain("could not be confirmed");
   });
 });

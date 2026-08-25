@@ -47,6 +47,12 @@ function summarizeFailing(checks: FailingCheck[]): string {
 // them every tick just spams the channel.
 function repoHasActivity(repo: RepoResult): boolean {
   if (repo.error || repo.mainRed) return true;
+  // A branch that could not be confirmed defended is news, and a QUIET
+  // repository is exactly where one hides: nothing merging, nothing
+  // releasing, so without this the digest is suppressed and the fact is
+  // gathered every tick and shown on none of them. `protection` is only set
+  // when the branch is not confirmed protected, so this cannot spam.
+  if (repo.protection) return true;
   if (repo.prs.length > 0) return true;
   if ((repo.remediations ?? []).length > 0) return true;
   const s = repo.release.status;
