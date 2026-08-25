@@ -165,6 +165,24 @@ describe("CI status is aggregated from two systems that disagree", () => {
     await expect(github.prChecks(REPO, "deadbeef")).resolves.toBe("green");
   });
 
+  it("neutral is left as evidence, and that is a scope decision", async () => {
+    // PINS SCOPE, does not assert correctness. #88 grouped `neutral` with
+    // `skipped`; this change deliberately separated them, because a neutral
+    // run DID run and declined to return a verdict - a different claim - and
+    // ZERO neutral conclusions exist anywhere on this estate to decide it
+    // against.
+    //
+    // Without this, adding `neutral` to the filter passes the whole suite and
+    // the decision drifts silently. It is caught here so that changing it is
+    // a choice someone makes on purpose, with a recorded payload in hand.
+    // DERIVED, necessarily: the shape cannot be recorded from this estate.
+    const github = githubServing(
+      "check-runs-all-neutral.derived",
+      "status-empty",
+    );
+    await expect(github.prChecks(REPO, "deadbeef")).resolves.toBe("green");
+  });
+
   it("a failure among skipped runs is still a failure", async () => {
     const github = githubServing(
       "check-runs-skipped-and-red.derived",
