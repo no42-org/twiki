@@ -130,6 +130,67 @@ describe("CI status is aggregated from two systems that disagree", () => {
     await expect(github.prChecks(REPO, "deadbeef")).resolves.toBe("pending");
   });
 
+  it("a commit whose every run was skipped has verified nothing", async () => {
+    // RECORDED from a constructed repository (#88), not derived: two runs,
+    // both `skipped`, `total_count: 2`. This is NOT the #87 no-runs case -
+    // the objects exist, and the old aggregation counted their existence as
+    // "something ran".
+    //
+    // Nothing else catches this. On that same head, with the skipped job's
+    // context set as a REQUIRED status check, GitHub reported the pull
+    // request CLEAN and merged it. twiki's verdict is the only gate.
+    const skipped = recorded("check-runs-all-skipped") as {
+      total_count: number;
+      check_runs: { conclusion: string }[];
+    };
+    expect(skipped.total_count).toBe(2);
+    expect(skipped.check_runs.every((r) => r.conclusion === "skipped")).toBe(
+      true,
+    );
+
+    const github = githubServing("check-runs-all-skipped", "status-empty");
+    await expect(github.prChecks(REPO, "deadbeef")).resolves.toBe("none");
+  });
+
+  it("one real result among skipped runs is still evidence", async () => {
+    // The other side of the same rule, and the reason this is a filter rather
+    // than a blanket refusal. A conditional job that legitimately does not
+    // apply must not stop a commit whose real gate passed from being green -
+    // skipped runs are ubiquitous here (every commit has some, up to 26.5% of
+    // one commit's runs) and none of them should count against it.
+    const github = githubServing(
+      "check-runs-skipped-and-green.derived",
+      "status-empty",
+    );
+    await expect(github.prChecks(REPO, "deadbeef")).resolves.toBe("green");
+  });
+
+  it("neutral is left as evidence, and that is a scope decision", async () => {
+    // PINS SCOPE, does not assert correctness. #88 grouped `neutral` with
+    // `skipped`; this change deliberately separated them, because a neutral
+    // run DID run and declined to return a verdict - a different claim - and
+    // ZERO neutral conclusions exist anywhere on this estate to decide it
+    // against.
+    //
+    // Without this, adding `neutral` to the filter passes the whole suite and
+    // the decision drifts silently. It is caught here so that changing it is
+    // a choice someone makes on purpose, with a recorded payload in hand.
+    // DERIVED, necessarily: the shape cannot be recorded from this estate.
+    const github = githubServing(
+      "check-runs-all-neutral.derived",
+      "status-empty",
+    );
+    await expect(github.prChecks(REPO, "deadbeef")).resolves.toBe("green");
+  });
+
+  it("a failure among skipped runs is still a failure", async () => {
+    const github = githubServing(
+      "check-runs-skipped-and-red.derived",
+      "status-empty",
+    );
+    await expect(github.prChecks(REPO, "deadbeef")).resolves.toBe("red");
+  });
+
   it("emptiness is what GitHub counts, not what one page returned", async () => {
     // `runs.length === 0` and `total_count === 0` differ exactly when a page
     // is short. Using the array length would call a truncated-to-zero view
@@ -234,7 +295,11 @@ describe("the operator is told what is absent, not what is failing", () => {
 
   it("a branch that reported nothing is neither red nor running", () => {
     const said = settledBlockers(facts("none"), policy).join(" ");
-    expect(said).toContain("no checks");
+    expect(said).toContain("no check results");
+    // Must not assert a cause. `none` is reached both by nothing running and
+    // by everything that ran being skipped (#88), and naming the wrong one
+    // costs the reader the search - the #70/#73 failure mode.
+    expect(said).toContain("skipped");
     // The two lies the three-value vocabulary forced it to choose between.
     expect(said).not.toContain("RED");
     expect(said.toLowerCase()).not.toContain("is running");
