@@ -7,8 +7,10 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import { parseDependency } from "../core/semver.js";
 import type {
+  BranchProtection,
   CheckStatus,
   FailingCheck,
+  ProtectionFact,
   RepoRef,
   WorkflowRunRef,
 } from "../core/types.js";
@@ -969,6 +971,98 @@ export class OctokitGitHub implements GitHubPort {
       );
     }
     return seen;
+  }
+
+  async branchProtection(
+    repo: RepoRef,
+    branch: string,
+  ): Promise<ProtectionFact> {
+    const gh = await this.client(repo);
+    const slug = repoSlug(repo);
+    const unreadableSources: string[] = [];
+
+    // PRIMARY SOURCE: what is in force on the branch, not what objects exist.
+    // The distinction is the whole point - a ruleset can exist, target this
+    // branch, declare required checks, and enforce nothing.
+    let rulesInForce: string[];
+    try {
+      const { data } = await gh.request(
+        "GET /repos/{owner}/{repo}/rules/branches/{branch}",
+        { owner: repo.owner, repo: repo.name, branch },
+      );
+      if (!Array.isArray(data)) {
+        throw new Error("expected an array of rules");
+      }
+      rulesInForce = data.map((r) => String((r as { type: string }).type));
+    } catch (err) {
+      throw new Error(
+        `could not read the rules in force on ${slug}@${branch}, which is how ` +
+          `twiki decides whether the branch it merges into is defended: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // Read only to EXPLAIN. A ruleset that does not enforce is invisible to
+    // the endpoint above, and "a ruleset named `main protection` is disabled"
+    // is the sentence that saves the operator hunting through settings that
+    // look correct. Not load-bearing for the verdict.
+    //
+    // NOT verified: whether each inert ruleset's conditions actually match
+    // this branch. That needs a detail call per ruleset and condition-pattern
+    // matching. Reported as a hint, and worded as one.
+    let inertRulesets: { name: string; enforcement: string }[] = [];
+    try {
+      const { data } = await gh.request("GET /repos/{owner}/{repo}/rulesets", {
+        owner: repo.owner,
+        repo: repo.name,
+      });
+      inertRulesets = (
+        data as { name: string; enforcement: string; target?: string }[]
+      )
+        .filter((r) => r.target === "branch" && r.enforcement !== "active")
+        .map((r) => ({ name: r.name, enforcement: r.enforcement }));
+    } catch {
+      // Explanatory only. Losing it costs detail, never correctness.
+      unreadableSources.push("ruleset listing");
+    }
+
+    // Legacy branch protection needs `administration: read`, which the App
+    // does not hold - this is 403 on every repository today. Recorded as a
+    // limit on TWIKI, never as a fact about the repository (D3).
+    try {
+      await gh.request(
+        "GET /repos/{owner}/{repo}/branches/{branch}/protection",
+        {
+          owner: repo.owner,
+          repo: repo.name,
+          branch,
+        },
+      );
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      // A 404 means the endpoint answered: no legacy protection exists. Any
+      // other failure means twiki could not look, which is a different thing.
+      if (status !== 404) {
+        unreadableSources.push(
+          status === 403
+            ? "legacy branch protection (needs the App permission `administration: read`)"
+            : `legacy branch protection (${status ?? "unreachable"})`,
+        );
+      }
+    }
+
+    // An empty rule set is only evidence of absence if nothing was hidden.
+    // While legacy protection is unreadable it never is, so `undefended` is
+    // currently unreachable - deliberately, because concluding it from a
+    // partial view is the exact inference this fact exists to prevent (D6).
+    const state: BranchProtection =
+      rulesInForce.length > 0
+        ? "protected"
+        : unreadableSources.length > 0
+          ? "unknown"
+          : "undefended";
+
+    return { state, rulesInForce, inertRulesets, unreadableSources };
   }
 
   async hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean> {

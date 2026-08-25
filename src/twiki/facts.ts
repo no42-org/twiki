@@ -37,6 +37,7 @@ export async function gatherFacts(
   const mainChecks = await github.branchChecks(repo, "main");
   const latestTag = await github.latestTag(repo);
   const hasTagReleaseWorkflow = await github.hasTagReleaseWorkflow(repo);
+  const protection = await github.branchProtection(repo, "main");
 
   const unreleasedDependencyCommits = await github.dependabotCommitsSince(
     repo,
@@ -98,6 +99,7 @@ export async function gatherFacts(
     mainChecks,
     latestTag,
     hasTagReleaseWorkflow,
+    protection,
     unreleasedDependencyCommits,
     prs,
     mainFailingChecks,

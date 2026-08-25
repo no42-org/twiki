@@ -35,6 +35,13 @@ const ENV = { TWIKI_GITHUB_APP_ID: "1", TWIKI_GITHUB_APP_PRIVATE_KEY: KEY };
 const OPEN_PRS = 15;
 
 /** A quiet fortnight's worth, to prove the shape does not track the count. */
+/**
+ * Measured, not chosen: 16 requests for a repository with no open pull
+ * requests. Three of them are `protection-is-a-fact`'s - effective branch
+ * rules, the ruleset listing, and the legacy-protection attempt that 403s.
+ */
+const BASELINE_REQUESTS_PER_REPO = 16;
+
 const MANY_PRS = 40;
 
 const prsOfWidth = (n: number) =>
@@ -109,6 +116,12 @@ function shapeRecorder(delayMs = 5, prs: unknown[] = PRS) {
     if (u.includes("/releases/latest")) return json({}, 404);
     if (u.includes("/tags") || u.includes("/commits")) return json([]);
     if (u.includes("/contents/")) return json([]);
+    // protection-is-a-fact: three reads per repository per tick. Ordered
+    // before the generic /branches/ arm, which would otherwise swallow the
+    // protection path and hand back a commit object.
+    if (u.includes("/rules/branches/")) return json([]);
+    if (u.endsWith("/rulesets")) return json([]);
+    if (u.includes("/protection")) return json({}, 403);
     if (u.includes("/branches/")) return json({ commit: { sha: "main-sha" } });
     if (/\/repos\/[^/]+\/[^/]+$/.test(u))
       return json({ default_branch: "main" });
@@ -165,6 +178,24 @@ describe("one tick's request shape", () => {
     expect(wide.peak()).toBe(1);
     // ...and the request count really did scale, so the fixture is doing work.
     expect(wide.urls.length).toBeGreaterThan(narrow.urls.length * 5);
+  });
+
+  it("costs a fixed number of requests for a repository with no pull requests", async () => {
+    // NOTHING pinned this. The four tests around it measure concurrency,
+    // installation lookups and token minting - all shape, no volume - so
+    // `protection-is-a-fact` added three reads per repository per tick and
+    // every one of them passed. Found by adding the cost, not by review.
+    //
+    // A tick is hourly with nothing waiting on it, so the number matters less
+    // than it being DELIBERATE. If this fails, a read was added: decide
+    // whether it earns its place, then update the number.
+    const rec = shapeRecorder(5, []);
+    await gatherFacts(
+      createGitHubFromEnv(() => true, ENV, rec.fetchImpl),
+      REPO,
+    );
+
+    expect(rec.urls.length).toBe(BASELINE_REQUESTS_PER_REPO);
   });
 
   it("resolves the installation once per repository, not once per call", async () => {

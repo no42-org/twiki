@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { FailingCheck, Mode } from "../core/types.js";
+import type { FailingCheck, Mode, ProtectionFact } from "../core/types.js";
 
 // The outcome of a single tick: what happened (or would happen, in shadow mode)
 // per repo. Produced by the executor, rendered by the report, persisted by the
@@ -58,6 +58,12 @@ export interface RepoResult {
   release: ReleaseOutcome;
   /** Failing checks on `main` when it is red, for the digest. */
   mainFailingChecks?: FailingCheck[];
+  /**
+   * Set ONLY when `main` could not be confirmed defended. Absent means
+   * confirmed protected - never "not looked at", because the fact is
+   * gathered for every repository on every tick.
+   */
+  protection?: ProtectionFact;
   /** CI-remediation actions taken (or would-do) this tick. */
   remediations?: RemediationOutcome[];
   error?: string;

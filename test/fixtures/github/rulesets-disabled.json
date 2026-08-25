@@ -1,0 +1,11 @@
+[
+  {
+    "id": 17172201,
+    "name": "main protection",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "no42-org/CoolModFiles",
+    "enforcement": "disabled",
+    "node_id": "RRS_lACqUmVwb3NpdG9yec4wXItPzgEGBuk"
+  }
+]

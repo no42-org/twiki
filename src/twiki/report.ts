@@ -144,6 +144,34 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
           : ""),
     );
   }
+  if (repo.protection) {
+    // Reported, never gated on (protection-is-a-fact D4). twiki merges into
+    // this branch and cuts releases from it; whether anything defends it is
+    // worth a line, and nothing here changes what twiki does.
+    //
+    // Only speaks when the branch is NOT confirmed defended. A line that
+    // appears every tick stops being read, and the confirmed case carries no
+    // information the operator can act on.
+    const p = repo.protection;
+    lines.push(
+      p.state === "undefended"
+        ? "  🔓 *main is undefended* — nothing gates what lands on it"
+        : "  ❔ *main's defences could not be confirmed*",
+    );
+    for (const rs of p.inertRulesets) {
+      // The trap this fact exists for: a ruleset named "main protection"
+      // that enforces nothing reads as protection in every listing.
+      lines.push(
+        `     ↳ ruleset "${rs.name}" exists but does not enforce (${rs.enforcement})`,
+      );
+    }
+    for (const src of p.unreadableSources) {
+      // twiki's own limit, said as twiki's own limit. "Not protected" when
+      // the truth is "may not look" sends the reader to settings that are
+      // already correct.
+      lines.push(`     ↳ twiki could not read ${src}`);
+    }
+  }
   if (repo.mainRed) {
     lines.push("  🔴 *main is RED* — releases blocked until fixed");
     for (const c of repo.mainFailingChecks ?? []) {

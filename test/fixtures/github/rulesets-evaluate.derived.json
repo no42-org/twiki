@@ -1,0 +1,11 @@
+[
+  {
+    "id": 17172201,
+    "name": "main protection (dry run)",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "no42-org/CoolModFiles",
+    "enforcement": "evaluate",
+    "node_id": "RRS_lACqUmVwb3NpdG9yec4wXItPzgEGBuk"
+  }
+]
