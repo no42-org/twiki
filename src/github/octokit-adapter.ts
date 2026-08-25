@@ -919,6 +919,25 @@ export class OctokitGitHub implements GitHubPort {
     // version of this comment said 31 and 43; those were default-branch heads
     // only, which is not where the busiest commits are.)
     const truncated = checks.data.total_count > runs.length;
+
+    // A SKIPPED run is a check-run object for something that did not run.
+    //
+    // #87 settled that green means "something ran and everything that ran
+    // passed". This function implemented "ran" as "an object exists", which is
+    // not the same claim - so a commit whose every job was skipped reported
+    // green, having verified nothing.
+    //
+    // Not hypothetical, and nothing else catches it. Measured on a constructed
+    // repository (#88): a job gated `if: false` reports `conclusion:
+    // "skipped"`, and when that job's context is a REQUIRED status check
+    // GitHub reports the pull request CLEAN and merges it. There is no 405 and
+    // no second opinion - this test is the only gate there is.
+    //
+    // `neutral` is deliberately NOT included. A neutral run DID run and
+    // declined to return a verdict, which is a different claim, and no
+    // conclusion of that kind exists anywhere on this estate to test a
+    // decision against. Left alone rather than guessed at.
+    const evidence = runs.filter((r) => r.conclusion !== "skipped");
     const failedRun = runs.some(
       (r) => r.conclusion !== null && FAILED_CONCLUSIONS.includes(r.conclusion),
     );
@@ -945,13 +964,16 @@ export class OctokitGitHub implements GitHubPort {
     // would merge every dependency PR on no evidence. That is the fail-OPEN
     // hole the obvious `total_count > 0` fix opens; today's bug at least
     // fails closed. Absence is its own answer (AD-28).
-    // `total_count` rather than `runs.length` because it says what is meant.
-    // The two are behaviourally identical here - total_count 0 implies an
-    // empty array, and an empty array with total_count > 0 is caught by
-    // `truncated` above - so no test distinguishes them, and a mutation
-    // swapping one for the other passes. Noted rather than left to be
-    // rediscovered as a coverage gap.
-    if (checks.data.total_count === 0 && !hasStatuses) return "none";
+    // Emptiness counts EVIDENCE, not objects. A commit carrying two skipped
+    // runs and nothing else has reported exactly as much about whether it
+    // works as a commit carrying none, so both are `none`.
+    //
+    // This replaced a `total_count === 0` test, which was equivalent to
+    // `runs.length === 0` given the truncation guard and was documented as
+    // such. It is no longer equivalent to either: `evidence` is what remains
+    // after skipped runs are discarded, and a mutation back to counting all
+    // runs is caught by the all-skipped fixture.
+    if (evidence.length === 0 && !hasStatuses) return "none";
     return "green";
   }
 

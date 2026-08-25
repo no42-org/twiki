@@ -392,7 +392,13 @@ export function settledBlockers(
       facts.mainChecks === "pending"
         ? "⚙️ CI/CD is running."
         : facts.mainChecks === "none"
-          ? "❔ main reported no checks at all."
+          ? // Covers TWO causes, and must not assert either. `none` is
+            // reached both when nothing ran and when everything that ran was
+            // skipped (#88), and the two send a reader to different places:
+            // one to whether CI is configured at all, the other to which
+            // `if:` condition is false. `CheckStatus` does not distinguish
+            // them, so the sentence must not pretend to.
+            "❔ main has no check results to judge — nothing ran, or everything that ran was skipped."
           : `main is ${facts.mainChecks}.`,
     );
   }
