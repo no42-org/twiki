@@ -448,9 +448,24 @@ describe("legacy branch protection, now that twiki may read it", () => {
     const fact = await github.branchProtection(REPO, "main");
     expect(fact.rulesInForce).toContain("pull_request");
     expect(fact.rulesInForce).toContain("required_status_checks");
-    // Merged, not duplicated: `required_signatures` is declared by BOTH.
+  });
+
+  it("a defence declared by both systems is listed once", async () => {
+    // This assertion COULD NOT FAIL in its first form. It paired blitsbom's
+    // rules with blitsbom's legacy protection and checked
+    // `required_signatures` - which legacy reports as `enabled: false`, so
+    // nothing was ever pushed and no duplicate was producible. Removing the
+    // deduplication passed. Found by mutation.
+    //
+    // These two fixtures genuinely overlap: the rules endpoint declares
+    // `required_status_checks` and so does the legacy payload.
+    const github = githubServing({
+      rules: "branch-rules-required-checks.json",
+      legacy: "branch-protection-legacy-checks.json",
+    });
+    const fact = await github.branchProtection(REPO, "main");
     expect(
-      fact.rulesInForce.filter((r) => r === "required_signatures"),
+      fact.rulesInForce.filter((r) => r === "required_status_checks"),
     ).toHaveLength(1);
   });
 
