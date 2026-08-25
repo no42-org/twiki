@@ -168,6 +168,24 @@ describe("what defends the branch twiki merges into", () => {
     ]);
   });
 
+  it("an inert ruleset does not undo the rules actually in force", async () => {
+    // THE CASE THAT PINS D2. Everywhere else the two sources happen to agree,
+    // so a version judging from the ruleset listing instead of the rules in
+    // force passed all eleven other tests - the central decision of this
+    // change, unprotected. Found by mutation, not by review.
+    //
+    // A repository with an active ruleset AND a leftover disabled one is
+    // ordinary. The rules in force say protected; the listing carries an
+    // inert entry. Only the first is evidence.
+    const github = githubServing({
+      rules: "branch-rules-required-checks.json",
+      rulesets: "rulesets-disabled.json",
+    });
+    const fact = await github.branchProtection(REPO, "main");
+    expect(fact.state).toBe("protected");
+    expect(fact.inertRulesets).toHaveLength(1);
+  });
+
   it("a dry-run ruleset does not enforce either", async () => {
     // DERIVED: no ruleset on this estate uses `evaluate`. Left to fall
     // through, an unrecognised enforcement value would be treated as active
