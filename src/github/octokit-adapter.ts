@@ -55,12 +55,46 @@ const DEPENDABOT_LOGIN = "dependabot[bot]";
  * "everything on it was verified", and treating them as protection made a
  * branch defended by neither read as defended.
  */
+/**
+ * The defences legacy branch protection declares, in the same vocabulary the
+ * rulesets endpoint uses.
+ *
+ * `GET .../rules/branches/{branch}` reports RULESETS ONLY - `blitsbom`
+ * requires `gates / verify` and `gates / lint-workflows` through legacy
+ * protection, and its rules endpoint returns `pull_request` with no
+ * `required_status_checks` at all.
+ *
+ * While that endpoint was 403 the omission was safe: an empty rule set became
+ * `unknown`, which is an admission. Once the App was granted
+ * `administration: read` it became a confident `undefended` about a branch
+ * legacy protection defends. Granting the permission did not only widen the
+ * view - it made the previous verdict wrong.
+ *
+ * Fields are present-if-configured, so presence is the test. `enforce_admins`
+ * is deliberately NOT a defence: it decides who may bypass the others, not
+ * whether anything gates what lands.
+ */
+function legacyDefences(data: Record<string, unknown>): string[] {
+  const enabled = (k: string) =>
+    (data[k] as { enabled?: boolean } | undefined)?.enabled === true;
+  const out: string[] = [];
+  if (data.required_status_checks) out.push("required_status_checks");
+  if (data.required_pull_request_reviews) out.push("pull_request");
+  if (data.restrictions) out.push("restrictions");
+  if (enabled("required_signatures")) out.push("required_signatures");
+  if (enabled("required_linear_history")) out.push("required_linear_history");
+  if (enabled("lock_branch")) out.push("lock_branch");
+  return out;
+}
+
 const GATING_RULES = [
   "pull_request",
   "required_status_checks",
   "required_signatures",
   "required_linear_history",
   "required_deployments",
+  "restrictions",
+  "lock_branch",
 ];
 
 /**
@@ -1053,11 +1087,14 @@ export class OctokitGitHub implements GitHubPort {
       unreadableSources.push("ruleset listing");
     }
 
-    // Legacy branch protection needs `administration: read`, which the App
-    // does not hold - this is 403 on every repository today. Recorded as a
-    // limit on TWIKI, never as a fact about the repository (D3).
+    // Legacy branch protection, readable since the App was granted
+    // `administration: read`. Its defences COUNT - see legacyDefences: the
+    // rules endpoint above reports rulesets only, so ignoring this made a
+    // legacy-defended branch read as undefended the moment the permission
+    // arrived. A failure to read is recorded as a limit on TWIKI, never as a
+    // fact about the repository (D3).
     try {
-      await gh.request(
+      const { data: legacy } = await gh.request(
         "GET /repos/{owner}/{repo}/branches/{branch}/protection",
         {
           owner: repo.owner,
@@ -1065,6 +1102,12 @@ export class OctokitGitHub implements GitHubPort {
           branch,
         },
       );
+      // Merged, not tracked separately: the fact answers "what defends this
+      // branch", and which of GitHub's two systems declares a defence is not
+      // something an operator needs the digest to relay.
+      for (const d of legacyDefences(legacy as Record<string, unknown>)) {
+        if (!rulesInForce.includes(d)) rulesInForce.push(d);
+      }
     } catch (err) {
       const status = (err as { status?: number }).status;
       // A 404 means the endpoint answered: no legacy protection exists. Any

@@ -42,6 +42,7 @@ function githubServing(opts: {
   rules: string;
   rulesets?: string;
   legacyStatus?: number;
+  legacy?: string | Record<string, unknown>;
 }) {
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = new URL(String(input));
@@ -50,6 +51,11 @@ function githubServing(opts: {
     if (p.endsWith("/rulesets"))
       return ok(load(opts.rulesets ?? "rulesets-active.json"));
     if (p.endsWith("/protection")) {
+      if (opts.legacy !== undefined) {
+        return ok(
+          typeof opts.legacy === "string" ? load(opts.legacy) : opts.legacy,
+        );
+      }
       const status = opts.legacyStatus ?? 403;
       return new Response(
         JSON.stringify(
@@ -408,5 +414,73 @@ describe("the operator actually gets told", () => {
     const digest = buildDigest(run(repoResult()));
     expect(digest).not.toContain("undefended");
     expect(digest).not.toContain("could not be confirmed");
+  });
+});
+
+describe("legacy branch protection, now that twiki may read it", () => {
+  // Granting `administration: read` did not only widen the view. It made the
+  // previous verdict WRONG: the rules endpoint reports rulesets only, so a
+  // branch defended solely by legacy protection went from `unknown` - an
+  // honest admission - to a confident `undefended`.
+
+  it("a branch defended only by legacy protection is not undefended", async () => {
+    // The regression the permission grant created. No rulesets rules at all,
+    // and legacy protection requiring status checks.
+    const github = githubServing({
+      rules: "branch-rules-none.derived.json",
+      legacy: "branch-protection-legacy-checks.json",
+    });
+    const fact = await github.branchProtection(REPO, "main");
+    expect(fact.state).toBe("protected");
+    expect(fact.rulesInForce).toContain("required_status_checks");
+    expect(fact.unreadableSources).toStrictEqual([]);
+  });
+
+  it("legacy contributes what the rules endpoint omits", async () => {
+    // `blitsbom` exactly as recorded: its rules carry `pull_request` and NO
+    // `required_status_checks`, while its legacy protection requires
+    // `gates / verify` and `gates / lint-workflows`. Before this, the fact
+    // reported a defence the branch has as absent.
+    const github = githubServing({
+      rules: "branch-rules-no-required-checks.json",
+      legacy: "branch-protection-legacy.json",
+    });
+    const fact = await github.branchProtection(REPO, "main");
+    expect(fact.rulesInForce).toContain("pull_request");
+    expect(fact.rulesInForce).toContain("required_status_checks");
+    // Merged, not duplicated: `required_signatures` is declared by BOTH.
+    expect(
+      fact.rulesInForce.filter((r) => r === "required_signatures"),
+    ).toHaveLength(1);
+  });
+
+  it("legacy protection that configures no defence is not a defence", async () => {
+    const github = githubServing({
+      rules: "branch-rules-none.derived.json",
+      legacy: {
+        url: "https://api.github.com/x",
+        allow_force_pushes: { enabled: false },
+        allow_deletions: { enabled: false },
+      },
+    });
+    await expect(
+      github.branchProtection(REPO, "main").then((f) => f.state),
+    ).resolves.toBe("undefended");
+  });
+
+  it("enforce_admins alone does not defend anything", async () => {
+    // It decides who may BYPASS the other rules. With no other rule
+    // configured there is nothing to bypass, and counting it would report a
+    // branch as defended on the strength of a setting that gates nothing.
+    const github = githubServing({
+      rules: "branch-rules-none.derived.json",
+      legacy: {
+        url: "https://api.github.com/x",
+        enforce_admins: { enabled: true },
+      },
+    });
+    await expect(
+      github.branchProtection(REPO, "main").then((f) => f.state),
+    ).resolves.toBe("undefended");
   });
 });
