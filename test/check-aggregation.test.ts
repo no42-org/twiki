@@ -40,6 +40,13 @@ const TEST_KEY = generateKeyPairSync("rsa", {
 }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
 
 const REPO = { owner: "no42-org", name: "twiki-write-spike" };
+/** Irrelevant to CI aggregation; no gate reads it (protection-is-a-fact D4). */
+const PROTECTED = {
+  state: "protected" as const,
+  rulesInForce: ["pull_request"],
+  inertRulesets: [],
+  unreadableSources: [],
+};
 
 /** Serve one recorded check-runs payload and one recorded status payload. */
 function githubServing(runsFixture: string, statusFixture: string) {
@@ -205,6 +212,7 @@ describe("every status decides the same way at every gate", () => {
       latestTag: "v1.0.0",
       hasTagReleaseWorkflow: true,
       unreleasedDependencyCommits: 3,
+      protection: PROTECTED,
       prs: [],
     };
     expect(isSettled(facts, policy)).toBe(false);
@@ -220,6 +228,7 @@ describe("the operator is told what is absent, not what is failing", () => {
     latestTag: "v1.0.0",
     hasTagReleaseWorkflow: true,
     unreleasedDependencyCommits: 3,
+    protection: PROTECTED,
     prs: [],
   });
 

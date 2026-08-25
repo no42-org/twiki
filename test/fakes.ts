@@ -7,6 +7,7 @@ import {
   type Bump,
   type CheckStatus,
   type FailingCheck,
+  type ProtectionFact,
   type PullRequest,
   type RepoFacts,
   type RepoRef,
@@ -81,6 +82,12 @@ export function makeFacts(partial: Partial<RepoFacts> = {}): RepoFacts {
     latestTag: "v1.2.3",
     hasTagReleaseWorkflow: true,
     unreleasedDependencyCommits: 1,
+    protection: {
+      state: "protected",
+      rulesInForce: ["pull_request", "required_status_checks"],
+      inertRulesets: [],
+      unreadableSources: [],
+    },
     prs: [],
     ...partial,
   };
@@ -228,6 +235,8 @@ export interface FakeRepoData {
   unreleased: number;
   hasWorkflow: boolean;
   defaultSha: string;
+  /** Defaults to protected; set it to exercise the reporting paths. */
+  protection?: ProtectionFact;
   /** Failing checks keyed by ref (PR head SHA, or the main SHA = defaultSha). */
   failing?: Record<string, FailingCheck[]>;
   /** Workflow runs keyed by SHA (PR head SHA, or the main SHA = defaultSha). */
@@ -524,6 +533,18 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   }
   async hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean> {
     return this.get(repo).hasWorkflow;
+  }
+  // Returns whatever a human chose, exactly like every other method here -
+  // which is why the adapter carries its own recorded-payload test (D5).
+  async branchProtection(repo: RepoRef): Promise<ProtectionFact> {
+    return (
+      this.get(repo).protection ?? {
+        state: "protected",
+        rulesInForce: ["pull_request"],
+        inertRulesets: [],
+        unreadableSources: [],
+      }
+    );
   }
   async defaultBranchSha(repo: RepoRef): Promise<string> {
     return this.get(repo).defaultSha;

@@ -1,0 +1,87 @@
+[
+  {
+    "type": "deletion",
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "no42-org/blittermib",
+    "ruleset_id": 17241310
+  },
+  {
+    "type": "non_fast_forward",
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "no42-org/blittermib",
+    "ruleset_id": 17241310
+  },
+  {
+    "type": "required_signatures",
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "no42-org/blittermib",
+    "ruleset_id": 17241310
+  },
+  {
+    "type": "required_status_checks",
+    "parameters": {
+      "strict_required_status_checks_policy": true,
+      "do_not_enforce_on_create": false,
+      "required_status_checks": [
+        {
+          "context": "gates / make verify"
+        },
+        {
+          "context": "gates / make lint"
+        },
+        {
+          "context": "gates / make govulncheck"
+        },
+        {
+          "context": "gates / make gosec"
+        },
+        {
+          "context": "gates / actionlint"
+        },
+        {
+          "context": "gates / zizmor"
+        },
+        {
+          "context": "gates / cross-build linux/amd64"
+        },
+        {
+          "context": "gates / cross-build linux/arm64"
+        },
+        {
+          "context": "gates / docker build + smoke"
+        },
+        {
+          "context": "CodeQL"
+        },
+        {
+          "context": "Dependency review"
+        }
+      ]
+    },
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "no42-org/blittermib",
+    "ruleset_id": 17241310
+  },
+  {
+    "type": "pull_request",
+    "parameters": {
+      "required_approving_review_count": 0,
+      "dismiss_stale_reviews_on_push": true,
+      "required_reviewers": [],
+      "require_code_owner_review": false,
+      "dismissal_restriction": {
+        "enabled": false,
+        "allowed_actors": []
+      },
+      "require_last_push_approval": false,
+      "required_review_thread_resolution": false,
+      "require_extra_approval_for_unattributed_changes": true,
+      "allowed_merge_methods": [
+        "squash"
+      ]
+    },
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "no42-org/blittermib",
+    "ruleset_id": 17241310
+  }
+]

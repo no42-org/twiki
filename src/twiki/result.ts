@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { FailingCheck, Mode } from "../core/types.js";
+import type { FailingCheck, Mode, ProtectionFact } from "../core/types.js";
 
 // The outcome of a single tick: what happened (or would happen, in shadow mode)
 // per repo. Produced by the executor, rendered by the report, persisted by the
@@ -58,6 +58,17 @@ export interface RepoResult {
   release: ReleaseOutcome;
   /** Failing checks on `main` when it is red, for the digest. */
   mainFailingChecks?: FailingCheck[];
+  /**
+   * Set ONLY when `main` could not be confirmed defended.
+   *
+   * Absent means confirmed protected, WITH ONE EXCEPTION: a repository whose
+   * fact-gathering threw never reaches the executor, and run.ts builds its
+   * result without this field. Read `error` first - if it is set, absence
+   * here means "never looked", not "protected". An earlier version of this
+   * comment claimed no exception, which would have had a reader of
+   * audit.jsonl conclude a repository was defended when twiki never saw it.
+   */
+  protection?: ProtectionFact;
   /** CI-remediation actions taken (or would-do) this tick. */
   remediations?: RemediationOutcome[];
   error?: string;

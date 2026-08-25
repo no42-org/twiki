@@ -77,6 +77,9 @@ async function applyRepo(
     prs,
     release: { status: "waiting", detail },
     mainFailingChecks: facts.mainFailingChecks,
+    ...(facts.protection.state !== "protected"
+      ? { protection: facts.protection }
+      : {}),
     stoppedEarly: true,
     // Reported rather than derived from the gap: a reader counting
     // `facts.prs` against `prs` would need facts the result does not carry.
@@ -115,6 +118,9 @@ async function applyRepo(
       prs,
       release,
       mainFailingChecks: facts.mainFailingChecks,
+      ...(facts.protection.state !== "protected"
+        ? { protection: facts.protection }
+        : {}),
       remediations,
     };
   } catch (err) {

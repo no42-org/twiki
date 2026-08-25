@@ -6,6 +6,7 @@
 import type {
   CheckStatus,
   FailingCheck,
+  ProtectionFact,
   RepoRef,
   WorkflowRunRef,
 } from "../core/types.js";
@@ -170,6 +171,8 @@ export interface GitHubRepoReadPort {
   /** Count of Dependabot-attributable commits since `tag` (or all, if null). */
   dependabotCommitsSince(repo: RepoRef, tag: string | null): Promise<number>;
   hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean>;
+  /** Whether the default branch is defended, and what could not be read. */
+  branchProtection(repo: RepoRef, branch: string): Promise<ProtectionFact>;
   defaultBranchSha(repo: RepoRef): Promise<string>;
 
   // Remediation reads (read-only). `ref` is a SHA or branch name.

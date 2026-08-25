@@ -40,6 +40,45 @@ export function parseRepoSlug(slug: string): RepoRef {
  */
 export type CheckStatus = "green" | "red" | "pending" | "none";
 
+/**
+ * Whether a managed repository's default branch is defended.
+ *
+ * Three values for the same reason `CheckStatus` has four: a boolean forces
+ * the unreadable case into one of the two answers and both are lies. twiki
+ * cannot read legacy branch protection at all - `GET .../branches/main/
+ * protection` returns 403 for every allowlisted repository, because that
+ * endpoint needs `administration: read` and the App does not hold it - so
+ * `false` would mean "undefended" about repositories that are defended, and
+ * `true` would claim defence on no evidence.
+ *
+ * Both mistakes have live examples on this estate: `blitsbom` keeps its
+ * required checks in legacy protection and would read as undefended, and
+ * `blittermib` answers "Branch not protected" through the legacy endpoint
+ * while carrying eleven required contexts through a ruleset.
+ *
+ * `undefended` is the only value worth reporting, and the only one that may
+ * be stated positively. Absence must be stated, not inherited (AD-28).
+ */
+export type BranchProtection = "protected" | "undefended" | "unknown";
+
+/**
+ * What twiki could determine about a default branch's defences, and why.
+ *
+ * The `why` fields exist because "undefended" on its own sends the reader to
+ * look at settings that may be present but inert. A ruleset named "main
+ * protection" that enforces nothing reads as protection in every listing;
+ * naming it is the difference between a report and a wild goose chase.
+ */
+export interface ProtectionFact {
+  state: BranchProtection;
+  /** Rule types in force on the branch, from the effective-rules endpoint. */
+  rulesInForce: string[];
+  /** Rulesets that target the branch but do not enforce, by name and mode. */
+  inertRulesets: { name: string; enforcement: string }[];
+  /** A source twiki was not permitted to read. Its own limitation, not the repo's. */
+  unreadableSources: string[];
+}
+
 /** A single failing check run, surfaced for diagnostics (read-only). */
 export interface FailingCheck {
   name: string;
@@ -103,6 +142,13 @@ export interface RepoFacts {
   /** Count of Dependabot-attributable commits since the latest tag. */
   unreleasedDependencyCommits: number;
   prs: PullRequest[];
+  /**
+   * Whether `main` is defended. Gathered and REPORTED ONLY - no gate reads it.
+   * Refusing to release from an undefended branch is a policy decision with a
+   * deadlock attached, and this fact exists so that decision can be made with
+   * evidence rather than in the abstract (D4).
+   */
+  protection: ProtectionFact;
   // --- Remediation facts for `main` (read-only; advisor never sees these). ---
   /** Failing check runs on `main`, gathered only when main is not green. */
   mainFailingChecks?: FailingCheck[];
