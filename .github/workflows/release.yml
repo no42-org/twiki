@@ -179,15 +179,16 @@ jobs:
 
       # ---- Sign the checksums (cosign keyless / OIDC) ----
       # The image was already signed above; this covers the FILES, which
-      # shipped unsigned through v0.0.8 (#97). Signature and certificate are
-      # attached beside the checksums so verification needs nothing but the
-      # release page.
+      # shipped unsigned through v0.0.8 (#97). cosign v3 writes signature and
+      # certificate into one Sigstore bundle and IGNORES --output-signature /
+      # --output-certificate, which is how the first run of this step failed
+      # with an empty bundle path (#107). The bundle is attached beside the
+      # checksums so verification needs nothing but the release page.
       - name: Sign checksums
         run: |
           set -euo pipefail
           cosign sign-blob --yes \
-            --output-signature checksums.txt.sig \
-            --output-certificate checksums.txt.pem \
+            --bundle checksums.txt.sigstore.json \
             checksums.txt
 
       # ---- SLSA build provenance ----
@@ -228,5 +229,4 @@ jobs:
             ${{ steps.pack.outputs.tarball }}
             twiki.sbom.spdx.json
             checksums.txt
-            checksums.txt.sig
-            checksums.txt.pem
+            checksums.txt.sigstore.json

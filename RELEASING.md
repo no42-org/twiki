@@ -95,8 +95,7 @@ Then verify that the checksums file itself was produced by this repository's rel
 cosign verify-blob \
   --certificate-identity-regexp '^https://github\.com/no42-org/twiki/\.github/workflows/release\.yml@refs/tags/v0\.0\.9$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate checksums.txt.pem \
-  --signature checksums.txt.sig \
+  --bundle checksums.txt.sigstore.json \
   checksums.txt
 ```
 
