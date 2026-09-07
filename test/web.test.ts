@@ -173,6 +173,13 @@ describe("the page", () => {
     expect(html).toContain("token expired");
   });
 
+  it("puts the policy note in a footer outside main", async () => {
+    const html = await (await app().request("/")).text();
+    expect(html).toContain(
+      '</main><footer class="policy-note">Tiers are buckets over the ordering of the queue, which is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</footer>',
+    );
+  });
+
   it("answers liveness separately from collection health", async () => {
     const res = await app().request("/healthz");
     expect(res.status).toBe(200);

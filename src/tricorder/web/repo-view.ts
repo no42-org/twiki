@@ -29,6 +29,7 @@ import {
   readIssue,
   readPr,
   readReviewRequest,
+  readStatus,
   readWorkflowRun,
 } from "../attention/payloads.js";
 import { repoAttention } from "../attention/tiers.js";
@@ -66,9 +67,14 @@ export interface RepoAlertRow {
 export interface RepoPrRow {
   number: number;
   title: string;
-  author: string;
   packageName: string | null;
-  bump: string | null;
+  /**
+   * Every alert whose update status names this PR, ascending; empty when no
+   * status on record does. The precise join the queue also uses, not the
+   * package heuristic: a column that guessed would put a confident `#7`
+   * beside a PR GitHub never linked to it.
+   */
+  linkedAlerts: number[];
   htmlUrl: string | null;
   freshness: Freshness;
   age: string;
@@ -98,9 +104,14 @@ export interface RepoReviewRow {
   key: string;
   number: number;
   title: string;
-  author: string;
   htmlUrl: string | null;
   requestedReviewers: string[];
+  /**
+   * How long the request has waited, from the PR's own `createdAt`, or
+   * `unknown` when that does not parse: a sweep sentence like `never
+   * collected` would be false of a row the sweep plainly collected.
+   */
+  waiting: string;
   freshness: Freshness;
   age: string;
 }
@@ -134,6 +145,13 @@ export interface RepoView {
   alerts: RepoAlertRow[];
   updatePrs: RepoPrRow[];
   prSection: SectionState;
+  /**
+   * Plain pull requests. No lane collects them until Epic 3, so the list is
+   * empty by construction and the section is never attested: the page says
+   * `not confirmed by any completed sweep`, never `0` (AD-28).
+   */
+  pulls: never[];
+  pullsSection: SectionState;
   issues: RepoIssueRow[];
   issueSection: SectionState;
   runs: RepoRunRow[];
@@ -316,6 +334,39 @@ export function buildRepoView(
   }
   alerts.sort((a, b) => a.number - b.number);
 
+  // What dependabotUpdate said per alert, read for the one thing this page
+  // wants from it: which alerts a PR was opened for. Status keys are
+  // `owner/name#alert` (AD-22), so the repository check is on the key, like
+  // the alerts above, and the same key-versus-payload rule applies: a row
+  // whose payload names another repository or another alert number than
+  // its key is corrupt, and is counted rather than believed or hidden. A
+  // row that merely fails the shape check is skipped, not counted: a
+  // status is never itself an item, and its absence reads as `none on
+  // record`.
+  const alertsByPr = new Map<number, Set<number>>();
+  for (const value of store.currentByTypeForOwner(
+    "dependabot_update_status",
+    installation,
+  )) {
+    if (value.state !== "present") continue;
+    const [keyRepo, keyNumber] = value.subject.key.split("#");
+    if ((keyRepo?.toLowerCase() ?? "") !== slug) continue;
+    const status = readStatus(value.payload);
+    if (status === null) continue;
+    if (
+      status.repo.toLowerCase() !== slug ||
+      String(status.alertNumber) !== keyNumber
+    ) {
+      unreadable++;
+      continue;
+    }
+    const pr = status.update?.pullRequestNumber;
+    if (pr === null || pr === undefined) continue;
+    const linked = alertsByPr.get(pr) ?? new Set<number>();
+    linked.add(status.alertNumber);
+    alertsByPr.set(pr, linked);
+  }
+
   const prResult = forRepo(
     store.currentByType("dependency_update_pr"),
     slug,
@@ -326,9 +377,10 @@ export function buildRepoView(
     .map(({ value, payload }) => ({
       number: payload.number,
       title: payload.title,
-      author: payload.author,
       packageName: payload.packageName,
-      bump: payload.bump,
+      linkedAlerts: [...(alertsByPr.get(payload.number) ?? [])].sort(
+        (a, b) => a - b,
+      ),
       htmlUrl: safeUrl(payload.htmlUrl),
       freshness: freshness(value.verifiedAt, now, deps.policy),
       age: ageLabel(value.verifiedAt, now),
@@ -361,18 +413,27 @@ export function buildRepoView(
   // incomplete - the same failure the alert loop above already fixed once.
   // The /reviews page counts them, where the reader is looking at the
   // estate-wide list those rows actually belong to.
-  const reviews = reviewResult.rows
+  const reviews: RepoReviewRow[] = reviewResult.rows
+    // Oldest first, as /reviews sorts: the Waiting column only reads
+    // sensibly in that order. Ties break on the key so the list does not
+    // reshuffle between refreshes.
+    .sort(
+      (a, b) =>
+        a.payload.createdAt.localeCompare(b.payload.createdAt) ||
+        a.value.subject.key.localeCompare(b.value.subject.key),
+    )
     .map(({ value, payload }) => ({
       key: value.subject.key,
       number: payload.number,
       title: payload.title,
-      author: payload.author,
       htmlUrl: safeUrl(payload.htmlUrl),
       requestedReviewers: payload.requestedReviewers,
+      waiting: Number.isNaN(new Date(payload.createdAt).getTime())
+        ? "unknown"
+        : ageLabel(payload.createdAt, now),
       freshness: freshness(value.verifiedAt, now, deps.policy),
       age: ageLabel(value.verifiedAt, now),
-    }))
-    .sort((a, b) => a.number - b.number);
+    }));
 
   const actionsConfirmation = store
     .currentByType("repository_actions")
@@ -451,6 +512,15 @@ export function buildRepoView(
       now,
       deps.policy,
     ),
+    pulls: [],
+    // No lane, no run rows, nothing to attest. Spelled out rather than read
+    // from a lane that does not exist, so the section cannot be mistaken
+    // for one whose lane merely has not run yet.
+    pullsSection: {
+      attested: false,
+      freshness: "unknown",
+      age: ageLabel(null, now),
+    },
     issues,
     issueSection: laneAttestation(
       store,
