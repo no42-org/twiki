@@ -51,6 +51,13 @@ jobs:
           # populated cache into the job that signs and publishes.
           package-manager-cache: false
       - run: npm ci
+      # `make verify` runs the browser project, so the Chromium it renders
+      # with is installed first. Downloaded fresh every time, for the same
+      # reason the npm cache is off above: a pull request can populate a
+      # cache, and this job must not build a signed artifact out of one
+      # (zizmor: cache-poisoning). CI caches the download; it publishes
+      # nothing.
+      - run: make browsers
 
       # ---- The quality gate, on the path that ships ----
       # Pull requests were gated and releases were not: this workflow built,

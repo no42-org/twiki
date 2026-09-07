@@ -1123,8 +1123,12 @@ describe("the queue page", () => {
     );
     // Only update PRs are rows; the alert is in the summary, not the list.
     expect(html).not.toContain("CVE-2026-0001");
-    expect(html.match(/<td class="topic">dependencies<\/td>/g)).toHaveLength(7);
-    expect(html).not.toContain('<td class="topic">security</td>');
+    expect(
+      html.match(
+        /<td class="topic" role="cell"><span class="lbl hid">Topic<\/span>dependencies<\/td>/g,
+      ),
+    ).toHaveLength(7);
+    expect(html).not.toContain("Topic</span>security</td>");
     expect(html).toContain("1 open alerts · 7 update PRs");
   });
 
@@ -1170,7 +1174,7 @@ describe("the queue page", () => {
     );
     expect(
       html.match(
-        /<td class="topic">security<\/td><td><a class="slug" href="\/repo\/riptide-labs\/riptide">riptide-labs\/riptide<\/a><\/td>/g,
+        /<td class="topic" role="cell"><span class="lbl hid">Topic<\/span>security<\/td><td role="cell"><span class="lbl hid">Repository<\/span><a class="slug" href="\/repo\/riptide-labs\/riptide">riptide-labs\/riptide<\/a><\/td>/g,
       ),
     ).toHaveLength(2);
     expect(html).not.toContain("no42-org/twiki#3");
@@ -1193,7 +1197,7 @@ describe("the queue page", () => {
     expect(html).toContain(
       '<section id="list" aria-label="queue"><p class="filter-state">No foo items open. <a href="/queue">Clear filter.</a></p></section>',
     );
-    expect(html).not.toContain("<table>");
+    expect(html).not.toContain("<table");
     expect(html).not.toContain("Nothing needs attention");
   });
 
@@ -1336,11 +1340,20 @@ describe("the queue page", () => {
     const heading = html.indexOf("<h2>no longer watched</h2>");
     expect(heading).toBeGreaterThan(html.indexOf("no42-org/twiki#1"));
     const after = html.slice(heading);
+    // The whole row (Story 1.9, #131): six cells, each with its role and
+    // its header word, the rank painted and the rest for a screen reader.
     expect(after).toContain(
-      '<td class="num">1</td><td class="topic">security</td><td><span class="slug">no42-org/gone</span></td>',
+      '<tr role="row">' +
+        '<td class="num" role="cell"><span class="lbl">#</span>1</td>' +
+        '<td class="topic" role="cell"><span class="lbl hid">Topic</span>security</td>' +
+        '<td role="cell"><span class="lbl hid">Repository</span><span class="slug">no42-org/gone</span></td>' +
+        '<td role="cell"><span class="lbl hid">Item</span> <a href="https://github.com/no42-org/twiki/security/dependabot/1" target="_blank" rel="noopener noreferrer">no42-org/gone#2<span class="ext" aria-hidden="true">\u202F\u2197</span><span class="sr-only">, opens GitHub in a new tab</span></a> · left-pad · CVE-2026-0001</td>' +
+        '<td role="cell"><span class="lbl hid">Why it ranks here</span><div class="why-rank">KEV status unknown, EPSS 42.0%, severity critical, not an update, stuck state unknown</div></td>' +
+        '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>' +
+        "</tr>",
     );
     expect(after).toContain(
-      '<td class="num">2</td><td class="topic">dependencies</td><td><span class="slug">no42-org/gone</span></td>',
+      '<td class="num" role="cell"><span class="lbl">#</span>2</td><td class="topic" role="cell"><span class="lbl hid">Topic</span>dependencies</td><td role="cell"><span class="lbl hid">Repository</span><span class="slug">no42-org/gone</span></td>',
     );
     expect(after).not.toContain('href="/repo/no42-org/gone"');
     // Under a topic filter the de-listed item is omitted, heading and all.

@@ -313,9 +313,21 @@ describe("the reviews page", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(html).toContain("opennms/opennms#8803");
-    expect(html).toContain("not watched");
     expect(html).toContain("Waiting on your review");
+    // The whole first row (Story 1.9, #131): every cell states its role and
+    // starts with its header word, painted where the value alone would be
+    // a bare name or age, and the unwatched row carries its badge.
+    expect(html).toContain(
+      '<tbody role="rowgroup"><tr role="row">' +
+        '<td role="cell"><span class="lbl hid">Pull request</span>' +
+        '<a href="https://github.com/OpenNMS/opennms/pull/8803" target="_blank" rel="noopener noreferrer">opennms/opennms#8803<span class="ext" aria-hidden="true">\u202F\u2197</span><span class="sr-only">, opens GitHub in a new tab</span></a>' +
+        ' <span class="badge unknown">not watched</span><div class="why">Topology Preview UI</div></td>' +
+        '<td role="cell"><span class="lbl">Opened by</span>someone-else</td>' +
+        '<td role="cell"><span class="lbl">Requested from</span>indigo423, other</td>' +
+        '<td role="cell"><span class="lbl">Waiting</span>42h ago</td>' +
+        '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>' +
+        "</tr>",
+    );
     // And says plainly what an unwatched row does not carry, in a footer
     // outside main.
     expect(html).toContain(
@@ -400,7 +412,7 @@ describe("the reviews page", () => {
         '<main id="main"><h1>Waiting on your review</h1>',
     );
     expect(html).toContain(
-      '<section id="list" aria-label="review requests"><table>',
+      '<section id="list" aria-label="review requests"><table class="cards" role="table">',
     );
     expect(html).toContain(
       '</table></section></main><footer class="policy-note">',

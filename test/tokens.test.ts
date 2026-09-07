@@ -20,6 +20,7 @@ import {
   SPACE,
   TEXT_PAIRS,
   TOKEN_STYLE,
+  TYPE,
 } from "../src/tricorder/web/tokens.js";
 
 const AA_TEXT = 4.5;
@@ -282,6 +283,119 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
     expect(rule(".skip:focus")).toContain("z-index: 2");
     // The focus ring is the global one; nothing here removes it.
     expect(rule(".skip:focus")).not.toContain("outline");
+  });
+
+  // Story 1.9 (#131): one markup for every width, restyled by CSS alone.
+  describe("cards, grid and breakpoints (DESIGN.md Responsive)", () => {
+    /** The multi-line media block that opens with `prelude`. */
+    const media = (prelude: string): string => {
+      const start = STYLE.indexOf(`${prelude} {\n`);
+      expect(start, prelude).toBeGreaterThan(-1);
+      return STYLE.slice(start, STYLE.indexOf("\n  }\n", start));
+    };
+
+    it("uses white-space: nowrap on the external-link glyph and the visually hidden clip only", () => {
+      // A nowrap anywhere else is a horizontal scroller waiting for a long
+      // value. Every rule carrying one is found and its selector checked.
+      const users = [
+        ...STYLE.matchAll(/([^{};]*)\{[^{}]*white-space: nowrap[^{}]*\}/g),
+      ].map((m) => (m[1] ?? "").trim());
+      expect(users).toContain(".sr-only");
+      for (const selector of users) {
+        expect([".ext", ".sr-only"], selector).toContain(selector);
+      }
+      // The skip link carried one; it is 1px wide until focused, and a
+      // wrap inside a clipped box paints nothing.
+      expect(rule(".skip")).not.toContain("white-space");
+      expect(rule(".lbl.hid")).not.toContain("white-space");
+    });
+
+    it("breaks at 640px and 1024px and nowhere else", () => {
+      const queries = STYLE.match(/@media \((?:max|min)-width[^{]*/g) ?? [];
+      expect(queries.length).toBeGreaterThanOrEqual(3);
+      for (const query of queries) {
+        expect([
+          "@media (max-width: 639px) ",
+          "@media (min-width: 640px) and (max-width: 1023px) ",
+        ]).toContain(query);
+      }
+      expect(STYLE).not.toMatch(/overflow-x/);
+      // One unbreakable token wider than its box, a long slug, a scoped
+      // package or a title, would otherwise widen a card at 320px and a
+      // table column at any width. On the body, so the rationale line and
+      // the repo heading are covered as well as every cell; it breaks a
+      // word only when nothing else fits.
+      expect(rule("body")).toContain("overflow-wrap: anywhere");
+    });
+
+    it("carries a header word in every cell, hidden beside the real header and painted on a card", () => {
+      // Off at desktop width, where the column header is on screen; on a
+      // card it is the label, in the header's own type; `hid` clips it for
+      // a screen reader, with the same clip as .sr-only.
+      expect(rule(".lbl")).toBe(" display: none; ");
+      expect(rule(".lbl.hid")).toBe(
+        " position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; ",
+      );
+      expect(media("@media (max-width: 639px)")).toContain(
+        `table.cards .lbl { display: inline; font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); margin-right: ${SPACE[1]}; }`,
+      );
+    });
+
+    it("stacks every table into cards and the tiles into two columns under 640px", () => {
+      const phone = media("@media (max-width: 639px)");
+      expect(phone).toContain(
+        ".tiles { grid-template-columns: repeat(2, 1fr); }",
+      );
+      expect(phone).toContain(
+        "table.cards, table.cards tbody, table.cards tr, table.cards td { display: block; }",
+      );
+      // The header row leaves the screen, not the tree.
+      expect(phone).toContain(
+        "table.cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }",
+      );
+      expect(phone).not.toMatch(/thead[^{]*\{[^}]*display: none/);
+      expect(phone).toContain(
+        "table.cards td { border: 0; padding: 2px 0; text-align: left; }",
+      );
+      // The board card: the tier paints the card's left rule, slug and tier
+      // share the first line, the chips wrap at an 8px gap, the freshness
+      // takes a line, and the rationale row comes last.
+      expect(phone).toContain(
+        `.board tbody.now { border-left: 3px solid var(--critical); padding-left: ${SPACE[3]}; }`,
+      );
+      expect(phone).toContain(
+        `.board tbody.soon { border-left: 3px solid var(--warn); padding-left: ${SPACE[3]}; }`,
+      );
+      expect(phone).toContain(
+        ".board tbody tr.repo td:first-child { border-left: 0; padding-left: 0; }",
+      );
+      expect(phone).toContain(
+        `.board tr.repo { display: flex; flex-wrap: wrap; gap: ${SPACE[2]}; align-items: baseline; }`,
+      );
+      expect(phone).toContain(
+        ".board td.slug-cell { flex: 1 1 calc(100% - 6rem); }",
+      );
+      expect(phone).toContain(".board td.fresh-cell { flex-basis: 100%; }");
+      expect(phone).toContain(`.board tr.why td { padding: ${SPACE[2]} 0 0; }`);
+      // A word in a tile's count is set small on a phone: `unconfirmed` in
+      // the count size is wider than half of 320px.
+      expect(phone).toContain(
+        `.count.unconfirmed, .count.never { font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; }`,
+      );
+    });
+
+    it("collapses the chip columns into one signals cell and the tiles into three columns between 640px and 1023px", () => {
+      expect(media("@media (min-width: 640px) and (max-width: 1023px)")).toBe(
+        "@media (min-width: 640px) and (max-width: 1023px) {\n" +
+          "    .tiles { grid-template-columns: repeat(3, 1fr); }\n" +
+          "    .board .c { display: none; }\n" +
+          "    .board .signals { display: table-cell; }\n" +
+          "    .signals-rest { display: inline; }",
+      );
+      // Off on every other width, including the phone card, where the
+      // generic `td { display: block }` would otherwise win.
+      expect(rule(".board .signals, .signals-rest")).toBe(" display: none; ");
+    });
   });
 
   it("keeps a space between a review link and its not-watched badge", async () => {

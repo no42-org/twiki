@@ -31,7 +31,7 @@ Format is `AGENT_NAME:MODEL_VERSION`, optionally followed by tools used. Order m
 
 1. **Start from an issue.** Open one first, or comment on an existing one, so the problem is agreed before the solution is written. Bug reports are more useful than patches for problems nobody has confirmed yet.
 2. **Branch, and make the change.**
-3. **`make verify` must pass** — lint, typecheck and the full test suite. CI runs the same target, so a green local run means a green PR.
+3. **`make verify` must pass** — lint, typecheck, the full test suite and the browser project, which renders the pages in Chromium. Run `make browsers` once first to install that Chromium. CI runs the same target, so a green local run means a green PR.
 4. **Open a PR** with `Closes #<issue>` in the body. `main` is protected: a PR and four green checks are required.
 
 Everything runs through `make`, never the underlying tool directly, so local and CI cannot drift. `make test` for the suite; `npx vitest run test/<file> -t "<name>"` for one test.

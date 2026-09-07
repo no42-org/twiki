@@ -102,12 +102,29 @@ export interface Tile {
   warnings: string[];
 }
 
+/** One chip carrying a finding, worded for the tablet's signals cell. */
+export interface Signal {
+  topic: Topic;
+  /** The topic word then the chip's text: `Security 2 high`, `Issues 3`. */
+  text: string;
+}
+
 export interface BoardRow {
   slug: string;
   tier: Tier;
   /** The rationale, one sentence. */
   reason: string;
   chips: Record<Topic, Chip>;
+  /**
+   * The chips that say something, in topic order, for the one signals cell
+   * the tablet layout shows in place of six columns: a count, or `not
+   * covered`, which is a finding about the repository rather than a gap in
+   * ours. A confirmed zero and an unconfirmed topic are not signals; they
+   * go to `signalsRest`, so the cell reads what needs attention and the
+   * rationale line still says what was checked and what was not (AD-28).
+   */
+  signals: Signal[];
+  signalsRest: { zero: Topic[]; unconfirmed: Topic[] };
   /**
    * The newest confirmation behind any of this row's confirmed chips: the
    * alert lane's repository confirmation or an attesting lane's run.
@@ -177,6 +194,41 @@ function counted(
 
 const confirmed = (chip: Chip): boolean =>
   chip.state === "zero" || chip.state === "count";
+
+/**
+ * The words on a chip. One place, so the column chip and the signals cell
+ * cannot spell a count two ways (AD-32).
+ */
+export function chipText(chip: Chip): string {
+  switch (chip.state) {
+    case "not-covered":
+      return "not covered";
+    case "unconfirmed":
+      return "unconfirmed";
+    case "zero":
+      return "0";
+    case "count":
+      return chip.severity === null
+        ? `${chip.count}`
+        : `${chip.count} ${chip.severity}`;
+  }
+}
+
+/** Split a row's chips into the signals cell and the rationale's remainder. */
+function signalsOf(
+  chips: Record<Topic, Chip>,
+): Pick<BoardRow, "signals" | "signalsRest"> {
+  const signals: Signal[] = [];
+  const zero: Topic[] = [];
+  const unconfirmed: Topic[] = [];
+  for (const { topic, label } of TOPICS) {
+    const chip = chips[topic];
+    if (chip.state === "zero") zero.push(topic);
+    else if (chip.state === "unconfirmed") unconfirmed.push(topic);
+    else signals.push({ topic, text: `${label} ${chipText(chip)}` });
+  }
+  return { signals, signalsRest: { zero, unconfirmed } };
+}
 
 /** What a lane's latest full run on an installation lets a chip say. */
 interface LaneStanding {
@@ -475,6 +527,7 @@ export function buildBoard(
         tier: attention.tier,
         reason: attention.reason,
         chips,
+        ...signalsOf(chips),
         freshness:
           newest === null
             ? "unknown"

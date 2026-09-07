@@ -99,7 +99,8 @@ tokens are short-lived, and the blast radius is scoped per install.
 
 ```sh
 make install     # install dependencies
-make verify      # typecheck + tests (CI gate)
+make browsers    # once per machine: the Chromium the browser project renders with
+make verify      # lint + typecheck + tests + browser project (CI gate)
 make run         # build and start (polls)
 TWIKI_ONCE=1 make run   # single tick (e.g. external cron)
 ```

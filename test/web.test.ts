@@ -123,7 +123,7 @@ describe("the page", () => {
       '<p class="sub">2 watched repositories · 0 need attention now · 0 soon · 1 quiet · 1 unconfirmed</p>',
     );
     expect(html).toContain(
-      '<details class="quiet" open=""><summary id="quiet">1 repository is quiet</summary>' +
+      '<details class="quiet"><summary id="quiet">1 repository is quiet</summary>' +
         '<p><a href="/repo/no42-org/twiki">no42-org/twiki</a></p></details>',
     );
     // A repository nobody has looked at is not quiet, and reads as a zero
@@ -481,24 +481,48 @@ describe("issues found in review (round 2)", () => {
         }),
       );
 
-    const cell = (chip: string) => `<td class="c">${chip}</td>`;
-    const unconfirmed = (reason: string) =>
+    const NO_COLLECTOR = "no collector for this topic yet";
+    const NO_SWEEP = "not confirmed by any completed sweep";
+    // Story 1.9 (#131): every cell states its role and starts with its
+    // header word, painted on the chip cells and visually hidden elsewhere.
+    const cell = (label: string, chip: string) =>
+      `<td class="c" role="cell"><span class="lbl">${label}</span>${chip}</td>`;
+    const unconfirmed = (label: string, reason: string) =>
       cell(
+        label,
         `<span class="chip unconfirmed" title="${reason}">unconfirmed</span>`,
       );
-    const NO_LANE = unconfirmed("no collector for this topic yet");
-    const UNSWEPT = unconfirmed("not confirmed by any completed sweep");
+    const NO_LANE = (label: string) => unconfirmed(label, NO_COLLECTOR);
+    const UNSWEPT = (label: string) => unconfirmed(label, NO_SWEEP);
     // CI, Dependencies, Pull requests, Issues, Reviews: two have no collector
     // yet, three have a lane that has not confirmed this repository.
-    const REST = NO_LANE + UNSWEPT + NO_LANE + UNSWEPT + UNSWEPT;
-    const ZERO = cell('<span class="chip zero">0</span>');
+    const REST =
+      NO_LANE("CI") +
+      UNSWEPT("Dependencies") +
+      NO_LANE("Pull requests") +
+      UNSWEPT("Issues") +
+      UNSWEPT("Reviews");
+    /** What the tablet's rationale line says about REST. */
+    const REST_UNCONFIRMED =
+      "unconfirmed: CI, Dependencies, Pull requests, Issues, Reviews";
+    const ZERO = cell("Security", '<span class="chip zero">0</span>');
+    const open = (t: string) =>
+      `<tbody class="${t}" role="rowgroup"><tr class="repo" role="row">`;
     const tier = (t: string) =>
-      `<td class="tier-cell"><span class="tier ${t}"><span class="sr-only">attention tier: </span>${t}</span></td>`;
+      `<td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier ${t}"><span class="sr-only">attention tier: </span>${t}</span></td>`;
     const slug = (s: string) =>
-      `<td class="slug-cell" colspan="2"><a class="slug" href="/repo/${s}">${s}</a></td>`;
-    const why = (reason: string) =>
-      `<tr class="why"><th scope="row"><span class="sr-only">why</span></th><td colspan="9"><span class="why">${reason}</span></td></tr>`;
-    const badge = (b: string) => `<td class="fresh-cell">${b}</td>`;
+      `<td class="slug-cell" colspan="2" role="cell"><span class="lbl hid">Repository</span><a class="slug" href="/repo/${s}">${s}</a></td>`;
+    /** The tablet's one cell: the chips that say something, topic first. */
+    const signals = (...chips: string[]) =>
+      `<td class="signals" role="cell"><span class="lbl hid">Signals</span>${chips.join(" · ")}</td>`;
+    /** The rationale row; `rest` is what the signals cell left out. */
+    const why = (reason: string, rest = "") =>
+      '<tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th>' +
+      `<td colspan="9" role="cell"><span class="lbl hid">why</span><span class="why">${reason}` +
+      (rest === "" ? "" : `<span class="signals-rest"> · ${rest}</span>`) +
+      "</span></td></tr>";
+    const badge = (b: string) =>
+      `<td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span>${b}</td>`;
     const FRESH = badge(
       '<span class="badge fresh" title="5m ago">fresh · 5m ago</span>',
     );
@@ -521,10 +545,14 @@ describe("issues found in review (round 2)", () => {
       const html = await render();
 
       expect(html).toContain(
-        '<tbody class="now"><tr class="repo">' +
+        open("now") +
           slug("no42-org/twiki") +
           tier("now") +
+          signals(
+            '<a class="chip critical" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">Security 1 critical</a>',
+          ) +
           cell(
+            "Security",
             '<a class="chip critical" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">1 critical</a>',
           ) +
           REST +
@@ -532,36 +560,88 @@ describe("issues found in review (round 2)", () => {
           "</tr>" +
           why(
             "alert #1 left-pad: KEV status unknown, EPSS 42.0%, severity critical, not an update, stuck state unknown",
+            REST_UNCONFIRMED,
           ) +
           "</tbody>",
       );
       expect(html).toContain(
-        '<tbody class="soon"><tr class="repo">' +
+        open("soon") +
           slug("no42-org/quiet") +
           tier("soon") +
+          signals() +
           ZERO +
           REST +
           FRESH +
           "</tr>" +
-          why("pull request #4 open 9d, past the 3d review budget") +
+          why(
+            "pull request #4 open 9d, past the 3d review budget",
+            `zero: Security · ${REST_UNCONFIRMED}`,
+          ) +
           "</tbody>",
       );
       expect(html).toContain(
-        '<tbody class="soon"><tr class="repo">' +
+        open("soon") +
           slug("no42-org/unseen") +
           tier("soon") +
-          UNSWEPT +
+          signals() +
+          UNSWEPT("Security") +
           REST +
           badge(
             '<span class="badge unknown" title="never collected">never collected</span>',
           ) +
           "</tr>" +
-          why("pull request #5 open 9d, past the 3d review budget") +
+          why(
+            "pull request #5 open 9d, past the 3d review budget",
+            "unconfirmed: Security, CI, Dependencies, Pull requests, Issues, Reviews",
+          ) +
           "</tbody>",
       );
       expect(html).toContain(
-        '<details class="quiet" open=""><summary id="quiet">0 repositories are quiet</summary><p></p></details>',
+        '<details class="quiet"><summary id="quiet">0 repositories are quiet</summary><p></p></details>',
       );
+    });
+
+    it("states every table part's role and starts every cell with its header word", async () => {
+      // Under 640px the tables become cards by `display: block`, and a
+      // browser then drops the semantics the elements implied; a stated
+      // role survives that, and the header word in each cell is what a
+      // screen reader hears in place of the column (EXPERIENCE.md
+      // Accessibility Floor). Walked over the board and the health table.
+      const alerts = [
+        makeAlert({ number: 1, repo: REPO, epssPercentage: 0.02 }),
+      ];
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        ...alerts.map(normalise),
+        summariseRepo(REPO, alerts),
+      ]);
+
+      const html = await render();
+
+      const ROLE: Record<string, RegExp> = {
+        table: /^table$/,
+        thead: /^rowgroup$/,
+        tbody: /^rowgroup$/,
+        tr: /^row$/,
+        th: /^(columnheader|rowheader)$/,
+        td: /^cell$/,
+      };
+      const parts = [
+        ...html.matchAll(/<(table|thead|tbody|tr|th|td)\b([^>]*)>/g),
+      ];
+      expect(parts.length).toBeGreaterThan(30);
+      for (const [tag, name, attrs] of parts) {
+        const role = / role="([^"]*)"/.exec(attrs ?? "")?.[1] ?? "";
+        expect(role, tag).toMatch(ROLE[name ?? ""] ?? /^$/);
+      }
+      for (const [tag] of html.matchAll(/<th\b[^>]*>/g)) {
+        expect(tag).toMatch(/ scope="(col|row)"/);
+      }
+      // Ten on the repo row, the rationale cell, five on the health row.
+      const cells = [...html.matchAll(/<td\b[^>]*>(?:<[^>]*>)?/g)];
+      expect(cells.length).toBe(16);
+      for (const [cell] of cells) {
+        expect(cell).toMatch(/<span class="lbl(?: hid)?">$/);
+      }
     });
 
     it("links a count chip to the queue filtered by repository and topic", async () => {
@@ -577,10 +657,14 @@ describe("issues found in review (round 2)", () => {
       const html = await render();
 
       expect(html).toContain(
-        '<tbody class="soon"><tr class="repo">' +
+        open("soon") +
           slug("no42-org/twiki") +
           tier("soon") +
+          signals(
+            '<a class="chip high" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">Security 2 high</a>',
+          ) +
           cell(
+            "Security",
             '<a class="chip high" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">2 high</a>',
           ) +
           REST +
@@ -588,6 +672,7 @@ describe("issues found in review (round 2)", () => {
           "</tr>" +
           why(
             "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+            REST_UNCONFIRMED,
           ) +
           "</tbody>",
       );
@@ -595,8 +680,6 @@ describe("issues found in review (round 2)", () => {
 
     const unconfirmedTile = (label: string, reason: string) =>
       `<div class="tile"><span class="count unconfirmed">unconfirmed</span><span class="label">${label}</span><span class="attest">${reason}</span></div>`;
-    const NO_COLLECTOR = "no collector for this topic yet";
-    const NO_SWEEP = "not confirmed by any completed sweep";
     /** Every tile but Security, none of which has a confirmed chip here. */
     const REST_TILES =
       unconfirmedTile("CI", NO_COLLECTOR) +
@@ -678,21 +761,26 @@ describe("issues found in review (round 2)", () => {
       const html = await render();
 
       expect(html).toContain(
-        '<tbody class="soon"><tr class="repo">' +
+        open("soon") +
           slug("no42-org/twiki") +
           tier("soon") +
+          signals(
+            '<a class="chip" href="/queue?repo=no42-org%2Ftwiki&amp;topic=dependencies">Dependencies 1</a>',
+          ) +
           ZERO +
-          NO_LANE +
+          NO_LANE("CI") +
           cell(
+            "Dependencies",
             '<a class="chip" href="/queue?repo=no42-org%2Ftwiki&amp;topic=dependencies">1</a>',
           ) +
-          NO_LANE +
-          UNSWEPT +
-          UNSWEPT +
+          NO_LANE("Pull requests") +
+          UNSWEPT("Issues") +
+          UNSWEPT("Reviews") +
           FRESH +
           "</tr>" +
           why(
             "update PR #7 left-pad: no CVE to check against KEV, no CVE to score, no advisory, minor bump, no Dependabot fix attempt on record",
+            "zero: Security · unconfirmed: CI, Pull requests, Issues, Reviews",
           ) +
           "</tbody>",
       );
@@ -790,10 +878,14 @@ describe("issues found in review (round 2)", () => {
           '<p class="attest warn">alerts sweep failed for no42-org 5m ago; counts may be low</p></a>',
       );
       expect(html).toContain(
-        '<tbody class="soon"><tr class="repo">' +
+        open("soon") +
           slug("no42-org/twiki") +
           tier("soon") +
+          signals(
+            '<a class="chip high" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">Security 2 high</a>',
+          ) +
           cell(
+            "Security",
             '<a class="chip high" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">2 high</a>',
           ) +
           REST +
@@ -803,6 +895,7 @@ describe("issues found in review (round 2)", () => {
           "</tr>" +
           why(
             "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+            REST_UNCONFIRMED,
           ) +
           "</tbody>",
       );
@@ -926,12 +1019,15 @@ describe("issues found in review (round 2)", () => {
       expect(html).toContain(
         '<p class="attest">nothing collected yet; see <a href="#health">Collection health</a></p>',
       );
-      expect(html).toContain('<td class="failed">failed · token expired</td>');
+      expect(html).toContain(
+        '<td class="failed" role="cell"><span class="lbl">Outcome</span>failed · token expired</td>',
+      );
     });
 
     /** The health table's body: the one `<tbody>` on the page with no class. */
+    const HEALTH_BODY = '<tbody role="rowgroup">';
     const healthBody = (html: string): string => {
-      const start = html.lastIndexOf("<tbody>");
+      const start = html.lastIndexOf(HEALTH_BODY);
       return html.slice(start, html.indexOf("</tbody>", start) + 8);
     };
     const healthRow = (
@@ -940,7 +1036,13 @@ describe("issues found in review (round 2)", () => {
       outcome: string,
       badge: string,
     ) =>
-      `<tr><td>${lane}</td><td>${installation}</td><td>full</td><td class="${outcome.split(" ")[0]}">${outcome}</td><td>${badge}</td></tr>`;
+      '<tr role="row">' +
+      `<td role="cell"><span class="lbl">Lane</span>${lane}</td>` +
+      `<td role="cell"><span class="lbl">Installation</span>${installation}</td>` +
+      '<td role="cell"><span class="lbl">Scope</span>full</td>' +
+      `<td class="${outcome.split(" ")[0]}" role="cell"><span class="lbl">Outcome</span>${outcome}</td>` +
+      `<td role="cell"><span class="lbl">Last run</span>${badge}</td>` +
+      "</tr>";
     const FRESH_BADGE =
       '<span class="badge fresh" title="5m ago">fresh · 5m ago</span>';
 
@@ -972,7 +1074,7 @@ describe("issues found in review (round 2)", () => {
       const second = healthBody(await render());
 
       expect(first).toBe(
-        "<tbody>" +
+        HEALTH_BODY +
           healthRow("graphql-issues", "no42-org", "ok", FRESH_BADGE) +
           healthRow("kev", "cisa", "ok", FRESH_BADGE) +
           healthRow(
@@ -1026,7 +1128,7 @@ describe("issues found in review (round 2)", () => {
       const body = healthBody(await render());
 
       expect(body).toBe(
-        "<tbody>" +
+        HEALTH_BODY +
           healthRow(
             "coverage",
             "a-partial",
@@ -1254,11 +1356,17 @@ describe("issues found in review (round 2)", () => {
       // reason rides on the chip's title AND in the rationale sentence: a
       // title is never the sole carrier.
       expect(html).toContain(
-        '<td class="c"><span class="chip uncovered" title="the repository is archived, so nothing is updating it">not covered</span></td>',
+        '<td class="c" role="cell"><span class="lbl">Security</span><span class="chip uncovered" title="the repository is archived, so nothing is updating it">not covered</span></td>',
+      );
+      // On tablet the chip is a signal in its own right, and the rest of
+      // the topics are listed after the sentence.
+      expect(html).toContain(
+        '<td class="signals" role="cell"><span class="lbl hid">Signals</span><span class="chip uncovered" title="the repository is archived, so nothing is updating it">Security not covered</span></td>',
       );
       expect(html).toContain(
-        '<tr class="why"><th scope="row"><span class="sr-only">why</span></th><td colspan="9"><span class="why">' +
+        '<tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="lbl hid">why</span><span class="why">' +
           "pull request #4 open 9d, past the 3d review budget · security not covered: the repository is archived, so nothing is updating it" +
+          '<span class="signals-rest"> · unconfirmed: CI, Dependencies, Pull requests, Issues, Reviews</span>' +
           "</span></td></tr>",
       );
       expect(html).not.toContain("not collected");

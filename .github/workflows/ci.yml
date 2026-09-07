@@ -33,7 +33,19 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: make verify # lint + typecheck + test
+      # The browser project renders pages in Chromium. The download is
+      # cached by the Playwright version, since that is what pins the
+      # browser build; `make browsers` still runs on a hit, for the OS
+      # libraries the runner image lacks.
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('./node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - run: make browsers
+      - run: make verify # lint + typecheck + test + e2e
 
   image-scan:
     name: Build image & Trivy scan

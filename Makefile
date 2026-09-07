@@ -1,7 +1,7 @@
 # Copyright 2026 Ronny Trommer <ronny@no42.org>
 # SPDX-License-Identifier: MIT
 
-.PHONY: install build typecheck lint test verify audit pack image run dev clean up down logs ps preflight
+.PHONY: install build typecheck lint test browsers e2e verify audit pack image run dev clean up down logs ps preflight
 
 # Local image coordinates (CI multi-arch publish is driven by the release
 # workflow's buildx action; this single-arch build is for local use + CI scan).
@@ -26,9 +26,29 @@ lint:
 test:
 	NODE_OPTIONS="--disable-warning=ExperimentalWarning" npm run test
 
-# Aggregate gate used by CI: lint + typecheck + tests must pass. Keeping lint
-# here means `make verify` locally matches what CI runs.
-verify: lint typecheck test
+# The Chromium the browser project renders with, once per machine, into
+# Playwright's user-level cache. On Linux the browser also needs OS libraries
+# the runner image may lack, which --with-deps installs through apt; macOS
+# ships them, and passing the flag there fails on sudo.
+BROWSER_DEPS :=
+ifeq ($(shell uname -s),Linux)
+BROWSER_DEPS := --with-deps
+endif
+
+browsers:
+	npx playwright install $(BROWSER_DEPS) chromium
+
+# The browser project (test/browser/): real Chromium renders each page at
+# phone and desktop width and measures overflow, which no unit test can see.
+# Kept out of `test` so the unit suite needs no browser; run `make browsers`
+# once first.
+e2e:
+	NODE_OPTIONS="--disable-warning=ExperimentalWarning" npm run test:browser
+
+# Aggregate gate used by CI: lint + typecheck + tests + the browser project
+# must pass. Keeping lint here means `make verify` locally matches what CI
+# runs.
+verify: lint typecheck test e2e
 
 # Report dependency advisories (non-fatal; surfaced on the CI run).
 audit:

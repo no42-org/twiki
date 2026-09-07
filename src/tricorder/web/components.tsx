@@ -3,13 +3,21 @@
  * SPDX-License-Identifier: MIT
  */
 
+/* biome-ignore-all lint/a11y/noRedundantRoles: the table roles are implied by the elements at desktop width only; the phone cards restyle them to `display: block`, and a browser then drops the implied role. Stating it survives that (EXPERIENCE.md Accessibility Floor). */
+
 import type { Child, FC, PropsWithChildren } from "hono/jsx";
 import { safeUrl } from "../../core/safe-url.js";
 import { foldSlug } from "../../core/slug.js";
 import type { Tier } from "../../core/tier.js";
 import { TOPICS, type Topic, topicOf } from "../../core/topics.js";
 import type { SectionState } from "../attention/attestation.js";
-import type { Board, Chip, Tile } from "../attention/board.js";
+import {
+  type Board,
+  type BoardRow,
+  type Chip,
+  chipText,
+  type Tile,
+} from "../attention/board.js";
 import type { FilteredQueue, QueueFilter } from "../attention/filter.js";
 import type { Freshness } from "../attention/freshness.js";
 import type { CollectionHealth, HealthOutcome } from "../attention/health.js";
@@ -44,7 +52,7 @@ import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
 
 export const STYLE = `${TOKEN_STYLE}
   @supports (font: -apple-system-body) { @media (hover: none) and (pointer: coarse) { html { font: -apple-system-body; } } }
-  body { font-family: system-ui, sans-serif; font-size: ${TYPE.body.size}; line-height: ${TYPE.body.lineHeight}; color: var(--fg); background: var(--bg); margin: ${SPACE[8]} auto; max-width: ${SPACE.contentMax}; padding: 0 ${SPACE.gutter}; }
+  body { font-family: system-ui, sans-serif; font-size: ${TYPE.body.size}; line-height: ${TYPE.body.lineHeight}; color: var(--fg); background: var(--bg); margin: ${SPACE[8]} auto; max-width: ${SPACE.contentMax}; padding: 0 ${SPACE.gutter}; overflow-wrap: anywhere; }
   a { color: var(--link); }
   :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
   h1 { font-size: ${TYPE.title.size}; font-weight: ${TYPE.title.weight}; line-height: ${TYPE.title.lineHeight}; margin-bottom: ${SPACE[1]}; }
@@ -77,8 +85,10 @@ export const STYLE = `${TOKEN_STYLE}
   .tier.soon { color: var(--warn); background: var(--warn-tint); }
   .tier.quiet { color: var(--muted); border-color: var(--border); }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-  .skip { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .skip { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .skip:focus { left: ${SPACE.gutter}; width: auto; height: auto; overflow: visible; clip: auto; padding: ${SPACE[2]} ${SPACE[3]}; background: var(--surface); z-index: 2; }
+  .lbl { display: none; }
+  .lbl.hid { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
   nav { margin-bottom: ${SPACE[4]}; font-size: ${TYPE.small.size}; }
   nav a { margin-right: ${SPACE[4]}; }
   nav.primary { display: flex; flex-wrap: wrap; align-items: center; min-height: ${SPACE.navHeight}; background: var(--surface); border-bottom: 1px solid var(--border); }
@@ -101,6 +111,7 @@ export const STYLE = `${TOKEN_STYLE}
   tbody.soon tr.repo td:first-child { border-left: 3px solid var(--warn); }
   tbody.now tr.why th { border-left: 3px solid var(--critical); }
   tbody.soon tr.why th { border-left: 3px solid var(--warn); }
+  .board .signals, .signals-rest { display: none; }
   .slug { font-weight: 600; }
   .chip { display: inline-block; min-width: 24px; min-height: 24px; box-sizing: border-box; padding: 3px 6px; border-radius: ${RADIUS.sm}; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; font-variant-numeric: tabular-nums; }
   .chip.zero { color: var(--muted); }
@@ -123,6 +134,32 @@ export const STYLE = `${TOKEN_STYLE}
   .filters a[aria-current] { color: var(--fg); border-bottom-color: var(--link); }
   .filter-state { margin: 0 0 ${SPACE[2]}; }
   .topic { font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); }
+  @media (max-width: 639px) {
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+    .count.unconfirmed, .count.never { font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; }
+    table.cards, table.cards tbody, table.cards tr, table.cards td { display: block; }
+    table.cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    table.cards tr { border-bottom: 1px solid var(--border); padding: ${SPACE[3]} 0; }
+    table.cards td { border: 0; padding: 2px 0; text-align: left; }
+    table.cards .lbl { display: inline; font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); margin-right: ${SPACE[1]}; }
+    .board tbody { padding: ${SPACE[3]} 0; }
+    .board tbody.now { border-left: 3px solid var(--critical); padding-left: ${SPACE[3]}; }
+    .board tbody.soon { border-left: 3px solid var(--warn); padding-left: ${SPACE[3]}; }
+    table.board tr { border: 0; padding: 0; }
+    .board tbody tr.repo td:first-child { border-left: 0; padding-left: 0; }
+    .board tr.repo { display: flex; flex-wrap: wrap; gap: ${SPACE[2]}; align-items: baseline; }
+    .board tr.repo td { padding: 0; }
+    .board td.slug-cell { flex: 1 1 calc(100% - 6rem); }
+    .board td.fresh-cell { flex-basis: 100%; }
+    .board tr.why th { display: block; border-left: 0; }
+    .board tr.why td { padding: ${SPACE[2]} 0 0; }
+  }
+  @media (min-width: 640px) and (max-width: 1023px) {
+    .tiles { grid-template-columns: repeat(3, 1fr); }
+    .board .c { display: none; }
+    .board .signals { display: table-cell; }
+    .signals-rest { display: inline; }
+  }
 `;
 
 /**
@@ -138,6 +175,48 @@ const OUTCOME_CLASS: Readonly<Record<HealthOutcome, string>> = {
   running: "running",
   stalled: "stalled",
 };
+
+/** Heading label per topic. TOPICS is exhaustive over Topic, so no fallback. */
+const TOPIC_LABEL: Readonly<Record<Topic, string>> = Object.fromEntries(
+  TOPICS.map((t) => [t.topic, t.label]),
+) as Record<Topic, string>;
+
+// Every table on these pages is one markup for every width. Under 640px CSS
+// restyles it into stacked cards, and a browser that sees `display: block`
+// on a table drops its semantics, so every part states its role outright
+// and every cell carries its header word: painted on the card where the
+// value alone would be a bare number, visually hidden where the value says
+// what it is (EXPERIENCE.md Accessibility Floor). The two helpers below are
+// the only way a header or a data cell is written, so no cell can miss its
+// role or its label.
+
+const Th: FC<PropsWithChildren<{ class?: string; colspan?: number }>> = ({
+  class: cls,
+  colspan,
+  children,
+}) => (
+  <th class={cls} colspan={colspan} scope="col" role="columnheader">
+    {children}
+  </th>
+);
+
+/**
+ * One data cell. `label` is the column's header text; `show` paints it on
+ * the phone card, otherwise it is there for a screen reader only.
+ */
+const Td: FC<
+  PropsWithChildren<{
+    label: string;
+    show?: boolean;
+    class?: string;
+    colspan?: number;
+  }>
+> = ({ label, show = false, class: cls, colspan, children }) => (
+  <td class={cls} colspan={colspan} role="cell">
+    <span class={show ? "lbl" : "lbl hid"}>{label}</span>
+    {children}
+  </td>
+);
 
 /**
  * Every link that leaves gitricorder.
@@ -199,24 +278,28 @@ export const FreshnessBadge: FC<{ freshness: Freshness; age: string }> = ({
  * confirmed zero is muted, a count carries its worst severity in weight, a
  * topic GitHub is not watching reads `not covered`, and a topic no completed
  * sweep confirmed reads `unconfirmed`, never `0` (AD-28). Only a count is a
- * link, and a linked chip is at least 24px square.
+ * link, and a linked chip is at least 24px square. The signals cell passes
+ * its own `text`, the same words with the topic in front.
  */
-const CountChip: FC<{ chip: Chip }> = ({ chip }) => {
+const CountChip: FC<{ chip: Chip; text?: string }> = ({
+  chip,
+  text = chipText(chip),
+}) => {
   switch (chip.state) {
     case "not-covered":
       return (
         <span class="chip uncovered" title={chip.reason ?? undefined}>
-          not covered
+          {text}
         </span>
       );
     case "unconfirmed":
       return (
         <span class="chip unconfirmed" title={chip.reason ?? undefined}>
-          unconfirmed
+          {text}
         </span>
       );
     case "zero":
-      return <span class="chip zero">0</span>;
+      return <span class="chip zero">{text}</span>;
     case "count": {
       const weight =
         chip.severity === "critical"
@@ -224,9 +307,6 @@ const CountChip: FC<{ chip: Chip }> = ({ chip }) => {
           : chip.severity === "high"
             ? " high"
             : "";
-      const text = chip.severity
-        ? `${chip.count} ${chip.severity}`
-        : `${chip.count}`;
       return chip.href === null ? (
         <span class={`chip${weight}`}>{text}</span>
       ) : (
@@ -492,46 +572,59 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
         <p class="sub">No repository needs attention right now.</p>
       ) : null
     ) : (
-      <table class="board">
-        <thead>
-          <tr>
-            <th scope="col" colspan={2}>
-              Repository
-            </th>
-            <th scope="col">Tier</th>
+      <table class="board cards" role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <Th colspan={2}>Repository</Th>
+            <Th>Tier</Th>
+            {/* The tablet's one cell in place of six columns; CSS shows it
+                and hides the `c` columns between 640px and 1023px only. */}
+            <Th class="signals">Signals</Th>
             {TOPICS.map((t) => (
-              <th key={t.topic} scope="col">
+              <Th key={t.topic} class="c">
                 {t.label}
-              </th>
+              </Th>
             ))}
-            <th scope="col">Last confirmed</th>
+            <Th>Last confirmed</Th>
           </tr>
         </thead>
         {board.rows.map((row) => (
-          <tbody key={row.slug} class={row.tier}>
-            <tr class="repo">
-              <td class="slug-cell" colspan={2}>
+          <tbody key={row.slug} class={row.tier} role="rowgroup">
+            <tr class="repo" role="row">
+              <Td class="slug-cell" colspan={2} label="Repository">
                 <a class="slug" href={repoPath(row.slug)}>
                   {row.slug}
                 </a>
-              </td>
-              <td class="tier-cell">
+              </Td>
+              <Td class="tier-cell" label="Tier">
                 <TierChip tier={row.tier} />
-              </td>
+              </Td>
+              <Td class="signals" label="Signals">
+                {row.signals.map((s, i) => (
+                  <>
+                    {i > 0 ? " · " : ""}
+                    <CountChip
+                      key={s.topic}
+                      chip={row.chips[s.topic]}
+                      text={s.text}
+                    />
+                  </>
+                ))}
+              </Td>
               {TOPICS.map((t) => (
-                <td key={t.topic} class="c">
+                <Td key={t.topic} class="c" label={t.label} show>
                   <CountChip chip={row.chips[t.topic]} />
-                </td>
+                </Td>
               ))}
-              <td class="fresh-cell">
+              <Td class="fresh-cell" label="Last confirmed">
                 <FreshnessBadge freshness={row.freshness} age={row.age} />
-              </td>
+              </Td>
             </tr>
-            <tr class="why">
-              <th scope="row">
+            <tr class="why" role="row">
+              <th scope="row" role="rowheader">
                 <span class="sr-only">why</span>
               </th>
-              <td colspan={9}>
+              <Td colspan={9} label="why">
                 <span class="why">
                   {row.reason}
                   {/* The reason is on the chip's title too, but a title is
@@ -539,8 +632,9 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
                   {row.chips.security.state === "not-covered"
                     ? ` · security not covered: ${row.chips.security.reason}`
                     : ""}
+                  <SignalsRest rest={row.signalsRest} />
                 </span>
-              </td>
+              </Td>
             </tr>
           </tbody>
         ))}
@@ -550,7 +644,9 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
       now: act today · soon: act this week · quiet: nothing pressing
     </p>
 
-    <details class="quiet" open>
+    {/* Folded on every width: a native details cannot follow the viewport
+        without script, and the quiet ones are the ones to fold away. */}
+    <details class="quiet">
       <summary id="quiet">
         {board.quiet.length}{" "}
         {board.quiet.length === 1 ? "repository is" : "repositories are"} quiet
@@ -585,34 +681,60 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
 );
 
 /**
+ * What the tablet's signals cell leaves out, on the rationale line: the
+ * topics confirmed at zero and the ones no sweep confirmed, so narrowing
+ * the row never turns an absence into silence (AD-28). Shown by CSS on
+ * tablet only; nothing when every chip is a signal.
+ */
+const SignalsRest: FC<{ rest: BoardRow["signalsRest"] }> = ({ rest }) => {
+  const list = (topics: Topic[]) =>
+    topics.map((t) => TOPIC_LABEL[t]).join(", ");
+  const parts = [
+    ...(rest.zero.length > 0 ? [`zero: ${list(rest.zero)}`] : []),
+    ...(rest.unconfirmed.length > 0
+      ? [`unconfirmed: ${list(rest.unconfirmed)}`]
+      : []),
+  ];
+  return parts.length === 0 ? null : (
+    <span class="signals-rest">{` · ${parts.join(" · ")}`}</span>
+  );
+};
+
+/**
  * The latest run per lane, installation and scope. Row key, order and
  * columns are the table's contract: the rows arrive sorted by that key, so
  * the table does not reshuffle between refreshes.
  */
 const HealthTable: FC<{ health: CollectionHealth[] }> = ({ health }) => (
-  <table>
-    <thead>
-      <tr>
-        <th>Lane</th>
-        <th>Installation</th>
-        <th>Scope</th>
-        <th>Outcome</th>
-        <th>Last run</th>
+  <table class="cards" role="table">
+    <thead role="rowgroup">
+      <tr role="row">
+        <Th>Lane</Th>
+        <Th>Installation</Th>
+        <Th>Scope</Th>
+        <Th>Outcome</Th>
+        <Th>Last run</Th>
       </tr>
     </thead>
-    <tbody>
+    <tbody role="rowgroup">
       {health.map((h) => (
-        <tr key={`${h.lane}|${h.installation}|${h.scope}`}>
-          <td>{h.lane}</td>
-          <td>{h.installation}</td>
-          <td>{h.scope}</td>
-          <td class={OUTCOME_CLASS[h.outcome]}>
+        <tr key={`${h.lane}|${h.installation}|${h.scope}`} role="row">
+          <Td label="Lane" show>
+            {h.lane}
+          </Td>
+          <Td label="Installation" show>
+            {h.installation}
+          </Td>
+          <Td label="Scope" show>
+            {h.scope}
+          </Td>
+          <Td class={OUTCOME_CLASS[h.outcome]} label="Outcome" show>
             {h.outcome}
             {h.detail ? ` · ${h.detail}` : ""}
-          </td>
-          <td>
+          </Td>
+          <Td label="Last run" show>
             <FreshnessBadge freshness={h.freshness} age={h.age} />
-          </td>
+          </Td>
         </tr>
       ))}
     </tbody>
@@ -633,10 +755,14 @@ const QueueRow: FC<{ item: QueueItem; rank: number; linked: boolean }> = ({
 }) => {
   const slug = foldSlug(item.repo);
   return (
-    <tr>
-      <td class="num">{rank}</td>
-      <td class="topic">{topicOf(item.kind)}</td>
-      <td>
+    <tr role="row">
+      <Td class="num" label="#" show>
+        {rank}
+      </Td>
+      <Td class="topic" label="Topic">
+        {topicOf(item.kind)}
+      </Td>
+      <Td label="Repository">
         {linked ? (
           <a class="slug" href={repoPath(slug)}>
             {slug}
@@ -644,8 +770,8 @@ const QueueRow: FC<{ item: QueueItem; rank: number; linked: boolean }> = ({
         ) : (
           <span class="slug">{slug}</span>
         )}
-      </td>
-      <td>
+      </Td>
+      <Td label="Item">
         {item.kind === "update_pr" ? (
           <span class="badge">PR</span>
         ) : item.kind === "issue" ? (
@@ -657,28 +783,28 @@ const QueueRow: FC<{ item: QueueItem; rank: number; linked: boolean }> = ({
         {item.packageName ? ` · ${item.packageName}` : ""}
         {item.title ? ` · ${item.title}` : ""}
         {item.advisory ? ` · ${item.advisory}` : ""}
-      </td>
-      <td>
+      </Td>
+      <Td label="Why it ranks here">
         <div class={item.kevListed ? "kev-hit" : "why-rank"}>
           {item.explanation}
         </div>
-      </td>
-      <td>
+      </Td>
+      <Td label="Last confirmed">
         <FreshnessBadge freshness={item.freshness} age={item.age} />
-      </td>
+      </Td>
     </tr>
   );
 };
 
 const QueueHead: FC = () => (
-  <thead>
-    <tr>
-      <th scope="col">#</th>
-      <th scope="col">Topic</th>
-      <th scope="col">Repository</th>
-      <th scope="col">Item</th>
-      <th scope="col">Why it ranks here</th>
-      <th scope="col">Last confirmed</th>
+  <thead role="rowgroup">
+    <tr role="row">
+      <Th>#</Th>
+      <Th>Topic</Th>
+      <Th>Repository</Th>
+      <Th>Item</Th>
+      <Th>Why it ranks here</Th>
+      <Th>Last confirmed</Th>
     </tr>
   </thead>
 );
@@ -769,9 +895,9 @@ export const QueuePage: FC<{
         ) : null}
 
         {filtered.shown.length > 0 ? (
-          <table>
+          <table class="cards" role="table">
             <QueueHead />
-            <tbody>
+            <tbody role="rowgroup">
               {filtered.shown.map((item, i) => (
                 <QueueRow key={item.key} item={item} rank={i + 1} linked />
               ))}
@@ -789,9 +915,9 @@ export const QueuePage: FC<{
         // not silently lost, counted nowhere so they inflate nothing.
         <>
           <h2>no longer watched</h2>
-          <table>
+          <table class="cards" role="table">
             <QueueHead />
-            <tbody>
+            <tbody role="rowgroup">
               {filtered.delisted.map((item, i) => (
                 <QueueRow
                   key={item.key}
@@ -807,11 +933,6 @@ export const QueuePage: FC<{
     </Layout>
   );
 };
-
-/** Heading label per topic. TOPICS is exhaustive over Topic, so no fallback. */
-const TOPIC_LABEL: Readonly<Record<Topic, string>> = Object.fromEntries(
-  TOPICS.map((t) => [t.topic, t.label]),
-) as Record<Topic, string>;
 
 /**
  * One repo-page section: heading, standing, and the table when there is one.
@@ -926,29 +1047,35 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
           count={view.alerts.length}
           empty="no open alerts in this repository"
         >
-          <table>
-            <thead>
-              <tr>
-                <th>Alert</th>
-                <th>Severity</th>
-                <th>Package</th>
-                <th>Last confirmed</th>
+          <table class="cards" role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <Th>Alert</Th>
+                <Th>Severity</Th>
+                <Th>Package</Th>
+                <Th>Last confirmed</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {view.alerts.map((a) => (
-                <tr key={`alert-${a.number}`}>
-                  <td>
+                <tr key={`alert-${a.number}`} role="row">
+                  <Td label="Alert">
                     <ExternalLink href={a.htmlUrl}>#{a.number}</ExternalLink>
                     {a.advisory ? ` · ${a.advisory}` : ""}
-                  </td>
-                  <td class={a.severity === "critical" ? "crit" : ""}>
+                  </Td>
+                  <Td
+                    class={a.severity === "critical" ? "crit" : undefined}
+                    label="Severity"
+                    show
+                  >
                     {a.severity}
-                  </td>
-                  <td>{a.packageName ?? "unknown"}</td>
-                  <td>
+                  </Td>
+                  <Td label="Package" show>
+                    {a.packageName ?? "unknown"}
+                  </Td>
+                  <Td label="Last confirmed">
                     <FreshnessBadge freshness={a.freshness} age={a.age} />
-                  </td>
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -963,33 +1090,39 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
           count={view.runs.length}
           empty="no workflow runs in this repository"
         >
-          <table>
-            <thead>
-              <tr>
-                <th>Workflow</th>
-                <th>Result</th>
-                <th>Branch</th>
-                <th>Last confirmed</th>
+          <table class="cards" role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <Th>Workflow</Th>
+                <Th>Result</Th>
+                <Th>Branch</Th>
+                <Th>Last confirmed</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {view.runs.map((r) => (
-                <tr key={`run-${r.workflowName}-${r.runNumber}`}>
-                  <td>
+                <tr key={`run-${r.workflowName}-${r.runNumber}`} role="row">
+                  <Td label="Workflow">
                     <ExternalLink href={r.htmlUrl}>
                       {r.workflowName}
                     </ExternalLink>{" "}
                     <span class="why">#{r.runNumber}</span>
-                  </td>
-                  <td class={r.conclusion === "failure" ? "crit" : ""}>
+                  </Td>
+                  <Td
+                    class={r.conclusion === "failure" ? "crit" : undefined}
+                    label="Result"
+                    show
+                  >
                     {/* A run still going has no conclusion yet, which is a
                         state to show rather than a gap to paper over. */}
                     {r.conclusion ?? `${r.status}, no result yet`}
-                  </td>
-                  <td>{r.headBranch ?? "unknown"}</td>
-                  <td>
+                  </Td>
+                  <Td label="Branch" show>
+                    {r.headBranch ?? "unknown"}
+                  </Td>
+                  <Td label="Last confirmed">
                     <FreshnessBadge freshness={r.freshness} age={r.age} />
-                  </td>
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -1004,24 +1137,26 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
           count={view.updatePrs.length}
           empty="no update pull requests in this repository"
         >
-          <table>
-            <thead>
-              <tr>
-                <th>PR</th>
-                <th>Package</th>
-                <th>Linked alert</th>
-                <th>Last confirmed</th>
+          <table class="cards" role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <Th>PR</Th>
+                <Th>Package</Th>
+                <Th>Linked alert</Th>
+                <Th>Last confirmed</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {view.updatePrs.map((p) => (
-                <tr key={`pr-${p.number}`}>
-                  <td>
+                <tr key={`pr-${p.number}`} role="row">
+                  <Td label="PR">
                     <ExternalLink href={p.htmlUrl}>#{p.number}</ExternalLink>{" "}
                     {p.title}
-                  </td>
-                  <td>{p.packageName ?? "unknown"}</td>
-                  <td>
+                  </Td>
+                  <Td label="Package" show>
+                    {p.packageName ?? "unknown"}
+                  </Td>
+                  <Td label="Linked alert" show>
                     {/* From the update statuses that name this PR, or the
                         honest absence of any: not the package heuristic.
                         Under withdrawn coverage the page lists no alerts,
@@ -1031,10 +1166,10 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
                       : p.linkedAlerts.length === 0
                         ? "none on record"
                         : p.linkedAlerts.map((n) => `#${n}`).join(", ")}
-                  </td>
-                  <td>
+                  </Td>
+                  <Td label="Last confirmed">
                     <FreshnessBadge freshness={p.freshness} age={p.age} />
-                  </td>
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -1060,25 +1195,27 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
           count={view.issues.length}
           empty="no untriaged issues in this repository"
         >
-          <table>
-            <thead>
-              <tr>
-                <th>Issue</th>
-                <th>Opened by</th>
-                <th>Last confirmed</th>
+          <table class="cards" role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <Th>Issue</Th>
+                <Th>Opened by</Th>
+                <Th>Last confirmed</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {view.issues.map((i) => (
-                <tr key={`issue-${i.number}`}>
-                  <td>
+                <tr key={`issue-${i.number}`} role="row">
+                  <Td label="Issue">
                     <ExternalLink href={i.htmlUrl}>#{i.number}</ExternalLink>{" "}
                     {i.title}
-                  </td>
-                  <td>{i.author}</td>
-                  <td>
+                  </Td>
+                  <Td label="Opened by" show>
+                    {i.author}
+                  </Td>
+                  <Td label="Last confirmed">
                     <FreshnessBadge freshness={i.freshness} age={i.age} />
-                  </td>
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -1093,31 +1230,33 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
           count={view.reviews.length}
           empty="no review requests in this repository"
         >
-          <table>
-            <thead>
-              <tr>
-                <th>PR</th>
-                <th>Requested from</th>
-                <th>Waiting</th>
-                <th>Last confirmed</th>
+          <table class="cards" role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <Th>PR</Th>
+                <Th>Requested from</Th>
+                <Th>Waiting</Th>
+                <Th>Last confirmed</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {view.reviews.map((r) => (
-                <tr key={r.key}>
-                  <td>
+                <tr key={r.key} role="row">
+                  <Td label="PR">
                     <ExternalLink href={r.htmlUrl}>#{r.number}</ExternalLink>{" "}
                     {r.title}
-                  </td>
-                  <td>
+                  </Td>
+                  <Td label="Requested from" show>
                     {r.requestedReviewers.length === 0
                       ? "unknown"
                       : r.requestedReviewers.join(", ")}
-                  </td>
-                  <td>{r.waiting}</td>
-                  <td>
+                  </Td>
+                  <Td label="Waiting" show>
+                    {r.waiting}
+                  </Td>
+                  <Td label="Last confirmed">
                     <FreshnessBadge freshness={r.freshness} age={r.age} />
-                  </td>
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -1289,20 +1428,20 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
       ) : null}
 
       {view.rows.length > 0 ? (
-        <table>
-          <thead>
-            <tr>
-              <th>Pull request</th>
-              <th>Opened by</th>
-              <th>Requested from</th>
-              <th>Waiting</th>
-              <th>Last confirmed</th>
+        <table class="cards" role="table">
+          <thead role="rowgroup">
+            <tr role="row">
+              <Th>Pull request</Th>
+              <Th>Opened by</Th>
+              <Th>Requested from</Th>
+              <Th>Waiting</Th>
+              <Th>Last confirmed</Th>
             </tr>
           </thead>
-          <tbody>
+          <tbody role="rowgroup">
             {view.rows.map((r) => (
-              <tr key={r.key}>
-                <td>
+              <tr key={r.key} role="row">
+                <Td label="Pull request">
                   <ExternalLink href={r.htmlUrl}>
                     {r.repo}#{r.number}
                   </ExternalLink>
@@ -1316,9 +1455,11 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
                     </>
                   )}
                   <div class="why">{r.title}</div>
-                </td>
-                <td>{r.author}</td>
-                <td>
+                </Td>
+                <Td label="Opened by" show>
+                  {r.author}
+                </Td>
+                <Td label="Requested from" show>
                   {/* The reviewers themselves, not a count. GraphQL reports a
                     TEAM request by its slug, so counting produced "just
                     you" for a pull request nobody had asked the reader for
@@ -1326,11 +1467,13 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
                   {r.requestedReviewers.length === 0
                     ? "unknown"
                     : r.requestedReviewers.join(", ")}
-                </td>
-                <td>{r.waiting}</td>
-                <td>
+                </Td>
+                <Td label="Waiting" show>
+                  {r.waiting}
+                </Td>
+                <Td label="Last confirmed">
                   <FreshnessBadge freshness={r.freshness} age={r.age} />
-                </td>
+                </Td>
               </tr>
             ))}
           </tbody>

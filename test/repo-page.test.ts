@@ -721,13 +721,14 @@ describe("the per-repository page", () => {
     const link = (n: number) =>
       `<a href="https://github.com/no42-org/twiki/security/dependabot/${n}" target="_blank" rel="noopener noreferrer">#${n}<span class="ext" aria-hidden="true">\u202F\u2197</span><span class="sr-only">, opens GitHub in a new tab</span></a>`;
     const fresh =
-      '<td><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>';
+      '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>';
+    // Story 1.9 (#131): roles stated and a header word in every cell, shown
+    // on the card for a value that would otherwise be a bare word.
     expect(html).toContain(
       '<h2 id="security">Security <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">2 shown</span></h2>' +
-        "<table><thead><tr><th>Alert</th><th>Severity</th><th>Package</th><th>Last confirmed</th></tr></thead>" +
-        "<tbody>" +
-        `<tr><td>${link(7)} · CVE-2026-0001</td><td class="crit">critical</td><td>left-pad</td>${fresh}</tr>` +
-        `<tr><td>${link(8)} · CVE-2026-0002</td><td class="">high</td><td>is-odd</td>${fresh}</tr>` +
+        '<table class="cards" role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Alert</th><th scope="col" role="columnheader">Severity</th><th scope="col" role="columnheader">Package</th><th scope="col" role="columnheader">Last confirmed</th></tr></thead><tbody role="rowgroup">' +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Alert</span>${link(7)} · CVE-2026-0001</td><td class="crit" role="cell"><span class="lbl">Severity</span>critical</td><td role="cell"><span class="lbl">Package</span>left-pad</td>${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Alert</span>${link(8)} · CVE-2026-0002</td><td role="cell"><span class="lbl">Severity</span>high</td><td role="cell"><span class="lbl">Package</span>is-odd</td>${fresh}</tr>` +
         "</tbody></table>",
     );
     // The lanes that never ran say so, rather than showing empty tables -
@@ -823,12 +824,12 @@ describe("the per-repository page", () => {
     expect(section).toContain(
       '<h2 id="issues">Issues <span class="badge fresh" title="4m ago">fresh · 4m ago</span> <span class="shown">1 shown</span></h2>' +
         '<p class="attest warn">1 collected earlier; the latest sweep did not confirm them</p>' +
-        "<table><thead><tr><th>Issue</th><th>Opened by</th><th>Last confirmed</th></tr></thead>" +
-        "<tbody><tr><td>" +
+        '<table class="cards" role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Issue</th><th scope="col" role="columnheader">Opened by</th><th scope="col" role="columnheader">Last confirmed</th></tr></thead><tbody role="rowgroup">' +
+        '<tr role="row"><td role="cell"><span class="lbl hid">Issue</span>' +
         '<a href="https://github.com/no42-org/twiki/issues/5" target="_blank" rel="noopener noreferrer">#5<span class="ext" aria-hidden="true">\u202F\u2197</span><span class="sr-only">, opens GitHub in a new tab</span></a> Crash on startup' +
-        "</td><td>someone</td>" +
+        '</td><td role="cell"><span class="lbl">Opened by</span>someone</td>' +
         // The row's own freshness is the clean sweep's, not the partial's.
-        '<td><span class="badge fresh" title="10m ago">fresh · 10m ago</span></td>' +
+        '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="10m ago">fresh · 10m ago</span></td>' +
         "</tr></tbody></table>",
     );
     expect(section).not.toContain("not confirmed by any completed sweep");
@@ -898,15 +899,14 @@ describe("the per-repository page", () => {
     const link = (n: number, name: string) =>
       `<a href="https://github.com/no42-org/twiki/actions/runs/${n}" target="_blank" rel="noopener noreferrer">${name}<span class="ext" aria-hidden="true">\u202F\u2197</span><span class="sr-only">, opens GitHub in a new tab</span></a> <span class="why">#${n}</span>`;
     const fresh =
-      '<td><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>';
+      '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>';
     expect(html).toContain(
       '<h2 id="ci">CI <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">2 shown</span></h2>' +
-        "<table><thead><tr><th>Workflow</th><th>Result</th><th>Branch</th><th>Last confirmed</th></tr></thead>" +
-        "<tbody>" +
+        '<table class="cards" role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Workflow</th><th scope="col" role="columnheader">Result</th><th scope="col" role="columnheader">Branch</th><th scope="col" role="columnheader">Last confirmed</th></tr></thead><tbody role="rowgroup">' +
         // Workflows in name order; a run still going says so rather than
         // passing, and a failure is painted as one.
-        `<tr><td>${link(9, "CI")}</td><td class="">in_progress, no result yet</td><td>main</td>${fresh}</tr>` +
-        `<tr><td>${link(3, "Release")}</td><td class="crit">failure</td><td>v1.2.0</td>${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(9, "CI")}</td><td role="cell"><span class="lbl">Result</span>in_progress, no result yet</td><td role="cell"><span class="lbl">Branch</span>main</td>${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(3, "Release")}</td><td class="crit" role="cell"><span class="lbl">Result</span>failure</td><td role="cell"><span class="lbl">Branch</span>v1.2.0</td>${fresh}</tr>` +
         "</tbody></table>",
     );
   });
@@ -1041,13 +1041,12 @@ describe("the per-repository page", () => {
     const link = (n: number) =>
       `<a href="https://github.com/no42-org/twiki/pull/${n}" target="_blank" rel="noopener noreferrer">#${n}<span class="ext" aria-hidden="true">\u202F\u2197</span><span class="sr-only">, opens GitHub in a new tab</span></a>`;
     const fresh =
-      '<td><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>';
+      '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>';
     expect(html).toContain(
       '<h2 id="dependencies">Dependencies <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">2 shown</span></h2>' +
-        "<table><thead><tr><th>PR</th><th>Package</th><th>Linked alert</th><th>Last confirmed</th></tr></thead>" +
-        "<tbody>" +
-        `<tr><td>${link(1)} Bump x from 1.0.0 to 1.0.1</td><td>x</td><td>#7</td>${fresh}</tr>` +
-        `<tr><td>${link(2)} Bump y from 1.0.0 to 2.0.0</td><td>y</td><td>none on record</td>${fresh}</tr>` +
+        '<table class="cards" role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">PR</th><th scope="col" role="columnheader">Package</th><th scope="col" role="columnheader">Linked alert</th><th scope="col" role="columnheader">Last confirmed</th></tr></thead><tbody role="rowgroup">' +
+        `<tr role="row"><td role="cell"><span class="lbl hid">PR</span>${link(1)} Bump x from 1.0.0 to 1.0.1</td><td role="cell"><span class="lbl">Package</span>x</td><td role="cell"><span class="lbl">Linked alert</span>#7</td>${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">PR</span>${link(2)} Bump y from 1.0.0 to 2.0.0</td><td role="cell"><span class="lbl">Package</span>y</td><td role="cell"><span class="lbl">Linked alert</span>none on record</td>${fresh}</tr>` +
         "</tbody></table>",
     );
   });
@@ -1079,11 +1078,11 @@ describe("the per-repository page", () => {
 
     expect(html).toContain(
       '<h2 id="reviews">Reviews <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">1 shown</span></h2>' +
-        "<table><thead><tr><th>PR</th><th>Requested from</th><th>Waiting</th><th>Last confirmed</th></tr></thead>" +
-        "<tbody><tr><td>" +
+        '<table class="cards" role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">PR</th><th scope="col" role="columnheader">Requested from</th><th scope="col" role="columnheader">Waiting</th><th scope="col" role="columnheader">Last confirmed</th></tr></thead><tbody role="rowgroup">' +
+        '<tr role="row"><td role="cell"><span class="lbl hid">PR</span>' +
         '<a href="https://github.com/no42-org/twiki/pull/9" target="_blank" rel="noopener noreferrer">#9<span class="ext" aria-hidden="true">\u202F\u2197</span><span class="sr-only">, opens GitHub in a new tab</span></a> Wire the thing' +
-        "</td><td>indigo423, other</td><td>4d ago</td>" +
-        '<td><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>' +
+        '</td><td role="cell"><span class="lbl">Requested from</span>indigo423, other</td><td role="cell"><span class="lbl">Waiting</span>4d ago</td>' +
+        '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>' +
         "</tr></tbody></table>",
     );
   });
