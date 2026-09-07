@@ -10,7 +10,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
 import { DEFAULT_NOW_EPSS } from "../src/core/tier.js";
-import { repoAttention } from "../src/tricorder/attention/tiers.js";
+import {
+  attentionByRepo,
+  repoAttention,
+} from "../src/tricorder/attention/tiers.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
 import { normaliseReviewRequest } from "../src/tricorder/collect/review-requests.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
@@ -85,6 +88,9 @@ describe("repoAttention (AD-29, AD-34)", () => {
     expect(repoAttention(store, REPO, NOW, DEPS)).toEqual({
       tier: "quiet",
       reason: "no open items",
+      first: null,
+      overdueReview: null,
+      openReviews: 0,
       openAlerts: 0,
       worstSeverity: null,
       items: [],
@@ -180,6 +186,10 @@ describe("repoAttention (AD-29, AD-34)", () => {
     expect(attention.reason).toBe(
       "pull request #12 open 4d, past the 3d review budget",
     );
+    // The review gave the tier, so no item is the naming item.
+    expect(attention.first).toBeNull();
+    expect(attention.overdueReview).toEqual({ number: 12, days: 4 });
+    expect(attention.openReviews).toBe(1);
   });
 
   it("names the older of two overdue reviews", () => {
@@ -330,6 +340,9 @@ describe("repoAttention (AD-29, AD-34)", () => {
 
     expect(attention.tier).toBe("soon");
     expect(attention.reason).toMatch(/^alert #3 left-pad: /);
+    expect(attention.first?.number).toBe(3);
+    // The review is still reported, even though it did not give the tier.
+    expect(attention.overdueReview).toEqual({ number: 12, days: 9 });
   });
 
   it("ignores another repository's items and reviews", () => {
@@ -356,6 +369,9 @@ describe("repoAttention (AD-29, AD-34)", () => {
     expect(repoAttention(store, REPO, NOW, DEPS)).toEqual({
       tier: "quiet",
       reason: "no open items",
+      first: null,
+      overdueReview: null,
+      openReviews: 0,
       openAlerts: 0,
       worstSeverity: null,
       items: [],
@@ -375,5 +391,164 @@ describe("repoAttention (AD-29, AD-34)", () => {
     expect(attention.openAlerts).toBe(2);
     expect(attention.worstSeverity).toBe("critical");
     expect(attention.items).toHaveLength(3);
+  });
+});
+
+describe("attentionByRepo (AD-32)", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const OTHER = { owner: "no42-org", name: "other" };
+  const UNWATCHED = { owner: "no42-org", name: "delisted" };
+
+  const seed = (
+    lane: string,
+    observations: { subject: unknown; payload: unknown }[],
+  ) => {
+    const at = "2026-08-20T11:55:00.000Z";
+    const r = store.beginRun({
+      lane,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: at,
+    });
+    store.recordObservations(r, at, observations as never[]);
+    store.finishRun(r, "ok", at);
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "attention-batch-"));
+    store = SqliteStore.openForWrite(join(dir, "b.db"));
+    seed("rest-org-dependabot", [
+      normalise(makeAlert({ number: 1, repo: REPO, epssPercentage: 0.5 })),
+      normalise(makeAlert({ number: 2, repo: OTHER, epssPercentage: 0.02 })),
+      normalise(makeAlert({ number: 3, repo: UNWATCHED, epssPercentage: 0.5 })),
+    ]);
+    seed("graphql-review-requests", [
+      normaliseReviewRequest(
+        makeReviewRequest({ repo: OTHER, number: 8, createdAt: daysAgo(1) }),
+      ),
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: UNWATCHED,
+          number: 9,
+          createdAt: daysAgo(9),
+        }),
+      ),
+    ]);
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("builds the queue once and reads the review rows once for every repository", () => {
+    // The whole reason the batch form exists: the overview and the notifier
+    // iterate every repository, and a queue build per repository was the
+    // deferred item from Story 1.3.
+    const reads = new Map<string, number>();
+    const counted = new Proxy(store, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop !== "currentByType") return value;
+        return (type: string) => {
+          reads.set(type, (reads.get(type) ?? 0) + 1);
+          return target.currentByType(type as never);
+        };
+      },
+    });
+
+    attentionByRepo(counted, [REPO, OTHER, UNWATCHED, REPO], NOW, DEPS);
+
+    expect(reads.get("dependabot_alert")).toBe(1);
+    expect(reads.get("review_request")).toBe(1);
+  });
+
+  it("groups the one queue by folded slug and reports the same verdict as repoAttention", () => {
+    const { byRepo, queue } = attentionByRepo(
+      store,
+      [REPO, { owner: "No42-Org", name: "Other" }],
+      NOW,
+      DEPS,
+    );
+
+    expect([...byRepo.keys()]).toEqual(["no42-org/twiki", "no42-org/other"]);
+    expect(byRepo.get("no42-org/twiki")).toEqual(
+      repoAttention(store, REPO, NOW, DEPS),
+    );
+    expect(byRepo.get("no42-org/other")).toEqual(
+      repoAttention(store, OTHER, NOW, DEPS),
+    );
+    expect(byRepo.get("no42-org/twiki")).toMatchObject({
+      tier: "now",
+      first: { number: 1 },
+      openReviews: 0,
+    });
+    expect(byRepo.get("no42-org/other")).toMatchObject({
+      tier: "soon",
+      first: { number: 2 },
+      overdueReview: null,
+      openReviews: 1,
+    });
+    // The queue itself is the whole estate; grouping is what scopes it.
+    // Alerts 1 and 3 tie on every term, so the key breaks the tie.
+    expect(queue.items.map((i) => i.number)).toEqual([3, 1, 2]);
+  });
+
+  it("gives an unwatched repository no group, so its items and reviews count nowhere", () => {
+    const { byRepo } = attentionByRepo(store, [REPO], NOW, DEPS);
+
+    expect([...byRepo.keys()]).toEqual(["no42-org/twiki"]);
+    expect(
+      [...byRepo.values()].flatMap((a) => a.items.map((i) => i.repo)),
+    ).toEqual(["no42-org/twiki"]);
+  });
+
+  it("drops the alert items of a repository the caller may not count", () => {
+    // Coverage says nobody may count REPO's alerts (AD-28): they give no
+    // tier, no reason and no count. OTHER is untouched.
+    const { byRepo } = attentionByRepo(
+      store,
+      [REPO, OTHER],
+      NOW,
+      DEPS,
+      new Set(["no42-org/twiki"]),
+    );
+
+    expect(byRepo.get("no42-org/twiki")).toMatchObject({
+      tier: "quiet",
+      reason: "no open items",
+      first: null,
+      openAlerts: 0,
+      items: [],
+    });
+    expect(byRepo.get("no42-org/other")).toMatchObject({
+      tier: "soon",
+      openAlerts: 1,
+    });
+    expect(
+      repoAttention(store, REPO, NOW, DEPS, new Set(["no42-org/twiki"])).tier,
+    ).toBe("quiet");
+  });
+
+  it("seeds a quiet verdict for a watched repository with no rows at all", () => {
+    const { byRepo } = attentionByRepo(
+      store,
+      [{ owner: "no42-org", name: "empty" }],
+      NOW,
+      DEPS,
+    );
+
+    expect(byRepo.get("no42-org/empty")).toEqual({
+      tier: "quiet",
+      reason: "no open items",
+      first: null,
+      overdueReview: null,
+      openReviews: 0,
+      openAlerts: 0,
+      worstSeverity: null,
+      items: [],
+    });
   });
 });

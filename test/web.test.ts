@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { alertSubject, coverageSubject } from "../src/core/subject.js";
+import { coverageSubject } from "../src/core/subject.js";
 import {
   ageLabel,
   DEFAULT_STALE_AFTER_CADENCES,
@@ -17,16 +17,15 @@ import {
   normalise,
   summariseRepo,
 } from "../src/tricorder/collect/dependabot-alerts.js";
+import { normaliseReviewRequest } from "../src/tricorder/collect/review-requests.js";
+import { normalisePr } from "../src/tricorder/collect/update-prs.js";
 import type { RunRef } from "../src/tricorder/store/port.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { DEFAULT_HOST, startServer } from "../src/tricorder/web/server.js";
-import {
-  buildCollectionHealth,
-  buildRepoRows,
-} from "../src/tricorder/web/view.js";
+import { buildCollectionHealth } from "../src/tricorder/web/view.js";
 import { parsePort } from "../src/tricorder.js";
-import { makeAlert } from "./fakes.js";
+import { makeAlert, makeReviewRequest, makeUpdatePr } from "./fakes.js";
 
 const REPO = { owner: "no42-org", name: "twiki" };
 const OTHER = { owner: "no42-org", name: "quiet" };
@@ -77,134 +76,6 @@ describe("freshness (AD-11)", () => {
   });
 });
 
-describe("repository rows", () => {
-  let dir: string;
-  let store: SqliteStore;
-  let run: RunRef;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "web-"));
-    store = SqliteStore.openForWrite(join(dir, "w.db"));
-    run = store.beginRun({
-      lane: "rest-org-dependabot",
-      installation: "no42-org",
-      scope: "full",
-      startedAt: "2026-08-16T11:55:00.000Z",
-    });
-  });
-
-  afterEach(() => {
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("distinguishes a real zero from never collected", () => {
-    const alerts = [makeAlert({ number: 1, repo: REPO })];
-    // REPO has an alert; OTHER was swept and had none; NEVER was not swept.
-    store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-      ...alerts.map(normalise),
-      summariseRepo(REPO, alerts),
-      summariseRepo(OTHER, alerts),
-    ]);
-
-    const rows = buildRepoRows(store, [REPO, OTHER, NEVER], NOW, POLICY);
-
-    expect(rows[0]?.openAlerts).toBe(1);
-    // A swept repository with no alerts is a REAL ZERO and reads as fresh.
-    // This is the case the first version of this test got wrong: its comment
-    // said "collected and had none" while it asserted null.
-    expect(rows[1]?.openAlerts).toBe(0);
-    expect(rows[1]?.freshness).toBe("fresh");
-    // Only a repository never swept is null and unknown.
-    expect(rows[2]?.openAlerts).toBeNull();
-    expect(rows[2]?.freshness).toBe("unknown");
-  });
-
-  it("keeps a newly-clean repository fresh, not permanently stale", () => {
-    // It had an alert, the alert was fixed, and the sweep keeps confirming it.
-    store.recordObservations(run, "2026-08-16T11:00:00.000Z", [
-      normalise(makeAlert({ number: 1, repo: REPO })),
-      summariseRepo(REPO, [makeAlert({ number: 1, repo: REPO })]),
-    ]);
-    store.recordTombstones(run, "2026-08-16T11:55:00.000Z", [
-      alertSubject("dependabot_alert", REPO, 1),
-    ]);
-    store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-      summariseRepo(REPO, []),
-    ]);
-
-    const rows = buildRepoRows(store, [REPO], NOW, POLICY);
-
-    expect(rows[0]?.openAlerts).toBe(0);
-    // Without the repository confirmation this read "stale" forever, crying
-    // wolf on precisely the repository that had just become healthy.
-    expect(rows[0]?.freshness).toBe("fresh");
-  });
-
-  it("tombstones the alert and drops it out of the repository's count", () => {
-    const alerts = [makeAlert({ number: 1, repo: REPO })];
-    store.recordObservations(run, "2026-08-16T11:50:00.000Z", [
-      ...alerts.map(normalise),
-      summariseRepo(REPO, alerts),
-    ]);
-    store.recordTombstones(run, "2026-08-16T11:55:00.000Z", [
-      alertSubject("dependabot_alert", REPO, 1),
-    ]);
-    store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-      summariseRepo(REPO, []),
-    ]);
-
-    const rows = buildRepoRows(store, [REPO], NOW, POLICY);
-
-    // The alert is gone as a subject, not merely absent from the count.
-    expect(
-      store.current(alertSubject("dependabot_alert", REPO, 1))?.state,
-    ).toBe("resolved");
-    expect(rows[0]?.openAlerts).toBe(0);
-    // We did look, so it is a real zero and it is fresh.
-    expect(rows[0]?.freshness).toBe("fresh");
-  });
-
-  it("goes stale when the collector stops rather than showing a stale count as current", () => {
-    const alerts = [makeAlert({ number: 1, repo: REPO })];
-    store.recordObservations(run, "2026-08-16T09:00:00.000Z", [
-      ...alerts.map(normalise),
-      summariseRepo(REPO, alerts),
-    ]);
-
-    const rows = buildRepoRows(store, [REPO], NOW, POLICY);
-
-    expect(rows[0]?.openAlerts).toBe(1);
-    expect(rows[0]?.freshness).toBe("stale");
-  });
-
-  it("reports the worst severity present", () => {
-    const alerts = [
-      makeAlert({ number: 1, repo: REPO, severity: "medium" }),
-      makeAlert({ number: 2, repo: REPO, severity: "critical" }),
-      makeAlert({ number: 3, repo: REPO, severity: "low" }),
-    ];
-    store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-      ...alerts.map(normalise),
-      summariseRepo(REPO, alerts),
-    ]);
-
-    const rows = buildRepoRows(store, [REPO], NOW, POLICY);
-
-    expect(rows[0]?.openAlerts).toBe(3);
-    expect(rows[0]?.worstSeverity).toBe("critical");
-  });
-
-  it("lists every watched repository, so a missing row never means healthy", () => {
-    const rows = buildRepoRows(store, [REPO, OTHER, NEVER], NOW, POLICY);
-    expect(rows.map((r) => r.slug)).toEqual([
-      "no42-org/twiki",
-      "no42-org/quiet",
-      "no42-org/unseen",
-    ]);
-  });
-});
-
 describe("the page", () => {
   let dir: string;
   let store: SqliteStore;
@@ -227,19 +98,59 @@ describe("the page", () => {
       now: () => NOW,
     });
 
-  it("renders the watched repositories", async () => {
+  it("renders every watched repository: swept ones in the quiet block, unswept ones as not yet confirmed", async () => {
+    const run = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-16T11:55:00.000Z",
+    });
+    store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+      summariseRepo(REPO, []),
+    ]);
+    store.finishRun(run, "ok", "2026-08-16T11:55:00.000Z");
+
     const res = await app().request("/");
     const html = await res.text();
 
     expect(res.status).toBe(200);
-    expect(html).toContain("no42-org/twiki");
-    expect(html).toContain("no42-org/unseen");
+    expect(html).toContain(
+      '<p class="sub">2 watched repositories · 0 need attention now · 0 soon · 1 quiet · 1 unconfirmed · rendered 2026-08-16T12:00:00.000Z</p>',
+    );
+    expect(html).toContain(
+      '<details class="quiet" open=""><summary id="quiet">1 repository is quiet</summary>' +
+        '<p><a href="/repo/no42-org/twiki">no42-org/twiki</a></p></details>',
+    );
+    // A repository nobody has looked at is not quiet, and reads as a zero
+    // nowhere on the page (AD-28).
+    expect(html).toContain(
+      '<p class="attest" id="unconfirmed">1 repository not yet confirmed by any completed sweep: ' +
+        '<a href="/repo/no42-org/unseen">no42-org/unseen</a></p>',
+    );
+    expect(html).not.toContain("No repository needs attention right now.");
+    expect(html).not.toContain('class="chip zero"');
   });
 
-  it("shows a never-collected repository as not collected, not as zero", async () => {
+  it("says nothing needs attention only once every repository has been confirmed", async () => {
+    const run = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-16T11:55:00.000Z",
+    });
+    store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+      summariseRepo(REPO, []),
+      summariseRepo(NEVER, []),
+    ]);
+    store.finishRun(run, "ok", "2026-08-16T11:55:00.000Z");
+
     const html = await (await app().request("/")).text();
-    expect(html).toContain("not collected");
-    expect(html).toContain("never collected");
+
+    expect(html).toContain(
+      '<p class="sub">2 watched repositories · 0 need attention now · 0 soon · 2 quiet · rendered 2026-08-16T12:00:00.000Z</p>',
+    );
+    expect(html).toContain("No repository needs attention right now.");
+    expect(html).not.toContain('id="unconfirmed"');
   });
 
   it("says plainly when no collection has ever run", async () => {
@@ -448,44 +359,6 @@ describe("issues found in review (round 2)", () => {
     });
   });
 
-  describe("repository rows", () => {
-    it("does not render a tombstoned confirmation as live data", () => {
-      const alerts = [
-        makeAlert({ number: 1, repo: REPO, severity: "critical" }),
-      ];
-      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-        summariseRepo(REPO, alerts),
-      ]);
-      store.recordTombstones(run, "2026-08-16T11:56:00.000Z", [
-        { type: "repository" as const, key: "no42-org/twiki" },
-      ]);
-
-      const rows = buildRepoRows(store, [REPO], NOW, POLICY);
-
-      // A retracted assertion is not a zero and not a count. It is "we do not
-      // know", which is what never-collected already means.
-      expect(rows[0]?.openAlerts).toBeNull();
-      expect(rows[0]?.freshness).toBe("unknown");
-    });
-
-    it("matches a mixed-case repos.yaml entry to its confirmation", () => {
-      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-        summariseRepo(REPO, []),
-      ]);
-
-      // repos.yaml said No42-Org/TWiki; subject keys are case-folded (AD-22).
-      const rows = buildRepoRows(
-        store,
-        [{ owner: "No42-Org", name: "TWiki" }],
-        NOW,
-        POLICY,
-      );
-
-      expect(rows[0]?.openAlerts).toBe(0);
-      expect(rows[0]?.freshness).toBe("fresh");
-    });
-  });
-
   describe("collection health", () => {
     it("shows a run still in flight as running", () => {
       store.beginRun({
@@ -577,42 +450,231 @@ describe("issues found in review (round 2)", () => {
         }).request("/")
       ).text();
 
-    it("renders a confirmed zero distinctly from a never-collected repository", async () => {
-      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-        summariseRepo(OTHER, []),
-      ]);
+    /** A review old enough to lift its repository to soon, so its row shows. */
+    const lift = (repo: { owner: string; name: string }, number: number) =>
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo,
+          number,
+          createdAt: "2026-08-07T12:00:00.000Z",
+        }),
+      );
 
-      const html = await render();
+    const cell = (chip: string) => `<td class="c">${chip}</td>`;
+    const unconfirmed = (reason: string) =>
+      cell(
+        `<span class="chip unconfirmed" title="${reason}">unconfirmed</span>`,
+      );
+    const NO_LANE = unconfirmed("no collector for this topic yet");
+    const UNSWEPT = unconfirmed("not confirmed by any completed sweep");
+    // CI, Dependencies, Pull requests, Issues, Reviews: two have no collector
+    // yet, three have a lane that has not confirmed this repository.
+    const REST = NO_LANE + UNSWEPT + NO_LANE + UNSWEPT + UNSWEPT;
+    const ZERO = cell('<span class="chip zero">0</span>');
+    const tier = (t: string) =>
+      `<td class="tier-cell"><span class="tier ${t}"><span class="sr-only">attention tier: </span>${t}</span></td>`;
+    const slug = (s: string) =>
+      `<td class="slug-cell" colspan="2"><a class="slug" href="/repo/${s}">${s}</a></td>`;
+    const why = (reason: string) =>
+      `<tr class="why"><th scope="row"><span class="sr-only">why</span></th><td colspan="9"><span class="why">${reason}</span></td></tr>`;
+    const badge = (b: string) => `<td class="fresh-cell">${b}</td>`;
+    const FRESH = badge(
+      '<span class="badge fresh" title="5m ago">fresh · 5m ago</span>',
+    );
 
-      // Three states, three renderings. Collapsing the first two is the lie
-      // this dashboard exists to avoid, and nothing rendered them before.
-      expect(html).toContain('<span class="none">0</span>');
-      expect(html).toContain('<span class="never">not collected</span>');
-    });
-
-    it("renders the count and severity for a repository with alerts", async () => {
+    it("renders a count, a confirmed zero and an unconfirmed topic as three different chips, in whole rows", async () => {
+      // Three states, three renderings, asserted as whole rows: the chip, the
+      // tier, the badge and the rationale come from one computation (AD-32),
+      // and a test that looked only at the chip would let the rest drift.
       const alerts = [
         makeAlert({ number: 1, repo: REPO, severity: "critical" }),
       ];
       store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        ...alerts.map(normalise),
+        summariseRepo(REPO, alerts),
+        summariseRepo(OTHER, []),
+        lift(OTHER, 4),
+        lift(NEVER, 5),
+      ]);
+
+      const html = await render();
+
+      expect(html).toContain(
+        '<tbody class="now"><tr class="repo">' +
+          slug("no42-org/twiki") +
+          tier("now") +
+          cell(
+            '<a class="chip critical" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">1 critical</a>',
+          ) +
+          REST +
+          FRESH +
+          "</tr>" +
+          why(
+            "alert #1 left-pad: KEV status unknown, EPSS 42.0%, severity critical, not an update, stuck state unknown",
+          ) +
+          "</tbody>",
+      );
+      expect(html).toContain(
+        '<tbody class="soon"><tr class="repo">' +
+          slug("no42-org/quiet") +
+          tier("soon") +
+          ZERO +
+          REST +
+          FRESH +
+          "</tr>" +
+          why("pull request #4 open 9d, past the 3d review budget") +
+          "</tbody>",
+      );
+      expect(html).toContain(
+        '<tbody class="soon"><tr class="repo">' +
+          slug("no42-org/unseen") +
+          tier("soon") +
+          UNSWEPT +
+          REST +
+          badge(
+            '<span class="badge unknown" title="never collected">never collected</span>',
+          ) +
+          "</tr>" +
+          why("pull request #5 open 9d, past the 3d review budget") +
+          "</tbody>",
+      );
+      expect(html).toContain(
+        '<details class="quiet" open=""><summary id="quiet">0 repositories are quiet</summary><p></p></details>',
+      );
+    });
+
+    it("links a count chip to the queue filtered by repository and topic", async () => {
+      const alerts = [
+        makeAlert({ number: 1, repo: REPO, epssPercentage: 0.02 }),
+        makeAlert({ number: 2, repo: REPO, epssPercentage: 0.02 }),
+      ];
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        ...alerts.map(normalise),
         summariseRepo(REPO, alerts),
       ]);
 
       const html = await render();
 
-      expect(html).toContain("crit");
-      expect(html).toContain("critical");
+      expect(html).toContain(
+        '<tbody class="soon"><tr class="repo">' +
+          slug("no42-org/twiki") +
+          tier("soon") +
+          cell(
+            '<a class="chip high" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">2 high</a>',
+          ) +
+          REST +
+          FRESH +
+          "</tr>" +
+          why(
+            "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+          ) +
+          "</tbody>",
+      );
     });
 
-    it("does not paint a stale zero in the good-news green", async () => {
-      store.recordObservations(run, "2026-08-16T09:00:00.000Z", [
+    const unconfirmedTile = (label: string, reason: string) =>
+      `<span class="tile"><span class="count unconfirmed">unconfirmed</span><span class="label">${label}</span><span class="attest">${reason}</span></span>`;
+    const NO_COLLECTOR = "no collector for this topic yet";
+    const NO_SWEEP = "not confirmed by any completed sweep";
+    /** Every tile but Security, none of which has a confirmed chip here. */
+    const REST_TILES =
+      unconfirmedTile("CI", NO_COLLECTOR) +
+      unconfirmedTile("Dependencies", NO_SWEEP) +
+      unconfirmedTile("Pull requests", NO_COLLECTOR) +
+      unconfirmedTile("Issues", NO_SWEEP) +
+      unconfirmedTile("Reviews", NO_SWEEP);
+
+    it("renders the six tiles, with a now marker only where an item is now", async () => {
+      const alerts = [
+        makeAlert({ number: 1, repo: REPO, epssPercentage: 0.5 }),
+        makeAlert({ number: 2, repo: REPO, epssPercentage: 0.02 }),
+      ];
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        ...alerts.map(normalise),
+        summariseRepo(REPO, alerts),
         summariseRepo(OTHER, []),
+        summariseRepo(NEVER, []),
       ]);
 
       const html = await render();
 
-      expect(html).toContain("<span>0</span>");
-      expect(html).not.toContain('<span class="none">0</span>');
+      // An unconfirmed tile is not a link: the filter behind it is empty.
+      expect(html).toContain(
+        '<nav class="tiles" aria-label="topics">' +
+          '<a class="tile" href="/queue?topic=security"><span class="count critical">2 <span class="now-marker">· 1 now</span></span><span class="label">Security</span></a>' +
+          REST_TILES +
+          "</nav>",
+      );
+      expect(html).toContain(
+        '<p class="sub">3 watched repositories · 1 needs attention now · 0 soon · 2 quiet · rendered 2026-08-16T12:00:00.000Z</p>',
+      );
+      expect(html).toContain(
+        '<p class="legend">now: act today · soon: act this week · quiet: nothing pressing</p>',
+      );
+    });
+
+    it("renders a plain count on a tile with nothing now", async () => {
+      const alerts = [
+        makeAlert({ number: 1, repo: REPO, epssPercentage: 0.02 }),
+        makeAlert({ number: 2, repo: REPO, epssPercentage: 0.02 }),
+      ];
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        ...alerts.map(normalise),
+        summariseRepo(REPO, alerts),
+      ]);
+
+      const html = await render();
+
+      expect(html).toContain(
+        '<nav class="tiles" aria-label="topics">' +
+          '<a class="tile" href="/queue?topic=security"><span class="count">2</span><span class="label">Security</span></a>' +
+          REST_TILES +
+          "</nav>",
+      );
+    });
+
+    it("renders a severity-less count chip as a plain link", async () => {
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, []),
+      ]);
+      const prs = store.beginRun({
+        lane: "graphql-update-prs",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-08-16T11:55:00.000Z",
+      });
+      store.recordObservations(prs, "2026-08-16T11:55:00.000Z", [
+        normalisePr(
+          makeUpdatePr({
+            number: 7,
+            repo: REPO,
+            title: "Bump left-pad from 1.0.0 to 1.1.0",
+          }),
+        ),
+      ]);
+      store.finishRun(prs, "ok", "2026-08-16T11:55:00.000Z");
+
+      const html = await render();
+
+      expect(html).toContain(
+        '<tbody class="soon"><tr class="repo">' +
+          slug("no42-org/twiki") +
+          tier("soon") +
+          ZERO +
+          NO_LANE +
+          cell(
+            '<a class="chip" href="/queue?repo=no42-org%2Ftwiki&amp;topic=dependencies">1</a>',
+          ) +
+          NO_LANE +
+          UNSWEPT +
+          UNSWEPT +
+          FRESH +
+          "</tr>" +
+          why(
+            "update PR #7 left-pad: no CVE to check against KEV, no CVE to score, no advisory, minor bump, no Dependabot fix attempt on record",
+          ) +
+          "</tbody>",
+      );
     });
 
     it("refuses to be cached, so a stale copy cannot claim to be fresh", async () => {
@@ -699,50 +761,19 @@ describe("issues found in review (round 2)", () => {
       },
     });
 
-    it("does not render a count for a repository nobody is watching", () => {
-      // The defect the whole decision exists to remove. Measured on one real
-      // organisation, 14 of 36 repositories were in exactly this state, and
-      // every one of them would otherwise show a confident green zero.
-      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-        summariseRepo(REPO, []),
-        cov(REPO, "alerts_disabled"),
-      ]);
-
-      const rows = buildRepoRows(store, [REPO], NOW, POLICY);
-
-      expect(rows[0]?.coverage).toBe("alerts_disabled");
-      expect(
-        rows[0]?.openAlerts,
-        "a count here invites belief in it",
-      ).toBeNull();
-      expect(rows[0]?.coverageReason).toContain("switched off");
-    });
-
-    it("still renders a real zero for a repository that is watched", () => {
-      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-        summariseRepo(REPO, []),
-        cov(REPO, "covered"),
-      ]);
-      const rows = buildRepoRows(store, [REPO], NOW, POLICY);
-      expect(rows[0]?.openAlerts).toBe(0);
-      expect(rows[0]?.coverageReason).toBeNull();
-    });
-
-    it("leaves the count alone until the coverage lane has ever run", () => {
-      // Absent coverage is not "not covered". Suppressing counts before the
-      // lane exists would blank a page that was working.
-      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-        summariseRepo(REPO, []),
-      ]);
-      const rows = buildRepoRows(store, [REPO], NOW, POLICY);
-      expect(rows[0]?.coverage).toBeNull();
-      expect(rows[0]?.openAlerts).toBe(0);
-    });
-
     it("says not covered on the page, not not collected", async () => {
+      // A repository with nothing open is quiet and has no row, so an
+      // overdue review lifts it into view; the chip then carries the verdict.
       store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
         summariseRepo(REPO, []),
         cov(REPO, "archived"),
+        normaliseReviewRequest(
+          makeReviewRequest({
+            repo: REPO,
+            number: 4,
+            createdAt: "2026-08-07T12:00:00.000Z",
+          }),
+        ),
       ]);
 
       const html = await (
@@ -754,65 +785,18 @@ describe("issues found in review (round 2)", () => {
         }).request("/")
       ).text();
 
-      // "not collected" would blame the collector for GitHub's setting.
-      expect(html).toContain("not covered");
-      expect(html).toContain("archived");
-      expect(html).not.toContain("not collected");
-    });
-
-    it("stops trusting coverage once its own attestation goes stale", () => {
-      // The reason coverage is a separate subject at all. If the coverage lane
-      // dies and somebody then switches Dependabot off, a cached `covered`
-      // would keep the page showing a confident, freshly-badged zero.
-      store.recordObservations(run, "2026-08-10T00:00:00.000Z", [
-        cov(REPO, "covered"),
-      ]);
-      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-        summariseRepo(REPO, []),
-      ]);
-
-      const daily = { cadenceMs: 24 * 60 * 60_000 };
-      const rows = buildRepoRows(store, [REPO], NOW, POLICY, daily);
-
-      expect(rows[0]?.coverage, "a week old is not an attestation").toBe(
-        "unknown",
+      // "not collected" would blame the collector for GitHub's setting. The
+      // reason rides on the chip's title AND in the rationale sentence: a
+      // title is never the sole carrier.
+      expect(html).toContain(
+        '<td class="c"><span class="chip uncovered" title="the repository is archived, so nothing is updating it">not covered</span></td>',
       );
-    });
-
-    it("judges coverage on its own daily cadence, not the sweep cadence", () => {
-      // Judged on the 15-minute sweep policy, every daily attestation would
-      // read as stale within half an hour and coverage would never be trusted.
-      store.recordObservations(run, "2026-08-16T09:00:00.000Z", [
-        cov(REPO, "covered"),
-        summariseRepo(REPO, []),
-      ]);
-      const daily = { cadenceMs: 24 * 60 * 60_000 };
-      const rows = buildRepoRows(store, [REPO], NOW, POLICY, daily);
-      expect(rows[0]?.coverage).toBe("covered");
-    });
-
-    it("does not blank a count merely because a probe failed", () => {
-      // `unknown` is not positive evidence of non-coverage. Blanking on it
-      // would let one rate-limited probe wipe correct numbers off the page.
-      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
-        summariseRepo(REPO, [makeAlert({ number: 1, repo: REPO })]),
-        cov(REPO, "unknown"),
-      ]);
-      const rows = buildRepoRows(store, [REPO], NOW, POLICY, POLICY);
-      expect(rows[0]?.openAlerts).toBe(1);
-    });
-
-    it("ignores a tombstoned coverage row rather than trusting it", () => {
-      store.recordObservations(run, "2026-08-16T11:50:00.000Z", [
-        summariseRepo(REPO, []),
-        cov(REPO, "alerts_disabled"),
-      ]);
-      store.recordTombstones(run, "2026-08-16T11:55:00.000Z", [
-        coverageSubject(REPO),
-      ]);
-
-      const rows = buildRepoRows(store, [REPO], NOW, POLICY);
-      expect(rows[0]?.coverage).toBeNull();
+      expect(html).toContain(
+        '<tr class="why"><th scope="row"><span class="sr-only">why</span></th><td colspan="9"><span class="why">' +
+          "pull request #4 open 9d, past the 3d review budget · security not covered: the repository is archived, so nothing is updating it" +
+          "</span></td></tr>",
+      );
+      expect(html).not.toContain("not collected");
     });
   });
 
@@ -862,6 +846,15 @@ describe("issues found in review (round 2)", () => {
           subject: coverageSubject(REPO),
           payload: { repo: "no42-org/twiki", state: "alerts_disabled" },
         },
+        // Lifted into view by an overdue review, as a quiet repository has
+        // no row for the chip to sit in.
+        normaliseReviewRequest(
+          makeReviewRequest({
+            repo: REPO,
+            number: 4,
+            createdAt: "2026-08-07T12:00:00.000Z",
+          }),
+        ),
       ]);
       store.finishRun(cRun, "ok", "2026-08-16T07:00:00.000Z");
 
@@ -875,11 +868,12 @@ describe("issues found in review (round 2)", () => {
         }).request("/")
       ).text();
 
-      // The reason is the discriminating assertion: a stale attestation also
-      // renders "not covered", but as unknown, with a different explanation.
-      // Judged on the daily cadence it is still the real, specific state.
-      expect(html).toContain("not covered");
-      expect(html).toContain("switched off");
+      // The reason is the discriminating assertion: judged on the sweep
+      // cadence the attestation would be stale, coverage unknown, and the
+      // chip a plain unconfirmed. On the daily cadence it is the real state.
+      expect(html).toContain(
+        '<span class="chip uncovered" title="Dependabot alerts are switched off for this repository">not covered</span>',
+      );
     });
 
     it("falls back to the sweep policy for a lane with no entry", async () => {

@@ -175,12 +175,47 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
   });
 
   it("carries severity in weight on count chips only, independent of rule order", () => {
-    expect(rule(".some.crit")).toContain("font-weight: 700");
-    expect(rule(".some.high")).toContain("font-weight: 400");
-    // No bare `.some` rule at all: a plain count carries no weight of its own.
-    expect(STYLE).not.toMatch(/(?:^|\n)\s*\.some\s*\{/);
+    expect(rule(".chip.critical")).toContain("color: var(--critical)");
+    expect(rule(".chip.critical")).toContain("font-weight: 700");
+    expect(rule(".chip.high")).toContain("color: var(--high)");
+    expect(rule(".chip.high")).toContain("font-weight: 400");
+    // A plain count carries no weight of its own, and the severity word in
+    // an alert table is a color, not a weight.
+    expect(rule(".chip")).not.toContain("font-weight");
     expect(rule(".crit")).not.toContain("font-weight");
-    expect(rule(".high")).not.toContain("font-weight");
+  });
+
+  it("gives every chip state a word plus a color, and linked chips a 24px hit area", () => {
+    expect(rule(".chip")).toContain("display: inline-block");
+    expect(rule(".chip")).toContain("min-width: 24px");
+    expect(rule(".chip")).toContain("min-height: 24px");
+    expect(rule(".chip.zero")).toContain("color: var(--muted)");
+    expect(rule(".chip.zero")).not.toContain("font-style");
+    expect(rule(".chip.unconfirmed")).toContain("color: var(--muted)");
+    expect(rule(".chip.unconfirmed")).toContain("font-style: italic");
+    expect(rule(".chip.uncovered")).toContain("color: var(--warn)");
+    expect(rule(".chip.uncovered")).toContain(
+      "text-decoration: underline dotted",
+    );
+    // Italics belong to attestation notes and `unconfirmed` only.
+    expect(rule(".chip.uncovered")).not.toContain("font-style: italic");
+  });
+
+  it("paints the tier as a left rule on board rows and the now marker in critical", () => {
+    expect(rule("tbody.now tr.repo td:first-child")).toContain(
+      "border-left: 3px solid var(--critical)",
+    );
+    expect(rule("tbody.soon tr.repo td:first-child")).toContain(
+      "border-left: 3px solid var(--warn)",
+    );
+    expect(rule(".count.critical")).toContain("color: var(--critical)");
+    expect(rule(".now-marker")).toContain("color: var(--critical)");
+    expect(rule(".count.unconfirmed")).toContain("font-style: italic");
+    expect(rule(".count")).toContain("font-variant-numeric: tabular-nums");
+    // Tiles and the quiet block sit on the surface, ringed by the border,
+    // which never carries meaning.
+    expect(rule(".tile")).toContain("background: var(--surface)");
+    expect(rule(".quiet")).toContain("background: var(--surface)");
   });
 
   it("colors every collection-health outcome, with running kept muted", () => {
