@@ -1,0 +1,617 @@
+<!--
+  Copyright 2026 Ronny Trommer <ronny@no42.org>
+  SPDX-License-Identifier: MIT
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2 now, 6 soon · gitricorder</title>
+<style>
+  /*
+   * key-overview.html — Overview surface (/), desktop and phone frames.
+   * Illustrates from EXPERIENCE.md 0.2.0:
+   *   Information Architecture: Overview and Collection health rows, document title, attention tiers,
+   *                             the tier legend line under the board
+   *   Component Patterns: Nav bar, Page summary, Topic tile, Tier chip, Repo row (rationale under a
+   *                       hidden "why" header), Quiet block, Count chip, Freshness badge, Attestation note,
+   *                       Collection health table, skip links (board, quiet repositories, collection health)
+   *   State Patterns: Lane failed or stalled, Repo not covered for a topic, Stale everything
+   *   Accessibility Floor: explicit table roles on the phone cards, per-cell header text (visible or
+   *                        visually hidden), "attention tier:" prefix, primary and topics landmarks
+   *   Responsive & Platform: phone row (tiles in two columns and three rows, rows become cards with chips
+   *                          wrapped as inline content, quiet block collapsed); desktop row
+   *   Key Flows: Flow 2 steps 1 to 3 and its failure case; Flow 3 step 1 (no42-org/dn42-mmdb in the quiet block)
+   * From DESIGN.md 0.2.0: Colors, Typography (rem ramp at a 15px documentation root), Layout & Spacing
+   *   (72rem column, scroll-padding-top under a sticky nav), Elevation & Depth, Shapes, Components:
+   *   focus-ring, nav-bar, page-summary, topic-tile, tier-chip, freshness-badge, count-chip, repo-row,
+   *   quiet-block, external-link, collection health table.
+   */
+  /* ---- DESIGN.md tokens. Light on :root, dark under prefers-color-scheme. ---- */
+  :root {
+    color-scheme: light dark;
+    --bg: #FFFFFF; --surface: #F6F8FA; --fg: #1F2328; --muted: #57606A;
+    --border: #D0D7DE; --link: #0969DA;
+    --critical: #CF222E; --critical-tint: #FFEBE9; --high: #BC4C00;
+    --warn: #9A6700; --warn-tint: #FFF8C5; --ok: #1A7F37;
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-6: 24px; --sp-8: 32px;
+    --gutter: 16px; --content-max: 72rem; --nav-h: 2.75rem;
+    --r-sm: 4px; --r-md: 6px; --r-full: 9999px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0D1117; --surface: #161B22; --fg: #E6EDF3; --muted: #8B949E;
+      --border: #30363D; --link: #4493F8;
+      --critical: #FF7B72; --critical-tint: #3A1214; --high: #F0883E;
+      --warn: #D29922; --warn-tint: #2E2A12; --ok: #3FB950;
+    }
+  }
+
+  /* ---- Mock harness (not part of the product) ---- */
+  /* 15px is the DESIGN.md documentation root. Production sets `html { font: -apple-system-body }` on iOS
+     and leaves the root at 1rem elsewhere, so the rem ramp below follows the platform text size. */
+  html { font-size: 15px; }
+  body { margin: 0; padding: var(--sp-6) var(--gutter); background: var(--bg); color: var(--fg);
+         font: 1rem/1.5 system-ui, sans-serif; }
+  .mock-note { font-size: .867rem; line-height: 1.4; color: var(--muted); max-width: 72rem; margin: 0 auto var(--sp-4); }
+  .device { border: 1px solid var(--border); border-radius: var(--r-md); margin: 0 auto var(--sp-8); overflow: hidden; }
+  .device.desktop { max-width: 1280px; }
+  .device.phone { width: 320px; max-width: 100%; }
+  .device figcaption { font-size: .867rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+         color: var(--muted); padding: var(--sp-2) var(--sp-3); background: var(--surface); }
+  .chrome { background: var(--surface); border-bottom: 1px solid var(--border); padding: var(--sp-2) var(--sp-3); }
+  .chrome .url { display: block; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm);
+         padding: var(--sp-1) var(--sp-2); font-size: .867rem; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+  .screen { container: screen / inline-size; background: var(--bg); position: relative; }
+  /* The phone frame is the scroll root, standing in for `html` on a real phone. The nav is sticky there,
+     so the scroll root carries scroll-padding-top equal to the nav height. At 320px the rendered-at time
+     wraps under the three links, so the nav is two lines and --nav-h is raised to the measured height. */
+  .phone .screen { height: 844px; overflow: auto; --nav-h: 3.45rem; scroll-padding-top: var(--nav-h); }
+
+  /* ---- Page chrome ---- */
+  .screen a { color: var(--link); }
+  .screen :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+  /* Visually hidden text is never painted; nowrap here only stops screen readers pausing at each word. */
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .skip { position: absolute; left: -9999px; top: 0; }
+  .skip:focus { left: var(--gutter); background: var(--surface); padding: var(--sp-1) var(--sp-2); z-index: 3; }
+  .nav { background: var(--surface); border-bottom: 1px solid var(--border); }
+  .nav-inner { max-width: var(--content-max); margin: 0 auto; padding: 0 var(--gutter); box-sizing: border-box;
+         min-height: calc(var(--nav-h) - 1px); display: flex; flex-wrap: wrap; gap: 0 var(--sp-4); align-items: center; }
+  .nav a { text-decoration: none; padding: var(--sp-1) 0; border-bottom: 2px solid transparent; }
+  .nav a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--link); }
+  .nav .rendered { margin-left: auto; font-size: .867rem; line-height: 1.4; color: var(--muted); }
+  main { max-width: var(--content-max); margin: 0 auto; padding: var(--gutter); }
+  h1 { font-size: 1.467rem; font-weight: 600; line-height: 1.25; margin: var(--sp-4) 0 var(--sp-1); }
+  h2 { font-size: 1.133rem; font-weight: 600; line-height: 1.3; margin: var(--sp-8) 0 var(--sp-2);
+       display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); align-items: baseline; }
+  h2 .shown { font-size: .867rem; font-weight: 400; line-height: 1.4; color: var(--muted); }
+  .sub { font-size: .867rem; line-height: 1.4; color: var(--muted); margin: 0 0 var(--sp-4); }
+  .small { font-size: .867rem; line-height: 1.4; }
+  .muted { color: var(--muted); }
+  .attest { font-size: .867rem; line-height: 1.4; color: var(--muted); font-style: italic; margin: var(--sp-2) 0; }
+  .attest.warn { color: var(--warn); }
+  .crumb { font-size: .867rem; line-height: 1.4; color: var(--muted); margin: var(--sp-2) 0 0; }
+  .crumb a { text-decoration: none; }
+
+  /* ---- Components ---- */
+  .tier { display: inline-block; border-radius: var(--r-full); font-size: .867rem; font-weight: 600; letter-spacing: .04em;
+          line-height: 1.2; padding: 3px var(--sp-2); vertical-align: middle; }
+  .tier.now { color: var(--critical); background: var(--critical-tint); }
+  .tier.soon { color: var(--warn); background: var(--warn-tint); }
+  .tier.quiet { color: var(--muted); background: transparent; border: 1px solid var(--border); padding: 2px 7px; }
+
+  .badge { display: inline-block; border-radius: var(--r-full); font-size: .867rem; line-height: 1.4; padding: 0 var(--sp-2);
+           border: 1px solid currentColor; vertical-align: middle; }
+  .badge.fresh { color: var(--ok); }
+  .badge.stale { color: var(--warn); font-weight: 600; }
+  .badge.unknown { color: var(--muted);
+           background: repeating-linear-gradient(45deg, var(--surface) 0 4px, transparent 4px 8px); }
+
+  .chip { display: inline-block; font-size: .867rem; line-height: 1.4; padding: 3px 6px; border-radius: var(--r-sm);
+          font-variant-numeric: tabular-nums; }
+  .chip.zero { color: var(--muted); }
+  .chip.some { color: var(--fg); }
+  .chip.critical { color: var(--critical); font-weight: 700; }
+  .chip.high { color: var(--high); font-weight: 400; }
+  .chip.uncovered { color: var(--warn); text-decoration: underline dotted; }
+  .chip.unconfirmed { color: var(--muted); font-style: italic; }
+  a.chip { min-width: 24px; min-height: 24px; box-sizing: border-box; text-decoration: underline; }
+
+  /* The only nowrap in the product: the item reference and its ↗ glyph. */
+  .ext { white-space: nowrap; }
+
+  table { border-collapse: collapse; width: 100%; margin: var(--sp-2) 0 var(--sp-4); }
+  th { text-align: left; font-size: .867rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; line-height: 1.2;
+       color: var(--muted); padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border); }
+  td { padding: var(--sp-3); border-bottom: 1px solid var(--border); vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.c { padding-left: 6px; padding-top: 9px; }
+  .slug { font-weight: 600; }
+  .why { font-size: .867rem; line-height: 1.4; color: var(--muted); }
+  .sev-critical { color: var(--critical); font-weight: 700; }
+  .sev-high { color: var(--high); font-weight: 400; }
+  .out-ok { color: var(--ok); }
+  .out-warn { color: var(--warn); font-weight: 600; }
+  .out-critical { color: var(--critical); font-weight: 600; }
+  /* Per-cell header word. Hidden while the real <th> is on screen; shown (or visually hidden) once a table becomes cards. */
+  .lbl { display: none; }
+
+  /* ---- Phone: sticky nav, tables become cards (generic) ---- */
+  @container screen (max-width: 639px) {
+    .nav { position: sticky; top: 0; z-index: 1; }
+    h1, h2 { scroll-margin-top: var(--nav-h); }
+    table.cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    table.cards, table.cards tbody, table.cards tr { display: block; }
+    table.cards tr { border-bottom: 1px solid var(--border); padding: var(--sp-3) 0; }
+    table.cards td { display: block; border: 0; padding: 2px 0; text-align: left; }
+    table.cards .lbl, .board .lbl { display: inline; font-size: .867rem; font-weight: 600; letter-spacing: .04em;
+       text-transform: uppercase; color: var(--muted); margin-right: var(--sp-1); }
+    table.cards .lbl.hid, .board .lbl.hid { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  }
+  /* ---- Overview: topic tiles, board, legend, quiet block, collection health ---- */
+  .tiles { display: grid; grid-template-columns: repeat(6, minmax(min-content, 1fr)); gap: var(--sp-3); margin: var(--sp-4) 0 var(--sp-6); }
+  .tile { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
+          padding: var(--sp-3); text-decoration: none; color: var(--fg); }
+  .tile .count { display: block; font-size: 1.467rem; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; margin-bottom: var(--sp-2); }
+  .tile .count.critical { color: var(--critical); }
+  .tile .count.zero { color: var(--muted); }
+  .tile .now-marker { font-size: .867rem; font-weight: 600; letter-spacing: .04em; line-height: 1.2; color: var(--critical); }
+  .tile .label { display: block; font-size: .867rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; line-height: 1.2;
+                 color: var(--link); text-decoration: underline; }
+  .tile .attest { margin: var(--sp-2) 0 0; }
+
+  .board tbody td, .board tbody th { border-bottom: 0; }
+  .board tbody { border-bottom: 1px solid var(--border); }
+  .board tbody.now > tr > :first-child { border-left: 3px solid var(--critical); }
+  .board tbody.soon > tr > :first-child { border-left: 3px solid var(--warn); }
+  .board tr.repo > td:first-child { padding-left: 9px; }
+  .board tr.repo td { padding-bottom: var(--sp-1); }
+  /* The rationale row's header cell "why" sits in a zero-width first column (the Repository header spans it),
+     so the sentence starts under the slug and is never read under "Repository". */
+  .board tr.why th { padding: 0; width: 0; }
+  .board tr.why td { padding: 0 var(--sp-3) var(--sp-3) 9px; }
+  .legend { font-size: .867rem; line-height: 1.4; color: var(--muted); margin: 0; }
+
+  .quiet { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
+           padding: var(--sp-3) var(--sp-4); margin-top: var(--sp-6); }
+  .quiet summary { cursor: default; font-weight: 600; scroll-margin-top: var(--nav-h); }
+  .quiet p { margin: var(--sp-2) 0 0; font-size: .867rem; line-height: 1.8; }
+  .quiet a { margin-right: var(--sp-3); }
+
+  @container screen (max-width: 639px) {
+    .tiles { grid-template-columns: repeat(2, minmax(min-content, 1fr)); }
+    .tile { border-radius: var(--r-sm); padding: var(--sp-2); }
+    .board thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .board, .board tbody, .board tr.why, .board tr.why th, .board tr.why td { display: block; }
+    .board tbody { padding: var(--sp-3) 0; }
+    .board tbody.now { border-left: 3px solid var(--critical); padding-left: var(--sp-3); }
+    .board tbody.soon { border-left: 3px solid var(--warn); padding-left: var(--sp-3); }
+    .board tbody > tr > * { border-left: 0; padding-left: 0; }
+    /* Chips wrap as inline content. The slug's basis leaves room for the tier chip only, and grows to fill
+       the first line, so the tier is the one thing beside it (cqi: a percentage basis on a tr is unreliable). */
+    .board tr.repo { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); align-items: baseline; }
+    .board tr.repo td { display: block; border: 0; padding: 0; }
+    .board td.slug-cell { flex: 1 1 calc(100cqi - 9rem); }
+    .board td.fresh-cell { flex-basis: 100%; }
+    .board tr.why td { padding: var(--sp-2) 0 0; border: 0; }
+  }
+</style>
+</head>
+<body>
+<p class="mock-note">gitricorder overview, two frames from one markup. Desktop first, phone below at 320px. Data is the live 20-repository estate on 2026-09-07 with a failed alerts lane for riptide-labs, so the Security count is a lower bound, and a partial update-prs lane that left riptide-labs/riptide unconfirmed.</p>
+
+<figure class="device desktop">
+  <figcaption>desktop · 1280px</figcaption>
+  <div class="chrome"><span class="url">https://twiki.app.labmonkeys.space/</span></div>
+  <div class="screen">
+      <a class="skip" href="#board">skip to board</a>
+      <a class="skip" href="#quiet">skip to quiet repositories</a>
+      <a class="skip" href="#health">skip to collection health</a>
+      <nav class="nav" aria-label="primary"><div class="nav-inner">
+        <a href="/" aria-current="page">overview</a>
+        <a href="/queue">queue</a>
+        <a href="/reviews">reviews</a>
+        <span class="rendered">rendered 2026-09-07 13:02 UTC</span>
+      </div></nav>
+      <main id="main">
+        <h1>gitricorder</h1>
+        <p class="sub">20 watched repositories · 2 need attention now · 6 soon · 12 quiet</p>
+
+        <nav class="tiles" aria-label="topics">
+          <a class="tile" href="/queue?topic=security"><span class="count critical">5 <span class="now-marker">· 1 now</span></span><span class="label">Security</span>
+            <p class="attest warn">alerts sweep failed for riptide-labs 3h ago; counts may be low</p></a>
+          <a class="tile" href="/queue?topic=ci"><span class="count critical">1 <span class="now-marker">· 1 now</span></span><span class="label">CI</span></a>
+          <a class="tile" href="/queue?topic=dependencies"><span class="count">7</span><span class="label">Dependencies</span></a>
+          <a class="tile" href="/queue?topic=pulls"><span class="count">3</span><span class="label">Pull requests</span></a>
+          <a class="tile" href="/queue?topic=issues"><span class="count">25</span><span class="label">Issues</span></a>
+          <a class="tile" href="/reviews"><span class="count">2</span><span class="label">Reviews</span></a>
+        </nav>
+
+        <h2 id="board">What needs attention</h2>
+        <table class="board" role="table">
+          <thead role="rowgroup"><tr role="row">
+            <th scope="col" role="columnheader" colspan="2">Repository</th><th scope="col" role="columnheader">Tier</th>
+            <th scope="col" role="columnheader">Security</th><th scope="col" role="columnheader">CI</th><th scope="col" role="columnheader">Dependencies</th>
+            <th scope="col" role="columnheader">Pull requests</th><th scope="col" role="columnheader">Issues</th><th scope="col" role="columnheader">Reviews</th>
+            <th scope="col" role="columnheader">Last confirmed</th>
+          </tr></thead>
+          <tbody class="now" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/no42-org/blitsbom">no42-org/blitsbom</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier now" title="Act today: an item is KEV-listed, critical, a secret scanning alert, or the default branch workflow is red or stalled."><span class="sr-only">attention tier: </span>now</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><a class="chip critical" href="/queue?repo=no42-org/blitsbom&amp;topic=ci">1 critical</a></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/blitsbom&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=no42-org/blitsbom&amp;topic=pulls">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/blitsbom&amp;topic=issues">2</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 13:00 UTC">fresh · 2m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">default branch workflow <em>ci</em> failed 2h ago</span></td></tr>
+          </tbody>
+          <tbody class="now" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/labmonkeys-space/nl6">labmonkeys-space/nl6</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier now" title="Act today: an item is KEV-listed, critical, a secret scanning alert, or the default branch workflow is red or stalled."><span class="sr-only">attention tier: </span>now</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><a class="chip critical" href="/queue?repo=labmonkeys-space/nl6&amp;topic=security">1 critical</a></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=labmonkeys-space/nl6&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=labmonkeys-space/nl6&amp;topic=issues">4</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">in CISA KEV, severity critical, update stuck 12d</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/riptide-labs/riptide">riptide-labs/riptide</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><a class="chip high" href="/queue?repo=riptide-labs/riptide&amp;topic=security">2 high</a></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><span class="chip unconfirmed">unconfirmed</span></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=riptide-labs/riptide&amp;topic=pulls">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/riptide&amp;topic=issues">3</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.4%, below 1.0%, severity high, update prepared normally</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/riptide-labs/udpramp">riptide-labs/udpramp</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><a class="chip high" href="/queue?repo=riptide-labs/udpramp&amp;topic=security">1 high</a></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=riptide-labs/udpramp&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/udpramp&amp;topic=issues">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.2%, below 1.0%, severity high, update prepared normally</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/no42-org/twiki">no42-org/twiki</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=pulls">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=issues">5</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=reviews">1</a></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">review request waiting 4d, past the 3-day budget</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/no42-org/benchkit">no42-org/benchkit</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><span class="chip uncovered" title="Dependabot alerts are switched off for this repository">not covered</span></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=issues">2</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=reviews">1</a></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">review request waiting 5d, past the 3-day budget</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/labmonkeys-space/k8s-lab">labmonkeys-space/k8s-lab</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=labmonkeys-space/k8s-lab&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">no linked alert, major bump, update stuck 9d</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/riptide-labs/flowgen">riptide-labs/flowgen</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><a class="chip some" href="/queue?repo=riptide-labs/flowgen&amp;topic=security">1 medium</a></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=riptide-labs/flowgen&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/flowgen&amp;topic=issues">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.1%, below 1.0%, severity medium, update prepared normally</span></td></tr>
+          </tbody>
+        </table>
+        <p class="legend">now: act today · soon: act this week · quiet: nothing pressing</p>
+        <details class="quiet" open>
+          <summary id="quiet">12 repositories are quiet</summary>
+          <p>
+            <a href="/repo/riptide-labs/riptide-docs">riptide-labs/riptide-docs</a>
+            <a href="/repo/riptide-labs/riptide-charts">riptide-labs/riptide-charts</a>
+            <a href="/repo/riptide-labs/snmpsim-fixtures">riptide-labs/snmpsim-fixtures</a>
+            <a href="/repo/riptide-labs/riptide-ui">riptide-labs/riptide-ui</a>
+            <a href="/repo/no42-org/dn42-mmdb">no42-org/dn42-mmdb</a>
+            <a href="/repo/no42-org/opennms-tools">no42-org/opennms-tools</a>
+            <a href="/repo/no42-org/homelab">no42-org/homelab</a>
+            <a href="/repo/labmonkeys-space/lab-notes">labmonkeys-space/lab-notes</a>
+            <a href="/repo/labmonkeys-space/ansible-collection">labmonkeys-space/ansible-collection</a>
+            <a href="/repo/labmonkeys-space/netbox-plugins">labmonkeys-space/netbox-plugins</a>
+            <a href="/repo/labmonkeys-space/grafana-dashboards">labmonkeys-space/grafana-dashboards</a>
+            <a href="/repo/labmonkeys-space/sigstore-tools">labmonkeys-space/sigstore-tools</a>
+          </p>
+        </details>
+        <h2 id="health">Collection health</h2>
+        <p class="sub">A dead lane is visible here rather than only in the logs. Failed, stalled and partial lanes come first.</p>
+        <table class="cards" role="table">
+          <thead role="rowgroup"><tr role="row">
+            <th scope="col" role="columnheader">Lane</th><th scope="col" role="columnheader">Installation</th><th scope="col" role="columnheader">Scope</th><th scope="col" role="columnheader">Outcome</th><th scope="col" role="columnheader">Last run</th>
+          </tr></thead>
+          <tbody role="rowgroup">
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-critical">failed</span> · HTTP 502 from GitHub on page 2 of 3</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge stale" title="last completed 2026-09-07 09:58 UTC">stale · 3h ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">partial</span> · 5 of 6 repositories confirmed</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>actions</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">running</span> · 14 of 20 repositories confirmed</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:54 UTC">fresh · 8m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:56 UTC">fresh · 6m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:56 UTC">fresh · 6m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>issues</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>reviews</td><td role="cell"><span class="lbl">Installation</span>indigo</td><td role="cell"><span class="lbl">Scope</span>user</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:53 UTC">fresh · 9m ago</span></td></tr>
+          </tbody>
+        </table>
+      </main>
+  </div>
+</figure>
+
+<figure class="device phone">
+  <figcaption>phone · 320px · scrolls inside the frame</figcaption>
+  <div class="chrome"><span class="url">twiki.app.labmonkeys.space</span></div>
+  <div class="screen">
+      <a class="skip" href="#board">skip to board</a>
+      <a class="skip" href="#quiet">skip to quiet repositories</a>
+      <a class="skip" href="#health">skip to collection health</a>
+      <nav class="nav" aria-label="primary"><div class="nav-inner">
+        <a href="/" aria-current="page">overview</a>
+        <a href="/queue">queue</a>
+        <a href="/reviews">reviews</a>
+        <span class="rendered">rendered 2026-09-07 13:02 UTC</span>
+      </div></nav>
+      <main id="main">
+        <h1>gitricorder</h1>
+        <p class="sub">20 watched repositories · 2 need attention now · 6 soon · 12 quiet</p>
+
+        <nav class="tiles" aria-label="topics">
+          <a class="tile" href="/queue?topic=security"><span class="count critical">5 <span class="now-marker">· 1 now</span></span><span class="label">Security</span>
+            <p class="attest warn">alerts sweep failed for riptide-labs 3h ago; counts may be low</p></a>
+          <a class="tile" href="/queue?topic=ci"><span class="count critical">1 <span class="now-marker">· 1 now</span></span><span class="label">CI</span></a>
+          <a class="tile" href="/queue?topic=dependencies"><span class="count">7</span><span class="label">Dependencies</span></a>
+          <a class="tile" href="/queue?topic=pulls"><span class="count">3</span><span class="label">Pull requests</span></a>
+          <a class="tile" href="/queue?topic=issues"><span class="count">25</span><span class="label">Issues</span></a>
+          <a class="tile" href="/reviews"><span class="count">2</span><span class="label">Reviews</span></a>
+        </nav>
+
+        <h2 id="board">What needs attention</h2>
+        <table class="board" role="table">
+          <thead role="rowgroup"><tr role="row">
+            <th scope="col" role="columnheader" colspan="2">Repository</th><th scope="col" role="columnheader">Tier</th>
+            <th scope="col" role="columnheader">Security</th><th scope="col" role="columnheader">CI</th><th scope="col" role="columnheader">Dependencies</th>
+            <th scope="col" role="columnheader">Pull requests</th><th scope="col" role="columnheader">Issues</th><th scope="col" role="columnheader">Reviews</th>
+            <th scope="col" role="columnheader">Last confirmed</th>
+          </tr></thead>
+          <tbody class="now" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/no42-org/blitsbom">no42-org/blitsbom</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier now" title="Act today: an item is KEV-listed, critical, a secret scanning alert, or the default branch workflow is red or stalled."><span class="sr-only">attention tier: </span>now</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><a class="chip critical" href="/queue?repo=no42-org/blitsbom&amp;topic=ci">1 critical</a></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/blitsbom&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=no42-org/blitsbom&amp;topic=pulls">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/blitsbom&amp;topic=issues">2</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 13:00 UTC">fresh · 2m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">default branch workflow <em>ci</em> failed 2h ago</span></td></tr>
+          </tbody>
+          <tbody class="now" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/labmonkeys-space/nl6">labmonkeys-space/nl6</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier now" title="Act today: an item is KEV-listed, critical, a secret scanning alert, or the default branch workflow is red or stalled."><span class="sr-only">attention tier: </span>now</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><a class="chip critical" href="/queue?repo=labmonkeys-space/nl6&amp;topic=security">1 critical</a></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=labmonkeys-space/nl6&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=labmonkeys-space/nl6&amp;topic=issues">4</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">in CISA KEV, severity critical, update stuck 12d</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/riptide-labs/riptide">riptide-labs/riptide</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><a class="chip high" href="/queue?repo=riptide-labs/riptide&amp;topic=security">2 high</a></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><span class="chip unconfirmed">unconfirmed</span></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=riptide-labs/riptide&amp;topic=pulls">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/riptide&amp;topic=issues">3</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.4%, below 1.0%, severity high, update prepared normally</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/riptide-labs/udpramp">riptide-labs/udpramp</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><a class="chip high" href="/queue?repo=riptide-labs/udpramp&amp;topic=security">1 high</a></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=riptide-labs/udpramp&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/udpramp&amp;topic=issues">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.2%, below 1.0%, severity high, update prepared normally</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/no42-org/twiki">no42-org/twiki</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=pulls">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=issues">5</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=reviews">1</a></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">review request waiting 4d, past the 3-day budget</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/no42-org/benchkit">no42-org/benchkit</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><span class="chip uncovered" title="Dependabot alerts are switched off for this repository">not covered</span></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=issues">2</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=reviews">1</a></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">review request waiting 5d, past the 3-day budget</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/labmonkeys-space/k8s-lab">labmonkeys-space/k8s-lab</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=labmonkeys-space/k8s-lab&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">no linked alert, major bump, update stuck 9d</span></td></tr>
+          </tbody>
+          <tbody class="soon" role="rowgroup">
+            <tr class="repo" role="row">
+              <td class="slug-cell" role="cell" colspan="2"><span class="lbl hid">Repository</span><a class="slug" href="/repo/riptide-labs/flowgen">riptide-labs/flowgen</a></td>
+              <td class="tier-cell" role="cell"><span class="lbl hid">Tier</span><span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span></td>
+              <td class="c" role="cell"><span class="lbl">Security</span><a class="chip some" href="/queue?repo=riptide-labs/flowgen&amp;topic=security">1 medium</a></td>
+              <td class="c" role="cell"><span class="lbl">CI</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=riptide-labs/flowgen&amp;topic=dependencies">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
+              <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/flowgen&amp;topic=issues">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+            </tr>
+            <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.1%, below 1.0%, severity medium, update prepared normally</span></td></tr>
+          </tbody>
+        </table>
+        <p class="legend">now: act today · soon: act this week · quiet: nothing pressing</p>
+        <details class="quiet">
+          <summary id="quiet">12 repositories are quiet</summary>
+          <p>
+            <a href="/repo/riptide-labs/riptide-docs">riptide-labs/riptide-docs</a>
+            <a href="/repo/riptide-labs/riptide-charts">riptide-labs/riptide-charts</a>
+            <a href="/repo/riptide-labs/snmpsim-fixtures">riptide-labs/snmpsim-fixtures</a>
+            <a href="/repo/riptide-labs/riptide-ui">riptide-labs/riptide-ui</a>
+            <a href="/repo/no42-org/dn42-mmdb">no42-org/dn42-mmdb</a>
+            <a href="/repo/no42-org/opennms-tools">no42-org/opennms-tools</a>
+            <a href="/repo/no42-org/homelab">no42-org/homelab</a>
+            <a href="/repo/labmonkeys-space/lab-notes">labmonkeys-space/lab-notes</a>
+            <a href="/repo/labmonkeys-space/ansible-collection">labmonkeys-space/ansible-collection</a>
+            <a href="/repo/labmonkeys-space/netbox-plugins">labmonkeys-space/netbox-plugins</a>
+            <a href="/repo/labmonkeys-space/grafana-dashboards">labmonkeys-space/grafana-dashboards</a>
+            <a href="/repo/labmonkeys-space/sigstore-tools">labmonkeys-space/sigstore-tools</a>
+          </p>
+        </details>
+        <h2 id="health">Collection health</h2>
+        <p class="sub">A dead lane is visible here rather than only in the logs. Failed, stalled and partial lanes come first.</p>
+        <table class="cards" role="table">
+          <thead role="rowgroup"><tr role="row">
+            <th scope="col" role="columnheader">Lane</th><th scope="col" role="columnheader">Installation</th><th scope="col" role="columnheader">Scope</th><th scope="col" role="columnheader">Outcome</th><th scope="col" role="columnheader">Last run</th>
+          </tr></thead>
+          <tbody role="rowgroup">
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-critical">failed</span> · HTTP 502 from GitHub on page 2 of 3</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge stale" title="last completed 2026-09-07 09:58 UTC">stale · 3h ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">partial</span> · 5 of 6 repositories confirmed</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>actions</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">running</span> · 14 of 20 repositories confirmed</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:54 UTC">fresh · 8m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:56 UTC">fresh · 6m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:56 UTC">fresh · 6m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>issues</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>org</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>reviews</td><td role="cell"><span class="lbl">Installation</span>indigo</td><td role="cell"><span class="lbl">Scope</span>user</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:53 UTC">fresh · 9m ago</span></td></tr>
+          </tbody>
+        </table>
+      </main>
+  </div>
+</figure>
+</body>
+</html>
