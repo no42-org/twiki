@@ -43,19 +43,21 @@ Dependabot PR bodies embed release notes authored by third parties. The LLM read
 - *Mitigation detail:* Untrusted changelog text is passed to the LLM clearly demarcated as data, never as instructions; the executor ignores any "action" the LLM asserts that the gates don't permit.
 
 ### D4 — Stateless per-tick derivation from GitHub
-Each poll re-derives everything from GitHub's current state: open Dependabot PRs and their check status, `main` CI status, and commits since the latest release tag. There is no authoritative local database of "what I've done."
+Each poll re-derives everything from GitHub's current state: open Dependabot PRs and their check status, `main` CI status, and commits since the newest tag. There is no authoritative local database of "what I've done."
+
+"Newest tag" means the highest stable semver tag among the repository's tag refs, never the latest *release*: a release is derived from a tag, and the two diverge exactly where twiki's own push lands (a workflow that drafts releases, or a tag with no release object). Reading the release instead re-derived an existing tag every tick (#110).
 
 - *Why:* Idempotency and resilience — a skipped, repeated, or crashed run self-heals on the next tick because truth lives in GitHub. It also makes the "settled" condition a pure function of observable state.
 - *Trade-off:* Slightly more API calls per tick (mitigated by GraphQL batching and the App's higher rate limits). A small local store is kept only for non-authoritative concerns: an audit log and Slack-message de-duplication.
 
 ### D5 — "Settled" is a pure predicate
-Release a patch for a repo iff: **(a)** no open Dependabot PR remains that the policy *would* merge, **AND (b)** `main` CI is green, **AND (c)** there exist merged-but-unreleased dependency commits (commits between latest tag and `main` HEAD attributable to Dependabot).
+Release a patch for a repo iff: **(a)** no open Dependabot PR remains that the policy *would* merge, **AND (b)** `main` CI is green, **AND (c)** there exist merged-but-unreleased dependency commits (commits between the newest tag and `main` HEAD attributable to Dependabot; a tag counts as released whether or not a release object exists for it).
 
 - *Why:* Batches the bumps into one release instead of releasing per-merge (avoids release spam). A stuck *red* Dependabot PR does not block release forever — it is not something we'd merge, so it doesn't count against (a); it is simply reported.
 - *Alternatives considered:* A quiet-timer ("no merges for N hours"). Rejected — requires wall-clock state and is less predictable than a state predicate.
 
 ### D6 — Release by pushing a computed `vX.Y.Z+1` tag
-The executor computes the next patch version from the latest tag and pushes the tag. Each managed repo's existing tag-triggered workflow performs the build/publish. The agent decides *when*; the repo owns *how*.
+The executor computes the next patch version from the newest tag and pushes the tag. Each managed repo's existing tag-triggered workflow performs the build/publish. The agent decides *when*; the repo owns *how*.
 
 - *Why:* Avoids reinventing per-language release tooling; fits the convention that CI owns the publish steps. Repos without a tag-triggered workflow are merge-only until they add one.
 - *Alternatives considered:* `workflow_dispatch` / `make release-patch`. Reasonable, but the tag is the most uniform, lowest-coupling trigger.
@@ -79,7 +81,7 @@ A `mode: shadow | enforce` flag gates the executor's *write* step only. In shado
 - **Released a broken artifact** → Release is gated on `main` green and only fires when settled (D5); patch-only scope limits blast radius; each repo's own release workflow remains the final guard.
 - **Statelessness costs API calls / hits rate limits** → GraphQL batching + App-tier limits (D7); poll interval is generous (~hourly) because dependency bumps are not latency-sensitive.
 - **Repo lacks a tag-triggered release workflow** → Detected; that repo is merge-only and the gap is reported, never silently skipped.
-- **Tag computation races a concurrent human release** → Executor reads the latest tag at execution time (D4) and re-checks just before pushing; a push conflict aborts that repo's release and reports it.
+- **Tag computation races a concurrent human release** → Executor reads the newest tag at execution time (D4) and re-checks just before pushing; a push conflict is reported as `tag-exists` with the tag's release state (published, draft, none) and the repository continues. It is not an error: nothing was written.
 
 ## Migration Plan
 
