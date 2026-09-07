@@ -14,6 +14,7 @@ import {
   type FreshnessPolicy,
   freshness,
 } from "./freshness.js";
+import { safeUrl } from "./safe-url.js";
 
 // The review-request view (CAP-5).
 //
@@ -89,7 +90,7 @@ export function buildReviewView(
       author: request.author,
       // GitHub only ever hands out https URLs, and hono/jsx renders a
       // `javascript:` scheme verbatim.
-      htmlUrl: request.htmlUrl.startsWith("https://") ? request.htmlUrl : null,
+      htmlUrl: safeUrl(request.htmlUrl),
       requestedReviewers: request.requestedReviewers,
       createdAt: request.createdAt,
       waiting: ageLabel(request.createdAt, now),
