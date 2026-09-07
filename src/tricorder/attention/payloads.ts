@@ -145,6 +145,10 @@ export function readReviewRequest(
   if (typeof r.repo !== "string" || typeof r.number !== "number") return null;
   if (typeof r.title !== "string" || typeof r.author !== "string") return null;
   if (typeof r.htmlUrl !== "string") return null;
+  // Read by the review budget (AD-29): a null here became epoch zero and a
+  // twenty-thousand-day wait. A row without a date is unreadable, like a
+  // row without a number.
+  if (typeof r.createdAt !== "string") return null;
   if (!Array.isArray(r.requestedReviewers)) return null;
   return r;
 }

@@ -10,6 +10,11 @@ import {
   DEFAULT_RANK_POLICY,
   type RankPolicy,
 } from "./core/rank.js";
+import {
+  cutRankFor,
+  DEFAULT_NOW_EPSS,
+  DEFAULT_REVIEW_BUDGET_DAYS,
+} from "./core/tier.js";
 import { HttpEnrichment } from "./enrich/kev.js";
 import {
   createTricorderAppFromEnv,
@@ -334,6 +339,64 @@ export function parseEpssBands(raw: string | undefined): RankPolicy {
 }
 
 /**
+ * The tier cut as a term rank (AD-29).
+ *
+ * Only the number parsing lives here; the band check and the rank are
+ * `cutRankFor`, shared with the defaults the pages fall back to, so a cut
+ * that skipped the check cannot reach `tier()` by any path.
+ */
+export function parseNowEpss(
+  raw: string | undefined,
+  policy: RankPolicy,
+): number {
+  const trimmed = (raw ?? "").trim();
+  const cut = trimmed === "" ? DEFAULT_NOW_EPSS : Number(trimmed);
+  if (!Number.isFinite(cut)) {
+    throw new Error(
+      `TRICORDER_NOW_EPSS ${raw} is not a number; it must be one of the configured EPSS bands ${policy.epssBands.join(",")}`,
+    );
+  }
+  return cutRankFor(cut, policy);
+}
+
+/**
+ * The three attention settings, parsed together (AD-29, AD-34).
+ *
+ * Called by the `web` and `collect` roles before either opens a store, so a
+ * bad value fails both at startup, ahead of the notify lane that will rank
+ * with them in the collector. Not called by `doctor`, which must still be
+ * able to diagnose a start that failed on exactly these.
+ */
+export function parseAttentionEnv(env: NodeJS.ProcessEnv): {
+  rankPolicy: RankPolicy;
+  cutRank: number;
+  reviewBudgetDays: number;
+} {
+  const rankPolicy = parseEpssBands(env.TRICORDER_EPSS_BANDS);
+  return {
+    rankPolicy,
+    cutRank: parseNowEpss(env.TRICORDER_NOW_EPSS, rankPolicy),
+    reviewBudgetDays: parseReviewBudgetDays(env.TRICORDER_REVIEW_BUDGET_DAYS),
+  };
+}
+
+/**
+ * Days a review request may wait before its repository is at least `soon`
+ * (AD-29). A positive whole number of days, or the default when unset.
+ */
+export function parseReviewBudgetDays(raw: string | undefined): number {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return DEFAULT_REVIEW_BUDGET_DAYS;
+  const days = Number(trimmed);
+  if (!Number.isInteger(days) || days <= 0) {
+    throw new Error(
+      `TRICORDER_REVIEW_BUDGET_DAYS is not a positive integer: ${raw}`,
+    );
+  }
+  return days;
+}
+
+/**
  * The installation the Actions lane runs on, or null when unset.
  *
  * Validated here rather than left to assertSchedules, which checks against
@@ -440,7 +503,21 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // The attention settings are parsed by the web and collect roles alike, so
+  // a bad value fails both at startup rather than only the process that
+  // happens to render with it (AD-29, AD-34). Never by doctor: see
+  // parseAttentionEnv.
+  const attentionEnvOrExit = (): ReturnType<typeof parseAttentionEnv> => {
+    try {
+      return parseAttentionEnv(env);
+    } catch (err) {
+      console.error(`[tricorder] ${err instanceof Error ? err.message : err}`);
+      process.exit(2);
+    }
+  };
+
   if (role === "web") {
+    const { rankPolicy, cutRank, reviewBudgetDays } = attentionEnvOrExit();
     // Read-only, and refuses a schema this build does not understand rather
     // than serving misread rows (AD-26).
     const store = SqliteStore.openForRead(dbPath);
@@ -461,7 +538,9 @@ async function main(): Promise<void> {
         [KEV_LANE]: { cadenceMs: KEV_CADENCE_MS },
         [COVERAGE_LANE]: { cadenceMs: COVERAGE_CADENCE_MS },
       },
-      rankPolicy: parseEpssBands(env.TRICORDER_EPSS_BANDS),
+      rankPolicy,
+      cutRank,
+      reviewBudgetDays,
       now: () => new Date(),
     });
 
@@ -485,6 +564,10 @@ async function main(): Promise<void> {
   }
 
   if (role === "collect") {
+    // Parsed and, until the notify lane lands, unused: refusing to start on
+    // a value the web process would refuse keeps the two roles' environments
+    // from drifting apart unseen (AD-34).
+    attentionEnvOrExit();
     // Opening for write migrates the schema forward, which is the collector's
     // job and only the collector's (AD-26).
     const store = SqliteStore.openForWrite(dbPath);

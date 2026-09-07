@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { watchKey } from "../src/core/slug.js";
 import { alertSubject } from "../src/core/subject.js";
 import { orgAlertsUrl } from "../src/github/port.js";
 import type { AlertObservation } from "../src/tricorder/collect/dependabot-alerts.js";
@@ -15,7 +16,6 @@ import {
   collectOrgAlerts,
   LANE,
   normalise,
-  watchKey,
 } from "../src/tricorder/collect/dependabot-alerts.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { FakeGitHubReadPort, makeAlert } from "./fakes.js";

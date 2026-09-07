@@ -9,17 +9,17 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { alertSubject, coverageSubject } from "../src/core/subject.js";
 import {
+  ageLabel,
+  DEFAULT_STALE_AFTER_CADENCES,
+  freshness,
+} from "../src/tricorder/attention/freshness.js";
+import {
   normalise,
   summariseRepo,
 } from "../src/tricorder/collect/dependabot-alerts.js";
 import type { RunRef } from "../src/tricorder/store/port.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
-import {
-  ageLabel,
-  DEFAULT_STALE_AFTER_CADENCES,
-  freshness,
-} from "../src/tricorder/web/freshness.js";
 import { DEFAULT_HOST, startServer } from "../src/tricorder/web/server.js";
 import {
   buildCollectionHealth,

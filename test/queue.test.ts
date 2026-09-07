@@ -7,13 +7,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_RANK_POLICY } from "../src/core/rank.js";
+import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
+import { buildQueue } from "../src/tricorder/attention/queue.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
 import type { UpdatePrObservation } from "../src/tricorder/collect/update-prs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
-import { buildQueue } from "../src/tricorder/web/queue.js";
 import { makeAlert } from "./fakes.js";
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
@@ -785,6 +785,8 @@ describe("the stuck flag and untriaged issues (CAP-2, CAP-3)", () => {
     expect(items.map((i) => i.kind)).toEqual(["alert", "issue"]);
     const issue = items[1];
     expect(issue?.explanation).toBe("untriaged issue, nobody assigned");
+    // Its KEV term is n/a by construction; the page must never shout it.
+    expect(issue?.kevListed).toBe(false);
     expect(issue?.title).toBe("Crash on startup");
     expect(issue?.number).toBe(5);
   });
@@ -931,6 +933,10 @@ describe("the queue page", () => {
     expect(html).toContain("1 untriaged issues");
     // The issue's title is on the row: repo#number alone forces a click.
     expect(html).toContain("Crash on startup");
+    // And its rationale is the muted kind, never the KEV shout.
+    expect(html).toContain(
+      '<div class="why-rank">untriaged issue, nobody assigned</div>',
+    );
   });
 
   it("labels the ordering a local policy, never SSVC (AD-20)", async () => {
@@ -995,6 +1001,8 @@ describe("the queue page", () => {
       policy: SWEEP,
       lanePolicies: { kev: DAILY },
       rankPolicy: { epssBands: [0.5, 0.3, 0.01] },
+      // Bands without 0.1 need a cut of their own, exactly as at startup.
+      cutRank: epssRank(0.3, [0.5, 0.3, 0.01]),
       now: () => NOW,
     });
     const html = await (await custom.request("/queue")).text();

@@ -3,18 +3,18 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { safeUrl } from "../../core/safe-url.js";
+import { watchKey } from "../../core/slug.js";
 import type { RepoRef } from "../../core/types.js";
-import { watchKey } from "../collect/dependabot-alerts.js";
-import type { ReviewRequestObservation } from "../collect/review-requests.js";
-import { LANE as REVIEWS_LANE } from "../collect/review-requests.js";
-import type { StorePort } from "../store/port.js";
 import {
   ageLabel,
   type Freshness,
   type FreshnessPolicy,
   freshness,
-} from "./freshness.js";
-import { safeUrl } from "./safe-url.js";
+} from "../attention/freshness.js";
+import type { ReviewRequestObservation } from "../collect/review-requests.js";
+import { LANE as REVIEWS_LANE } from "../collect/review-requests.js";
+import type { StorePort } from "../store/port.js";
 
 // The review-request view (CAP-5).
 //

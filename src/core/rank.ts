@@ -9,8 +9,10 @@ import type { BumpLevel } from "./types.js";
 // The urgency chain (AD-20).
 //
 // KEV status, then EPSS, then severity, then bump type. That order is CODE.
-// Only the EPSS thresholds are configuration, and no configuration path can
-// reorder the terms.
+// Only the EPSS thresholds are configuration, joined by the tier cut as the
+// second and last configuration value (AD-29, AD-30): the cut names one of
+// the bands and never adds a term. No configuration path can reorder the
+// terms.
 //
 // Nothing here multiplies one signal by another. Comparison is lexicographic
 // over the terms, most significant first, so a lower term can only ever break
@@ -36,9 +38,9 @@ const BUMP_SCALE: readonly BumpLevel[] = ["patch", "minor", "major"];
  * the confident-zero defect wearing a different hat. Ranking it at the urgent
  * end would bury the queue under things we merely failed to look up.
  */
-const LEAST_KNOWN = 0;
-const UNKNOWN = 1;
-const KNOWN_BASE = 2;
+export const LEAST_KNOWN = 0;
+export const UNKNOWN = 1;
+export const KNOWN_BASE = 2;
 
 /**
  * A signal that is absent because there is nothing to know.
@@ -143,6 +145,42 @@ export interface Ranking {
 }
 
 /**
+ * The fixed-state words of one term: what it says for `n/a` and for `null`.
+ *
+ * Measured values (an EPSS percentage, a severity, a bump) keep their
+ * generated wording; only the states that carry no value can be reworded,
+ * because those are the ones that mean something different per kind. An
+ * empty string drops the term from the explanation.
+ */
+export interface TermReasons {
+  readonly na?: string;
+  readonly unknown?: string;
+}
+
+/**
+ * Per-kind wording for the chain's reasons (AD-31).
+ *
+ * The ranks are the same for every kind; the words are not. "No CVE to check
+ * against KEV" is true of an alert without a CVE and false of an issue, which
+ * has no CVE because it is not an advisory at all. One table per kind lives in
+ * `topics.ts`; an absent entry keeps the default string, so a kind that says
+ * nothing special reads exactly as it always has.
+ */
+export interface ReasonTable {
+  readonly kev?: TermReasons & {
+    readonly listed?: string;
+    readonly notListed?: string;
+  };
+  readonly epss?: TermReasons;
+  readonly severity?: TermReasons;
+  readonly bump?: TermReasons;
+  readonly stuck?: TermReasons & {
+    readonly stuck?: string;
+    readonly fine?: string;
+  };
+}
+
+/**
  * Reject a policy that cannot band correctly.
  *
  * Bands out of order would silently mis-classify every item rather than fail,
@@ -184,7 +222,17 @@ function scaleRank<T>(value: Signal<T>, scale: readonly T[]): number {
   return index === 0 ? LEAST_KNOWN : KNOWN_BASE + index - 1;
 }
 
-function epssRank(epss: Signal<number>, bands: readonly number[]): number {
+/**
+ * Where an EPSS probability lands on the bands, as a term rank.
+ *
+ * Exported so the tier cut can be turned into a rank once at startup
+ * (AD-29): `tier()` then compares ranks the chain already produced and never
+ * re-reads a probability.
+ */
+export function epssRank(
+  epss: Signal<number>,
+  bands: readonly number[],
+): number {
   if (epss === NOT_APPLICABLE) return LEAST_KNOWN;
   // Outside 0..1 it is not a probability, whatever the payload said. Letting it
   // fall through the bands would rank a negative sentinel as measured-harmless
@@ -200,22 +248,26 @@ function epssRank(epss: Signal<number>, bands: readonly number[]): number {
 
 const percent = (epss: number) => `${(epss * 100).toFixed(1)}%`;
 
-function kevTerm(kev: Signal<boolean>): RankTerm {
+function kevTerm(kev: Signal<boolean>, words: ReasonTable["kev"]): RankTerm {
   return {
     name: "kev",
     rank: scaleRank(kev, [false, true]),
     reason:
       kev === NOT_APPLICABLE
-        ? "no CVE to check against KEV"
+        ? (words?.na ?? "no CVE to check against KEV")
         : kev === null
-          ? "KEV status unknown"
+          ? (words?.unknown ?? "KEV status unknown")
           : kev
-            ? "listed in CISA KEV"
-            : "not in CISA KEV",
+            ? (words?.listed ?? "listed in CISA KEV")
+            : (words?.notListed ?? "not in CISA KEV"),
   };
 }
 
-function epssTerm(epss: Signal<number>, bands: readonly number[]): RankTerm {
+function epssTerm(
+  epss: Signal<number>,
+  bands: readonly number[],
+  words: ReasonTable["epss"],
+): RankTerm {
   const rank = epssRank(epss, bands);
   const measured = typeof epss === "number" && rank !== UNKNOWN;
   return {
@@ -223,42 +275,51 @@ function epssTerm(epss: Signal<number>, bands: readonly number[]): RankTerm {
     rank,
     reason:
       epss === NOT_APPLICABLE
-        ? "no CVE to score"
+        ? (words?.na ?? "no CVE to score")
         : !measured
-          ? "EPSS unknown"
+          ? (words?.unknown ?? "EPSS unknown")
           : rank === LEAST_KNOWN
             ? `EPSS ${percent(epss as number)}, below ${percent(bands[bands.length - 1] as number)}`
             : `EPSS ${percent(epss as number)}`,
   };
 }
 
-function severityTerm(severity: Signal<Severity>): RankTerm {
+function severityTerm(
+  severity: Signal<Severity>,
+  words: ReasonTable["severity"],
+): RankTerm {
   return {
     name: "severity",
     rank: scaleRank(severity, SEVERITY_SCALE),
     reason:
       severity === NOT_APPLICABLE
-        ? "no advisory"
+        ? (words?.na ?? "no advisory")
         : severity === null
-          ? "severity unknown"
+          ? (words?.unknown ?? "severity unknown")
           : `severity ${severity}`,
   };
 }
 
-function bumpTerm(bump: Signal<BumpLevel>): RankTerm {
+function bumpTerm(
+  bump: Signal<BumpLevel>,
+  words: ReasonTable["bump"],
+): RankTerm {
   return {
     name: "bump",
     rank: scaleRank(bump, BUMP_SCALE),
     reason:
       bump === NOT_APPLICABLE
-        ? "not an update"
+        ? (words?.na ?? "not an update")
         : bump === null
-          ? "bump unknown"
+          ? (words?.unknown ?? "bump unknown")
           : `${bump} bump`,
   };
 }
 
-function stuckTerm(stuck: Signal<boolean>): RankTerm {
+function stuckTerm(
+  stuck: Signal<boolean>,
+  words: ReasonTable["stuck"],
+): RankTerm {
   return {
     name: "stuck",
     rank: scaleRank(stuck, [false, true]),
@@ -269,12 +330,12 @@ function stuckTerm(stuck: Signal<boolean>): RankTerm {
       // (which IS an attempted fix, so "no fix attempted" would be false on
       // its face there).
       stuck === NOT_APPLICABLE
-        ? "no Dependabot fix attempt on record"
+        ? (words?.na ?? "no Dependabot fix attempt on record")
         : stuck === null
-          ? "stuck state unknown"
+          ? (words?.unknown ?? "stuck state unknown")
           : stuck
-            ? "GitHub could not prepare this update"
-            : "update prepared normally",
+            ? (words?.stuck ?? "GitHub could not prepare this update")
+            : (words?.fine ?? "update prepared normally"),
   };
 }
 
@@ -284,24 +345,37 @@ function stuckTerm(stuck: Signal<boolean>): RankTerm {
  * Pure: same input, same policy, same output, every time. It reads no clock,
  * no store and no port, which is what lets the whole ordering be tested
  * without any of them.
+ *
+ * `reasons` rewords the fixed states per kind (AD-31) and changes no rank:
+ * the key is the same whatever the table says, so the words can never
+ * reorder the queue.
  */
-export function rank(input: RankInput, policy: RankPolicy): Ranking {
+export function rank(
+  input: RankInput,
+  policy: RankPolicy,
+  reasons: ReasonTable = {},
+): Ranking {
   assertRankPolicy(policy);
 
   // This array IS the chain order, and it is the only place that order is
   // expressed. Nothing reads it from configuration.
   const terms: RankTerm[] = [
-    kevTerm(input.kev),
-    epssTerm(input.epss, policy.epssBands),
-    severityTerm(input.severity),
-    bumpTerm(input.bump),
-    stuckTerm(input.stuck),
+    kevTerm(input.kev, reasons.kev),
+    epssTerm(input.epss, policy.epssBands, reasons.epss),
+    severityTerm(input.severity, reasons.severity),
+    bumpTerm(input.bump, reasons.bump),
+    stuckTerm(input.stuck, reasons.stuck),
   ];
 
   return {
     key: terms.map((t) => t.rank),
     terms,
-    explanation: terms.map((t) => t.reason).join(", "),
+    // Empty reasons are the table's way of saying "this term has nothing to
+    // add for this kind", so they leave no stray comma behind.
+    explanation: terms
+      .map((t) => t.reason)
+      .filter((reason) => reason !== "")
+      .join(", "),
   };
 }
 
