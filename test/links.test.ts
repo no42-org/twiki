@@ -5,7 +5,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  absoluteUrl,
+  overviewPath,
+  queueClearPath,
   queuePath,
+  queueRepoPath,
   repoPath,
   reviewsPath,
   topicPath,
@@ -37,5 +41,39 @@ describe("links (AD-39)", () => {
       "/reviews",
     );
     expect(topicPath("ci")).toBe("/queue?topic=ci");
+  });
+
+  it("clears every filter with the bare queue path", () => {
+    expect(queueClearPath()).toBe("/queue");
+    expect(overviewPath()).toBe("/");
+  });
+
+  it("narrows the queue to one repository, every topic, with the folded slug", () => {
+    expect(queueRepoPath({ owner: "No42-Org", name: "TWiki" })).toBe(
+      "/queue?repo=no42-org%2Ftwiki",
+    );
+  });
+
+  it("joins an internal path to TRICORDER_BASE_URL", () => {
+    expect(
+      absoluteUrl(new URL("https://twiki.app.labmonkeys.space"), "/repo/x/y"),
+    ).toBe("https://twiki.app.labmonkeys.space/repo/x/y");
+    // A base under a prefix keeps the prefix, whether or not it ends in a
+    // slash; a double slash or a dropped prefix would both 404.
+    expect(
+      absoluteUrl(new URL("https://example.test/dash/"), queuePath("issues")),
+    ).toBe("https://example.test/dash/queue?topic=issues");
+    expect(absoluteUrl(new URL("https://example.test/dash"), "/reviews")).toBe(
+      "https://example.test/dash/reviews",
+    );
+    expect(
+      absoluteUrl(new URL("https://example.test/dash//"), "/reviews"),
+    ).toBe("https://example.test/dash/reviews");
+  });
+
+  it("refuses a path that is not one of its own", () => {
+    expect(() => absoluteUrl(new URL("https://example.test"), "queue")).toThrow(
+      "absoluteUrl needs a path starting with /: queue",
+    );
   });
 });

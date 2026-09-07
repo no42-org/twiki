@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_RANK_POLICY, epssRank, KNOWN_BASE } from "../src/core/rank.js";
 import {
   parseAttentionEnv,
+  parseBaseUrl,
   parseNowEpss,
   parseReviewBudgetDays,
 } from "../src/tricorder.js";
@@ -57,6 +58,7 @@ describe("the attention settings together", () => {
       rankPolicy: DEFAULT_RANK_POLICY,
       cutRank: KNOWN_BASE + 1,
       reviewBudgetDays: 3,
+      baseUrl: null,
     });
   });
 
@@ -71,12 +73,54 @@ describe("the attention settings together", () => {
         TRICORDER_EPSS_BANDS: "0.5,0.3",
         TRICORDER_NOW_EPSS: "0.3",
         TRICORDER_REVIEW_BUDGET_DAYS: "7",
+        TRICORDER_BASE_URL: "https://twiki.app.labmonkeys.space",
       }),
     ).toEqual({
       rankPolicy: { epssBands: [0.5, 0.3] },
       cutRank: KNOWN_BASE,
       reviewBudgetDays: 7,
+      baseUrl: new URL("https://twiki.app.labmonkeys.space"),
     });
+  });
+
+  it("refuses a bad base URL with the others, by name", () => {
+    expect(() => parseAttentionEnv({ TRICORDER_BASE_URL: "garbage" })).toThrow(
+      "TRICORDER_BASE_URL is not a URL: garbage",
+    );
+  });
+});
+
+describe("TRICORDER_BASE_URL", () => {
+  it("is null when unset or blank", () => {
+    expect(parseBaseUrl(undefined)).toBeNull();
+    expect(parseBaseUrl("")).toBeNull();
+    expect(parseBaseUrl("  ")).toBeNull();
+  });
+
+  it("parses an https URL, trimmed", () => {
+    expect(parseBaseUrl(" https://twiki.app.labmonkeys.space ")).toEqual(
+      new URL("https://twiki.app.labmonkeys.space"),
+    );
+  });
+
+  it.each([
+    "https://twiki.app.labmonkeys.space/?x=1",
+    "https://twiki.app.labmonkeys.space/#top",
+    "https://user:pw@twiki.app.labmonkeys.space",
+    "https://user@twiki.app.labmonkeys.space",
+  ])("refuses a query, fragment or credentials: %s", (raw) => {
+    expect(() => parseBaseUrl(raw)).toThrow(
+      `TRICORDER_BASE_URL must not carry a query, fragment or credentials: ${raw}`,
+    );
+  });
+
+  it("refuses http and garbage by name", () => {
+    expect(() => parseBaseUrl("http://twiki.app.labmonkeys.space")).toThrow(
+      "TRICORDER_BASE_URL must be https: http://twiki.app.labmonkeys.space",
+    );
+    expect(() => parseBaseUrl("not a url")).toThrow(
+      "TRICORDER_BASE_URL is not a URL: not a url",
+    );
   });
 });
 

@@ -30,6 +30,12 @@ export interface TopicSpec {
   /** The column header and tile label. */
   readonly label: string;
   /**
+   * The singular noun the queue's filter sentence uses (`Dependency items`,
+   * `No issue items open`). Not derivable from the label: `Dependencies`
+   * and `Issues` are plurals and `Pull requests` is two words.
+   */
+  readonly noun: string;
+  /**
    * The `topic=` value on the queue, or null for Reviews, which is not in the
    * queue at all: review requests are collected estate-wide and have their
    * own page.
@@ -50,18 +56,54 @@ export interface TopicSpec {
  * (AD-28): no sweep has confirmed anything about them.
  */
 export const TOPICS: readonly TopicSpec[] = [
-  { topic: "security", label: "Security", query: "security", kinds: ["alert"] },
-  { topic: "ci", label: "CI", query: "ci", kinds: [] },
+  {
+    topic: "security",
+    label: "Security",
+    noun: "Security",
+    query: "security",
+    kinds: ["alert"],
+  },
+  { topic: "ci", label: "CI", noun: "CI", query: "ci", kinds: [] },
   {
     topic: "dependencies",
     label: "Dependencies",
+    noun: "Dependency",
     query: "dependencies",
     kinds: ["update_pr"],
   },
-  { topic: "pulls", label: "Pull requests", query: "pulls", kinds: [] },
-  { topic: "issues", label: "Issues", query: "issues", kinds: ["issue"] },
-  { topic: "reviews", label: "Reviews", query: null, kinds: [] },
+  {
+    topic: "pulls",
+    label: "Pull requests",
+    noun: "Pull request",
+    query: "pulls",
+    kinds: [],
+  },
+  {
+    topic: "issues",
+    label: "Issues",
+    noun: "Issue",
+    query: "issues",
+    kinds: ["issue"],
+  },
+  {
+    topic: "reviews",
+    label: "Reviews",
+    noun: "Review",
+    query: null,
+    kinds: [],
+  },
 ];
+
+/**
+ * The topic behind a `topic=` query value, or undefined when no queue topic
+ * carries it. Reviews can never come back: its `query` is null, so
+ * `?topic=reviews` is an unknown value like any other, which is what keeps
+ * review requests out of the queue by construction rather than by a check
+ * on the page.
+ */
+export function topicByQuery(query: string): TopicSpec | undefined {
+  return TOPICS.find((t) => t.query !== null && t.query === query);
+}
 
 /** The topic a queue kind counts under. Derived from TOPICS, never a second table. */
 export function topicOf(kind: QueueKind): Topic {

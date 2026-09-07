@@ -196,6 +196,7 @@ Set `TRICORDER_ONCE` to run a single cycle and exit, for cron.
 | `TRICORDER_EPSS_BANDS` | Ranking thresholds, comma-separated and strictly descending, e.g. `0.5,0.1,0.01`. Changes the order; nothing can reorder the chain itself. A malformed value refuses to start. | `0.5,0.1,0.01` |
 | `TRICORDER_NOW_EPSS` | The EPSS probability at or above which an item, and so its repository, is `now`. Must equal one of the configured bands, so changing `TRICORDER_EPSS_BANDS` away from `0.1` requires setting this too. A mismatch refuses to start. | `0.1` |
 | `TRICORDER_REVIEW_BUDGET_DAYS` | Days a review request may wait before its repository is at least `soon`, measured from the pull request's creation. A positive integer; anything else refuses to start. | `3` |
+| `TRICORDER_BASE_URL` | Where the dashboard is reachable from outside, used to build absolute links for notifications. Optional. `https` only, no query or fragment; a path prefix is kept. Anything else refuses to start, for both roles. | unset |
 | `TRICORDER_KEV_URL` | Where to fetch the CISA KEV catalogue. Point it at a mirror or proxy in an egress-restricted deployment. | CISA's public feed |
 | `TRICORDER_VERBOSE` | Print Octokit's own request logging. Off by default because the coverage lane expects a 403 per repository with Dependabot switched off, and those would otherwise look like errors on a healthy run. | unset |
 

@@ -5,7 +5,7 @@
 
 import type { SeverityReading } from "../../core/severity.js";
 import { worstSeverity } from "../../core/severity.js";
-import { watchKey } from "../../core/slug.js";
+import { foldSlug, watchKey } from "../../core/slug.js";
 import { maxTier, type Tier, tier } from "../../core/tier.js";
 import type { RepoRef } from "../../core/types.js";
 import type { StorePort } from "../store/port.js";
@@ -95,7 +95,7 @@ function reviewsBySlug(
     if (row.state !== "present") continue;
     const request = readReviewRequest(row.payload);
     if (request === null) continue;
-    const slug = request.repo.toLowerCase();
+    const slug = foldSlug(request.repo);
     if (!watched.has(slug)) continue;
     const created = new Date(request.createdAt).getTime();
     if (Number.isNaN(created)) continue;
@@ -199,7 +199,7 @@ export function attentionByRepo(
   const itemsBySlug = new Map<string, QueueItem[]>();
   for (const repo of watched) itemsBySlug.set(watchKey(repo), []);
   for (const item of queue.items) {
-    const slug = item.repo.toLowerCase();
+    const slug = foldSlug(item.repo);
     if (item.kind === "alert" && suppressAlertsFor.has(slug)) continue;
     itemsBySlug.get(slug)?.push(item);
   }

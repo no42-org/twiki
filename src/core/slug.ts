@@ -13,5 +13,13 @@ import type { RepoRef } from "./types.js";
  * typed path against it. Two foldings would let one repository be two.
  */
 export function watchKey(repo: RepoRef): string {
-  return `${repo.owner}/${repo.name}`.toLowerCase();
+  return foldSlug(`${repo.owner}/${repo.name}`);
+}
+
+/**
+ * The same folding over an `owner/name` string a payload already carries,
+ * so an item's repository and a watched repository compare on one rule.
+ */
+export function foldSlug(slug: string): string {
+  return slug.toLowerCase();
 }

@@ -360,7 +360,7 @@ export function parseNowEpss(
 }
 
 /**
- * The three attention settings, parsed together (AD-29, AD-34).
+ * The attention settings, parsed together (AD-29, AD-34).
  *
  * Called by the `web` and `collect` roles before either opens a store, so a
  * bad value fails both at startup, ahead of the notify lane that will rank
@@ -371,13 +371,44 @@ export function parseAttentionEnv(env: NodeJS.ProcessEnv): {
   rankPolicy: RankPolicy;
   cutRank: number;
   reviewBudgetDays: number;
+  baseUrl: URL | null;
 } {
   const rankPolicy = parseEpssBands(env.TRICORDER_EPSS_BANDS);
   return {
     rankPolicy,
     cutRank: parseNowEpss(env.TRICORDER_NOW_EPSS, rankPolicy),
     reviewBudgetDays: parseReviewBudgetDays(env.TRICORDER_REVIEW_BUDGET_DAYS),
+    baseUrl: parseBaseUrl(env.TRICORDER_BASE_URL),
   };
+}
+
+/**
+ * Where the dashboard is reachable from outside, or null when unset (AD-39).
+ *
+ * Optional: nothing needs it until the notify lane builds absolute links.
+ * Parsed now anyway, and https only, so the value cannot sit wrong in the
+ * environment for an epic before anything reads it.
+ */
+export function parseBaseUrl(raw: string | undefined): URL | null {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error(`TRICORDER_BASE_URL is not a URL: ${raw}`);
+  }
+  if (url.protocol !== "https:") {
+    throw new Error(`TRICORDER_BASE_URL must be https: ${raw}`);
+  }
+  // A path is joined to; a query or fragment would end up in the middle of
+  // the joined link, and credentials would end up in every notification.
+  if (url.search !== "" || url.hash !== "" || url.username || url.password) {
+    throw new Error(
+      `TRICORDER_BASE_URL must not carry a query, fragment or credentials: ${raw}`,
+    );
+  }
+  return url;
 }
 
 /**
