@@ -1,0 +1,286 @@
+<!--
+  Copyright 2026 Ronny Trommer <ronny@no42.org>
+  SPDX-License-Identifier: MIT
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>queue · dependencies · gitricorder</title>
+<style>
+  /*
+   * key-queue.html - Queue surface filtered to /queue?topic=dependencies, desktop.
+   * Illustrates from EXPERIENCE.md 1.0.0:
+   *   Information Architecture: Queue row, document title, topic vocabulary (topic= values), navigation rule
+   *                             "a queue row links twice" (slug internal, item reference external)
+   *   Component Patterns: Nav bar, Page summary, Filter bar, Queue row, External link, Freshness badge,
+   *                       Policy note, skip link (list)
+   *   State Patterns: Filter with no matches (second frame), Stale everything (one stale row)
+   *   Interaction Primitives: filter state lives in the URL; item reference opens GitHub in a new tab;
+   *                           24px hit area on filter links
+   *   Accessibility Floor: primary and topic filter landmarks, contentinfo for the policy note, explicit
+   *                        table roles and hidden cell labels so the phone card layout keeps its semantics
+   *   Key Flows: Flow 2 steps 5 and 6 (Dependencies filter, three PRs opened in new tabs)
+   * From DESIGN.md 1.0.0: Typography (rem ramp at a 15px documentation root), Components: focus-ring,
+   *   nav-bar, page-summary, queue-row, filter-bar, external-link, freshness-badge, policy-note;
+   *   Do's and Don'ts (external marker, one link color).
+   * The second frame is a separate document in production and would carry the title
+   * "queue · security · gitricorder".
+   */
+  /* ---- DESIGN.md tokens. Light on :root, dark under prefers-color-scheme. ---- */
+  :root {
+    color-scheme: light dark;
+    --bg: #FFFFFF; --surface: #F6F8FA; --fg: #1F2328; --muted: #57606A;
+    --border: #D0D7DE; --link: #0969DA;
+    --critical: #CF222E; --critical-tint: #FFEBE9; --high: #BC4C00;
+    --warn: #9A6700; --warn-tint: #FFF8C5; --ok: #1A7F37;
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-6: 24px; --sp-8: 32px;
+    --gutter: 16px; --content-max: 72rem; --nav-h: 2.75rem;
+    --r-sm: 4px; --r-md: 6px; --r-full: 9999px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0D1117; --surface: #161B22; --fg: #E6EDF3; --muted: #8B949E;
+      --border: #30363D; --link: #4493F8;
+      --critical: #FF7B72; --critical-tint: #3A1214; --high: #F0883E;
+      --warn: #D29922; --warn-tint: #2E2A12; --ok: #3FB950;
+    }
+  }
+
+  /* ---- Mock harness (not part of the product) ---- */
+  /* 15px is the DESIGN.md documentation root. Production sets `html { font: -apple-system-body }` on iOS
+     and leaves the root at 1rem elsewhere, so the rem ramp below follows the platform text size. */
+  html { font-size: 15px; }
+  body { margin: 0; padding: var(--sp-6) var(--gutter); background: var(--bg); color: var(--fg);
+         font: 1rem/1.5 system-ui, sans-serif; }
+  .mock-note { font-size: .867rem; line-height: 1.4; color: var(--muted); max-width: 72rem; margin: 0 auto var(--sp-4); }
+  .device { border: 1px solid var(--border); border-radius: var(--r-md); margin: 0 auto var(--sp-8); overflow: hidden; }
+  .device.desktop { max-width: 1280px; }
+  .device.phone { width: 320px; max-width: 100%; }
+  .device figcaption { font-size: .867rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+         color: var(--muted); padding: var(--sp-2) var(--sp-3); background: var(--surface); }
+  .chrome { background: var(--surface); border-bottom: 1px solid var(--border); padding: var(--sp-2) var(--sp-3); }
+  .chrome .url { display: block; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm);
+         padding: var(--sp-1) var(--sp-2); font-size: .867rem; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+  .screen { container: screen / inline-size; background: var(--bg); position: relative; }
+  /* The phone frame is the scroll root, standing in for `html` on a real phone. The nav is sticky there,
+     so the scroll root carries scroll-padding-top equal to the nav height. At 320px the rendered-at time
+     wraps under the three links, so the nav is two lines and --nav-h is raised to the measured height. */
+  .phone .screen { height: 844px; overflow: auto; --nav-h: 3.45rem; scroll-padding-top: var(--nav-h); }
+
+  /* ---- Page chrome ---- */
+  .screen a { color: var(--link); }
+  .screen :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+  /* Visually hidden text is never painted; nowrap here only stops screen readers pausing at each word. */
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .skip { position: absolute; left: -9999px; top: 0; }
+  .skip:focus { left: var(--gutter); background: var(--surface); padding: var(--sp-1) var(--sp-2); z-index: 3; }
+  .nav { background: var(--surface); border-bottom: 1px solid var(--border); }
+  .nav-inner { max-width: var(--content-max); margin: 0 auto; padding: 0 var(--gutter); box-sizing: border-box;
+         min-height: calc(var(--nav-h) - 1px); display: flex; flex-wrap: wrap; gap: 0 var(--sp-4); align-items: center; }
+  .nav a { text-decoration: none; padding: var(--sp-1) 0; border-bottom: 2px solid transparent; }
+  .nav a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--link); }
+  .nav .rendered { margin-left: auto; font-size: .867rem; line-height: 1.4; color: var(--muted); }
+  main { max-width: var(--content-max); margin: 0 auto; padding: var(--gutter); }
+  h1 { font-size: 1.467rem; font-weight: 600; line-height: 1.25; margin: var(--sp-4) 0 var(--sp-1); }
+  h2 { font-size: 1.133rem; font-weight: 600; line-height: 1.3; margin: var(--sp-8) 0 var(--sp-2);
+       display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); align-items: baseline; }
+  h2 .shown { font-size: .867rem; font-weight: 400; line-height: 1.4; color: var(--muted); }
+  .sub { font-size: .867rem; line-height: 1.4; color: var(--muted); margin: 0 0 var(--sp-4); }
+  .small { font-size: .867rem; line-height: 1.4; }
+  .muted { color: var(--muted); }
+  .attest { font-size: .867rem; line-height: 1.4; color: var(--muted); font-style: italic; margin: var(--sp-2) 0; }
+  .attest.warn { color: var(--warn); }
+  .crumb { font-size: .867rem; line-height: 1.4; color: var(--muted); margin: var(--sp-2) 0 0; }
+  .crumb a { text-decoration: none; }
+
+  /* ---- Components ---- */
+  .tier { display: inline-block; border-radius: var(--r-full); font-size: .867rem; font-weight: 600; letter-spacing: .04em;
+          line-height: 1.2; padding: 3px var(--sp-2); vertical-align: middle; }
+  .tier.now { color: var(--critical); background: var(--critical-tint); }
+  .tier.soon { color: var(--warn); background: var(--warn-tint); }
+  .tier.quiet { color: var(--muted); background: transparent; border: 1px solid var(--border); padding: 2px 7px; }
+
+  .badge { display: inline-block; border-radius: var(--r-full); font-size: .867rem; line-height: 1.4; padding: 0 var(--sp-2);
+           border: 1px solid currentColor; vertical-align: middle; }
+  .badge.fresh { color: var(--ok); }
+  .badge.stale { color: var(--warn); font-weight: 600; }
+  .badge.unknown { color: var(--muted);
+           background: repeating-linear-gradient(45deg, var(--surface) 0 4px, transparent 4px 8px); }
+
+  .chip { display: inline-block; font-size: .867rem; line-height: 1.4; padding: 3px 6px; border-radius: var(--r-sm);
+          font-variant-numeric: tabular-nums; }
+  .chip.zero { color: var(--muted); }
+  .chip.some { color: var(--fg); }
+  .chip.critical { color: var(--critical); font-weight: 700; }
+  .chip.high { color: var(--high); font-weight: 400; }
+  .chip.uncovered { color: var(--warn); text-decoration: underline dotted; }
+  .chip.unconfirmed { color: var(--muted); font-style: italic; }
+  a.chip { min-width: 24px; min-height: 24px; box-sizing: border-box; text-decoration: underline; }
+
+  /* The only nowrap in the product: the item reference and its ↗ glyph. */
+  .ext { white-space: nowrap; }
+
+  table { border-collapse: collapse; width: 100%; margin: var(--sp-2) 0 var(--sp-4); }
+  th { text-align: left; font-size: .867rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; line-height: 1.2;
+       color: var(--muted); padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border); }
+  td { padding: var(--sp-3); border-bottom: 1px solid var(--border); vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.c { padding-left: 6px; padding-top: 9px; }
+  .slug { font-weight: 600; }
+  .why { font-size: .867rem; line-height: 1.4; color: var(--muted); }
+  .sev-critical { color: var(--critical); font-weight: 700; }
+  .sev-high { color: var(--high); font-weight: 400; }
+  .out-ok { color: var(--ok); }
+  .out-warn { color: var(--warn); font-weight: 600; }
+  .out-critical { color: var(--critical); font-weight: 600; }
+  /* Per-cell header word. Hidden while the real <th> is on screen; shown (or visually hidden) once a table becomes cards. */
+  .lbl { display: none; }
+
+  /* ---- Phone: sticky nav, tables become cards (generic) ---- */
+  @container screen (max-width: 639px) {
+    .nav { position: sticky; top: 0; z-index: 1; }
+    table.cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    table.cards, table.cards tbody, table.cards tr { display: block; }
+    table.cards tr { border-bottom: 1px solid var(--border); padding: var(--sp-3) 0; }
+    table.cards td { display: block; border: 0; padding: 2px 0; text-align: left; }
+    table.cards .lbl, .board .lbl { display: inline; font-size: .867rem; font-weight: 600; letter-spacing: .04em;
+       text-transform: uppercase; color: var(--muted); margin-right: var(--sp-1); }
+    table.cards .lbl.hid, .board .lbl.hid { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  }
+  /* ---- Queue: filter bar, filter sentence, ranked rows, policy note ---- */
+  .filters { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-2); margin: var(--sp-4) 0 var(--sp-2); font-size: .867rem; line-height: 1.4; }
+  .filters a { display: inline-block; min-width: 24px; min-height: 24px; box-sizing: border-box; text-align: center;
+               text-decoration: none; padding: var(--sp-1); border-bottom: 2px solid transparent; }
+  .filters a[aria-current="true"] { color: var(--fg); border-bottom-color: var(--link); }
+  .filter-state { margin: 0 0 var(--sp-2); }
+  .queue td.rank { width: 2.5rem; font-size: .867rem; color: var(--muted); }
+  @container screen (max-width: 639px) { .queue td.rank { width: auto; text-align: left; } }
+  .queue td.topic { font-size: .867rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .queue .title { display: block; }
+  .queue .why { display: block; margin-top: var(--sp-1); }
+  .policy-note { font-size: .867rem; line-height: 1.4; color: var(--muted); max-width: var(--content-max);
+                 margin: var(--sp-8) auto 0; padding: 0 var(--gutter) var(--gutter); }
+  .policy-note p { margin: 0; }
+</style>
+</head>
+<body>
+<p class="mock-note">gitricorder queue with the Dependencies filter, desktop. Seven dependency-update pull requests ranked by their linked alerts. The second frame shows the same surface when a filter matches nothing.</p>
+
+<figure class="device desktop">
+  <figcaption>desktop · 1280px · /queue?topic=dependencies</figcaption>
+  <div class="chrome"><span class="url">https://twiki.app.labmonkeys.space/queue?topic=dependencies</span></div>
+  <div class="screen">
+      <a class="skip" href="#list">skip to list</a>
+      <nav class="nav" aria-label="primary"><div class="nav-inner">
+        <a href="/">overview</a>
+        <a href="/queue" aria-current="page">queue</a>
+        <a href="/reviews">reviews</a>
+        <span class="rendered">rendered 2026-09-07 13:02 UTC</span>
+      </div></nav>
+      <main id="main">
+        <h1>What to deal with next</h1>
+        <p class="sub">5 open alerts · 7 update PRs · 3 pull requests · 25 untriaged issues · 2 review requests · KEV catalogue 2026.09.04 · 18h ago</p>
+        <nav class="filters" aria-label="topic filter">
+          <a href="/queue">all</a>
+          <a href="/queue?topic=security">security</a>
+          <a href="/queue?topic=ci">ci</a>
+          <a href="/queue?topic=dependencies" aria-current="true">dependencies</a>
+          <a href="/queue?topic=pulls">pulls</a>
+          <a href="/queue?topic=issues">issues</a>
+          <a href="/reviews">reviews</a>
+        </nav>
+        <p class="filter-state" id="list">Dependency items · 7 shown · <a href="/queue">clear</a></p>
+        <table class="queue cards" role="table">
+          <thead role="rowgroup"><tr role="row">
+            <th scope="col" class="num" role="columnheader">#</th><th scope="col" role="columnheader">Topic</th><th scope="col" role="columnheader">Repository</th>
+            <th scope="col" role="columnheader">Item</th><th scope="col" role="columnheader">Last confirmed</th>
+          </tr></thead>
+          <tbody role="rowgroup">
+            <tr role="row">
+              <td class="num rank" role="cell"><span class="lbl hid">#</span>1</td>
+              <td class="topic" role="cell"><span class="lbl hid">Topic</span>dependencies</td>
+              <td role="cell"><span class="lbl hid">Repository</span><a class="slug" href="/repo/labmonkeys-space/nl6">labmonkeys-space/nl6</a></td>
+              <td role="cell"><span class="lbl hid">Item</span><a class="ext" href="https://github.com/labmonkeys-space/nl6/pull/212" target="_blank" rel="noopener noreferrer">nl6#212&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a><span class="title">build(deps): bump undici from 6.19.8 to 6.21.1</span><span class="why">in CISA KEV, severity critical, update stuck 12d</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span></td>
+            </tr>
+            <tr role="row">
+              <td class="num rank" role="cell"><span class="lbl hid">#</span>2</td>
+              <td class="topic" role="cell"><span class="lbl hid">Topic</span>dependencies</td>
+              <td role="cell"><span class="lbl hid">Repository</span><a class="slug" href="/repo/riptide-labs/udpramp">riptide-labs/udpramp</a></td>
+              <td role="cell"><span class="lbl hid">Item</span><a class="ext" href="https://github.com/riptide-labs/udpramp/pull/44" target="_blank" rel="noopener noreferrer">udpramp#44&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a><span class="title">chore(deps): bump image-size from 1.1.1 to 1.2.1</span><span class="why">not in CISA KEV, EPSS 0.2%, below 1.0%, severity high, update prepared normally</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span></td>
+            </tr>
+            <tr role="row">
+              <td class="num rank" role="cell"><span class="lbl hid">#</span>3</td>
+              <td class="topic" role="cell"><span class="lbl hid">Topic</span>dependencies</td>
+              <td role="cell"><span class="lbl hid">Repository</span><a class="slug" href="/repo/riptide-labs/flowgen">riptide-labs/flowgen</a></td>
+              <td role="cell"><span class="lbl hid">Item</span><a class="ext" href="https://github.com/riptide-labs/flowgen/pull/9" target="_blank" rel="noopener noreferrer">flowgen#9&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a><span class="title">chore(deps): bump vite from 5.4.2 to 5.4.8</span><span class="why">not in CISA KEV, EPSS 0.1%, below 1.0%, severity medium, update prepared normally</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span></td>
+            </tr>
+            <tr role="row">
+              <td class="num rank" role="cell"><span class="lbl hid">#</span>4</td>
+              <td class="topic" role="cell"><span class="lbl hid">Topic</span>dependencies</td>
+              <td role="cell"><span class="lbl hid">Repository</span><a class="slug" href="/repo/labmonkeys-space/k8s-lab">labmonkeys-space/k8s-lab</a></td>
+              <td role="cell"><span class="lbl hid">Item</span><a class="ext" href="https://github.com/labmonkeys-space/k8s-lab/pull/58" target="_blank" rel="noopener noreferrer">k8s-lab#58&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a><span class="title">chore(deps): bump kube-prometheus-stack from 61.3.2 to 65.1.0</span><span class="why">no linked alert, major bump, update stuck 9d</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="last verified 2026-09-06 05:40 UTC, lane budget 30m">stale · 31h ago</span></td>
+            </tr>
+            <tr role="row">
+              <td class="num rank" role="cell"><span class="lbl hid">#</span>5</td>
+              <td class="topic" role="cell"><span class="lbl hid">Topic</span>dependencies</td>
+              <td role="cell"><span class="lbl hid">Repository</span><a class="slug" href="/repo/no42-org/benchkit">no42-org/benchkit</a></td>
+              <td role="cell"><span class="lbl hid">Item</span><a class="ext" href="https://github.com/no42-org/benchkit/pull/23" target="_blank" rel="noopener noreferrer">benchkit#23&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a><span class="title">chore(deps): bump actions/checkout from 4.2.2 to 5.0.0</span><span class="why">no linked alert, major bump, open 3d</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span></td>
+            </tr>
+            <tr role="row">
+              <td class="num rank" role="cell"><span class="lbl hid">#</span>6</td>
+              <td class="topic" role="cell"><span class="lbl hid">Topic</span>dependencies</td>
+              <td role="cell"><span class="lbl hid">Repository</span><a class="slug" href="/repo/no42-org/twiki">no42-org/twiki</a></td>
+              <td role="cell"><span class="lbl hid">Item</span><a class="ext" href="https://github.com/no42-org/twiki/pull/111" target="_blank" rel="noopener noreferrer">twiki#111&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a><span class="title">chore(deps): bump the production-minor-patch group with 4 updates</span><span class="why">no linked alert, minor bump, open 2d</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span></td>
+            </tr>
+            <tr role="row">
+              <td class="num rank" role="cell"><span class="lbl hid">#</span>7</td>
+              <td class="topic" role="cell"><span class="lbl hid">Topic</span>dependencies</td>
+              <td role="cell"><span class="lbl hid">Repository</span><a class="slug" href="/repo/no42-org/blitsbom">no42-org/blitsbom</a></td>
+              <td role="cell"><span class="lbl hid">Item</span><a class="ext" href="https://github.com/no42-org/blitsbom/pull/87" target="_blank" rel="noopener noreferrer">blitsbom#87&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a><span class="title">chore(deps-dev): bump vitest from 2.1.1 to 2.1.3</span><span class="why">no linked alert, patch bump, open 1d</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </main>
+      <footer class="policy-note"><p>Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</p></footer>
+  </div>
+</figure>
+
+<figure class="device desktop">
+  <figcaption>desktop · state: filter with no matches · /queue?topic=security</figcaption>
+  <div class="chrome"><span class="url">https://twiki.app.labmonkeys.space/queue?topic=security</span></div>
+  <div class="screen">
+      <a class="skip" href="#p-list">skip to list</a>
+      <nav class="nav" aria-label="primary"><div class="nav-inner">
+        <a href="/">overview</a>
+        <a href="/queue" aria-current="page">queue</a>
+        <a href="/reviews">reviews</a>
+        <span class="rendered">rendered 2026-09-07 13:02 UTC</span>
+      </div></nav>
+      <main id="p-main">
+        <h1>What to deal with next</h1>
+        <p class="sub">0 open alerts · 4 update PRs · 3 pull requests · 25 untriaged issues · 2 review requests · KEV catalogue 2026.09.04 · 18h ago</p>
+        <nav class="filters" aria-label="topic filter">
+          <a href="/queue">all</a>
+          <a href="/queue?topic=security" aria-current="true">security</a>
+          <a href="/queue?topic=ci">ci</a>
+          <a href="/queue?topic=dependencies">dependencies</a>
+          <a href="/queue?topic=pulls">pulls</a>
+          <a href="/queue?topic=issues">issues</a>
+          <a href="/reviews">reviews</a>
+        </nav>
+        <p class="filter-state" id="p-list">No security items open. <a href="/queue">Clear filter.</a></p>
+      </main>
+      <footer class="policy-note"><p>Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</p></footer>
+  </div>
+</figure>
+</body>
+</html>
