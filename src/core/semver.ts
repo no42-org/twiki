@@ -66,8 +66,37 @@ export function classifyBump(
 }
 
 /**
- * Compute the next patch tag from the latest release tag, preserving a leading
- * "v" if present. With no prior tag, the first release is v0.0.1.
+ * Pick the newest stable semver tag out of a list of tag names, or null when
+ * none qualifies. Order of the input is irrelevant: GitHub's tag listings
+ * carry no defined order, so the maximum is computed here.
+ *
+ * Prerelease tags (`v1.0.0-rc1`) are skipped rather than compared: twiki only
+ * cuts patch releases on the current stable line, and an rc is a human's
+ * in-progress major or minor. Tags that do not parse are ignored, matching
+ * what `nextPatchTag` would refuse anyway. The returned string is the tag
+ * exactly as given, prefix included, so `nextPatchTag` keeps the scheme.
+ */
+export function newestStableTag(tags: readonly string[]): string | null {
+  let best: { tag: string; v: Parsed } | null = null;
+  for (const tag of tags) {
+    const trimmed = tag.trim();
+    if (/^v?\d[^-+]*[-+]/.test(trimmed)) continue; // prerelease or build metadata
+    const v = parseVersion(trimmed);
+    if (!v) continue;
+    if (best === null || compareVersions(v, best.v) > 0) {
+      best = { tag: trimmed, v };
+    }
+  }
+  return best?.tag ?? null;
+}
+
+function compareVersions(a: Parsed, b: Parsed): number {
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+
+/**
+ * Compute the next patch tag from the newest tag, preserving a leading "v" if
+ * present. With no prior tag, the first release is v0.0.1.
  */
 export function nextPatchTag(latestTag: string | null): string {
   if (!latestTag) return "v0.0.1";

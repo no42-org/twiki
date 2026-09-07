@@ -167,6 +167,13 @@ export interface GitHubRepoReadPort {
   listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]>;
   prChecks(repo: RepoRef, headSha: string): Promise<CheckStatus>;
   branchChecks(repo: RepoRef, branch: string): Promise<CheckStatus>;
+  /**
+   * The newest stable semver tag among the repository's tag refs, prefix
+   * preserved, or null when no tag parses. Release objects are not consulted:
+   * a tag with a draft release or no release still counts. Prerelease tags
+   * are skipped. Throws when the tag listing is truncated, because a partial
+   * maximum could re-derive a tag that already exists.
+   */
   latestTag(repo: RepoRef): Promise<string | null>;
   /** Count of Dependabot-attributable commits since `tag` (or all, if null). */
   dependabotCommitsSince(repo: RepoRef, tag: string | null): Promise<number>;

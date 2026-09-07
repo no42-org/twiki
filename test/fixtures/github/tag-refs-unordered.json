@@ -1,0 +1,52 @@
+[
+  {
+    "ref": "refs/tags/v0.10.0",
+    "node_id": "x",
+    "url": "https://api.github.com/repos/no42-org/blittermib-chart/git/refs/tags/v0.10.0",
+    "object": {
+      "sha": "0000000000000000000000000000000000000000",
+      "type": "commit",
+      "url": ""
+    }
+  },
+  {
+    "ref": "refs/tags/v0.9.9",
+    "node_id": "x",
+    "url": "https://api.github.com/repos/no42-org/blittermib-chart/git/refs/tags/v0.9.9",
+    "object": {
+      "sha": "0000000000000000000000000000000000000000",
+      "type": "commit",
+      "url": ""
+    }
+  },
+  {
+    "ref": "refs/tags/v0.2.0",
+    "node_id": "x",
+    "url": "https://api.github.com/repos/no42-org/blittermib-chart/git/refs/tags/v0.2.0",
+    "object": {
+      "sha": "0000000000000000000000000000000000000000",
+      "type": "commit",
+      "url": ""
+    }
+  },
+  {
+    "ref": "refs/tags/v1.0.0-rc1",
+    "node_id": "x",
+    "url": "https://api.github.com/repos/no42-org/blittermib-chart/git/refs/tags/v1.0.0-rc1",
+    "object": {
+      "sha": "0000000000000000000000000000000000000000",
+      "type": "commit",
+      "url": ""
+    }
+  },
+  {
+    "ref": "refs/tags/latest",
+    "node_id": "x",
+    "url": "https://api.github.com/repos/no42-org/blittermib-chart/git/refs/tags/latest",
+    "object": {
+      "sha": "0000000000000000000000000000000000000000",
+      "type": "commit",
+      "url": ""
+    }
+  }
+]

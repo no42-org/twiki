@@ -4,7 +4,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { classifyBump, nextPatchTag } from "../src/core/semver.js";
+import {
+  classifyBump,
+  newestStableTag,
+  nextPatchTag,
+} from "../src/core/semver.js";
 
 describe("classifyBump", () => {
   it("classifies a patch bump", () => {
@@ -55,5 +59,30 @@ describe("nextPatchTag", () => {
   });
   it("ignores prerelease/build metadata when bumping", () => {
     expect(nextPatchTag("v2.5.9-rc1")).toBe("v2.5.10");
+  });
+});
+
+describe("newestStableTag", () => {
+  it("returns the highest stable version regardless of listing order", () => {
+    expect(newestStableTag(["v0.10.0", "v0.9.9", "v0.2.0"])).toBe("v0.10.0");
+    expect(newestStableTag(["v0.2.0", "v0.9.9", "v0.10.0"])).toBe("v0.10.0");
+  });
+
+  it("skips prerelease tags rather than incrementing them", () => {
+    expect(newestStableTag(["v0.9.3", "v1.0.0-rc1"])).toBe("v0.9.3");
+    expect(newestStableTag(["v1.0.0-rc1"])).toBeNull();
+  });
+
+  it("keeps the tag's own prefix scheme", () => {
+    expect(newestStableTag(["1.2.0", "1.2.1"])).toBe("1.2.1");
+    expect(nextPatchTag(newestStableTag(["1.2.0", "1.2.1"]))).toBe("1.2.2");
+  });
+
+  it("ignores tags that are not versions", () => {
+    expect(
+      newestStableTag(["latest", "nightly", "v0.5.12", "release-2024"]),
+    ).toBe("v0.5.12");
+    expect(newestStableTag(["latest"])).toBeNull();
+    expect(newestStableTag([])).toBeNull();
   });
 });

@@ -5,7 +5,7 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
-import { parseDependency } from "../core/semver.js";
+import { newestStableTag, parseDependency } from "../core/semver.js";
 import type {
   BranchProtection,
   CheckStatus,
@@ -979,15 +979,37 @@ export class OctokitGitHub implements GitHubPort {
 
   async latestTag(repo: RepoRef): Promise<string | null> {
     const gh = await this.client(repo);
-    try {
-      const { data } = await gh.repos.getLatestRelease({
-        owner: repo.owner,
-        repo: repo.name,
-      });
-      return data.tag_name;
-    } catch {
-      return null; // no releases yet
+    // The ref store, not the releases list. `getLatestRelease` answers the
+    // newest PUBLISHED release, which is a different object: a tag whose
+    // release is a draft (the repository's own workflow drafted it) or has no
+    // release at all is invisible to it. Every tick then re-derived the tag
+    // that already existed, pushed it, and got 422 (#110). The refs are the
+    // primary object; releases are derived from them.
+    const walked = await walkLinkedPages(
+      `tag listing for ${repoSlug(repo)}`,
+      () =>
+        gh.request("GET /repos/{owner}/{repo}/git/matching-refs/{ref}", {
+          owner: repo.owner,
+          repo: repo.name,
+          ref: "tags/",
+          per_page: 100,
+        }),
+      (url) => gh.request(`GET ${url}`),
+    );
+    // A partial listing cannot yield a trustworthy maximum: the newest tag may
+    // sit on an unread page, and guessing from what was seen is #110 again
+    // with a different number. Same discipline as the commit walk (#90).
+    if (walked.truncated) {
+      throw new Error(
+        `tag listing for ${repoSlug(repo)} exceeded ${MAX_ALERT_PAGES} pages; ` +
+          "the newest tag is unknown, so no release can be derived this tick",
+      );
     }
+    const names = (walked.items as { ref?: unknown }[])
+      .map((r) => (typeof r.ref === "string" ? r.ref : ""))
+      .filter((ref) => ref.startsWith("refs/tags/"))
+      .map((ref) => ref.slice("refs/tags/".length));
+    return newestStableTag(names);
   }
 
   async dependabotCommitsSince(
