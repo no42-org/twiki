@@ -46,7 +46,14 @@ export interface ReleaseOutcome {
     | "would-release"
     | "no-release-workflow"
     | "skipped-merge-only"
-    | "waiting";
+    | "waiting"
+    /**
+     * The computed tag existed by the time twiki pushed it: a tagger got
+     * there between the re-check and the push. Not an error and not a stop;
+     * `detail` says what release state the tag has (published, draft, none)
+     * so the reader knows whether a human is mid-release.
+     */
+    | "tag-exists";
   version?: string;
   detail: string;
 }

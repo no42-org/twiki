@@ -57,7 +57,10 @@ function repoHasActivity(repo: RepoResult): boolean {
   if ((repo.remediations ?? []).length > 0) return true;
   const s = repo.release.status;
   return (
-    s === "released" || s === "would-release" || s === "no-release-workflow"
+    s === "released" ||
+    s === "would-release" ||
+    s === "no-release-workflow" ||
+    s === "tag-exists"
   );
 }
 
@@ -228,6 +231,12 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
       break;
     case "no-release-workflow":
       lines.push(`  ⚠️ ${rel.detail}`);
+      break;
+    case "tag-exists":
+      // Someone else's tag, not a failed write: the wording must not read
+      // like one. The release state tells the reader whether a human is
+      // mid-release (draft, published) or a stray tag wants attention (none).
+      lines.push(`  ⏭️ ${rel.detail}`);
       break;
     case "skipped-merge-only":
       // Only interesting if it would otherwise have released — keep quiet.

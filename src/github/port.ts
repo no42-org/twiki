@@ -167,6 +167,13 @@ export interface GitHubRepoReadPort {
   listOpenDependabotPRs(repo: RepoRef): Promise<RawPullRequest[]>;
   prChecks(repo: RepoRef, headSha: string): Promise<CheckStatus>;
   branchChecks(repo: RepoRef, branch: string): Promise<CheckStatus>;
+  /**
+   * The newest stable semver tag among the repository's tag refs, prefix
+   * preserved, or null when no tag parses. Release objects are not consulted:
+   * a tag with a draft release or no release still counts. Prerelease tags
+   * are skipped. Throws when the tag listing is truncated, because a partial
+   * maximum could re-derive a tag that already exists.
+   */
   latestTag(repo: RepoRef): Promise<string | null>;
   /** Count of Dependabot-attributable commits since `tag` (or all, if null). */
   dependabotCommitsSince(repo: RepoRef, tag: string | null): Promise<number>;
@@ -324,7 +331,18 @@ export interface GitHubReadPort
 /** Mutating — executor only, enforce mode only. */
 export interface GitHubWritePort {
   mergePR(repo: RepoRef, prNumber: number): Promise<void>;
+  /**
+   * Create the tag ref. Rejects with `TagExistsError` when GitHub answers
+   * 422 "Reference already exists": with `latestTag` reading the ref store,
+   * that only happens when someone tagged between the re-check and the push.
+   */
   pushTag(repo: RepoRef, tag: string, sha: string): Promise<void>;
+  /**
+   * What GitHub holds for an existing tag, so a collision can say whether a
+   * human is mid-release (published or draft) or a stray tag needs attention
+   * (none). Read-only; twiki never publishes or deletes a release.
+   */
+  releaseStateForTag(repo: RepoRef, tag: string): Promise<ReleaseState>;
   /** Re-run only the failed jobs of a workflow run (bounded by run_attempt). */
   rerunFailedJobs(repo: RepoRef, runId: number): Promise<void>;
   /** Ask Dependabot to rebase a PR by posting `@dependabot rebase`. */
@@ -341,6 +359,23 @@ export interface GitHubWritePort {
  * `getOrgInstallation`, which 404s on a user account, and nothing in the
  * type said so.
  */
+/** What GitHub holds for a tag: a published release, a draft, or nothing. */
+export type ReleaseState = "published" | "draft" | "none";
+
+/**
+ * The tag ref already existed when twiki tried to create it. Not a failure
+ * of the write side: the repository continues, and the outcome is reported
+ * as `tag-exists` with the release state of the tag that got there first.
+ */
+export class TagExistsError extends Error {
+  readonly tag: string;
+  constructor(tag: string) {
+    super(`tag ${tag} already exists`);
+    this.name = "TagExistsError";
+    this.tag = tag;
+  }
+}
+
 export interface GitHubPort extends GitHubRepoReadPort, GitHubWritePort {}
 
 // App-level reads: what this App is, and where it is installed. These are

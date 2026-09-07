@@ -5,7 +5,7 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
-import { parseDependency } from "../core/semver.js";
+import { newestStableTag, parseDependency } from "../core/semver.js";
 import type {
   BranchProtection,
   CheckStatus,
@@ -39,11 +39,13 @@ import type {
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
+  ReleaseState,
   RequestValidator,
   ReviewRequestPage,
   UpdatePrPage,
   WorkflowRunPage,
 } from "./port.js";
+import { TagExistsError } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
 
@@ -979,15 +981,37 @@ export class OctokitGitHub implements GitHubPort {
 
   async latestTag(repo: RepoRef): Promise<string | null> {
     const gh = await this.client(repo);
-    try {
-      const { data } = await gh.repos.getLatestRelease({
-        owner: repo.owner,
-        repo: repo.name,
-      });
-      return data.tag_name;
-    } catch {
-      return null; // no releases yet
+    // The ref store, not the releases list. `getLatestRelease` answers the
+    // newest PUBLISHED release, which is a different object: a tag whose
+    // release is a draft (the repository's own workflow drafted it) or has no
+    // release at all is invisible to it. Every tick then re-derived the tag
+    // that already existed, pushed it, and got 422 (#110). The refs are the
+    // primary object; releases are derived from them.
+    const walked = await walkLinkedPages(
+      `tag listing for ${repoSlug(repo)}`,
+      () =>
+        gh.request("GET /repos/{owner}/{repo}/git/matching-refs/{ref}", {
+          owner: repo.owner,
+          repo: repo.name,
+          ref: "tags/",
+          per_page: 100,
+        }),
+      (url) => gh.request(`GET ${url}`),
+    );
+    // A partial listing cannot yield a trustworthy maximum: the newest tag may
+    // sit on an unread page, and guessing from what was seen is #110 again
+    // with a different number. Same discipline as the commit walk (#90).
+    if (walked.truncated) {
+      throw new Error(
+        `tag listing for ${repoSlug(repo)} exceeded ${MAX_ALERT_PAGES} pages; ` +
+          "the newest tag is unknown, so no release can be derived this tick",
+      );
     }
+    const names = (walked.items as { ref?: unknown }[])
+      .map((r) => (typeof r.ref === "string" ? r.ref : ""))
+      .filter((ref) => ref.startsWith("refs/tags/"))
+      .map((ref) => ref.slice("refs/tags/".length));
+    return newestStableTag(names);
   }
 
   async dependabotCommitsSince(
@@ -1586,12 +1610,35 @@ export class OctokitGitHub implements GitHubPort {
 
   async pushTag(repo: RepoRef, tag: string, sha: string): Promise<void> {
     const gh = await this.client(repo);
-    await gh.git.createRef({
+    try {
+      await gh.git.createRef({
+        owner: repo.owner,
+        repo: repo.name,
+        ref: `refs/tags/${tag}`,
+        sha,
+      });
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const message = err instanceof Error ? err.message : String(err);
+      if (status === 422 && /already exists/i.test(message)) {
+        throw new TagExistsError(tag);
+      }
+      throw err;
+    }
+  }
+
+  async releaseStateForTag(repo: RepoRef, tag: string): Promise<ReleaseState> {
+    const gh = await this.client(repo);
+    // One page is enough: the tag in question is by construction the newest
+    // one, and drafts are included for an App with contents access.
+    const { data } = await gh.repos.listReleases({
       owner: repo.owner,
       repo: repo.name,
-      ref: `refs/tags/${tag}`,
-      sha,
+      per_page: 100,
     });
+    const rel = data.find((r) => r.tag_name === tag);
+    if (!rel) return "none";
+    return rel.draft ? "draft" : "published";
   }
 
   async rerunFailedJobs(repo: RepoRef, runId: number): Promise<void> {
