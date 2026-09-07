@@ -1336,6 +1336,9 @@ describe("the per-repository page", () => {
   });
 
   it("links every repository on the list page to its own page", async () => {
+    // A completed sweep with an open alert, so the repository has a row:
+    // before the first completed sweep the overview lists nothing.
+    seedKevAndAlert({ number: 1 });
     const html = await (await app().request("/")).text();
     expect(html).toContain('href="/repo/no42-org/twiki"');
   });

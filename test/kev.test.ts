@@ -20,6 +20,7 @@ function catalogueOf(outcome: KevFetchOutcome) {
   return outcome.catalogue;
 }
 
+import { buildCollectionHealth } from "../src/tricorder/attention/health.js";
 import {
   kevSignal,
   loadKevIndex,
@@ -27,7 +28,6 @@ import {
 import { collectKev, KEV_INSTALLATION } from "../src/tricorder/collect/kev.js";
 import { REVIEWS_INSTALLATION } from "../src/tricorder/collect/review-requests.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
-import { buildCollectionHealth } from "../src/tricorder/web/view.js";
 import {
   ACTIONS_CADENCE_MS,
   ACTIONS_SWEEP_BOUND_MS,

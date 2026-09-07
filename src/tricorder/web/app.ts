@@ -24,7 +24,6 @@ import {
 } from "./components.js";
 import { buildRepoView } from "./repo-view.js";
 import { buildReviewView } from "./review-view.js";
-import { buildCollectionHealth } from "./view.js";
 
 // Routes read through StorePort only: no SQL, no table name, no predicate
 // composed here (AD-27). No GitHub call happens on the request path (AD-3).
@@ -63,8 +62,8 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/", (c) => {
     const now = deps.now();
-    // One queue build per request (AD-32): tiles, rows and summary all read
-    // this one result.
+    // One queue build per request (AD-32): tiles, rows, summary and the
+    // collection-health table all read this one result.
     const board = buildBoard(deps.store, deps.watched, now, {
       policy: deps.policy,
       kevPolicy,
@@ -74,15 +73,9 @@ export function createApp(deps: AppDeps): Hono {
       coveragePolicy: deps.lanePolicies?.[COVERAGE_LANE],
       lanePolicies: deps.lanePolicies,
     });
-    const health = buildCollectionHealth(
-      deps.store,
-      now,
-      deps.policy,
-      deps.lanePolicies,
-    );
     // Without the doctype browsers render in quirks mode, where the box model
     // and table metrics differ from what the styles were written against.
-    const body = Page({ board, health, generatedAt: now.toISOString() });
+    const body = Page({ board, generatedAt: now.toISOString() });
     // Every freshness verdict on this page is computed against the render
     // clock. A cached copy re-presents those verdicts later, still claiming
     // "fresh", which is the one thing the page must never do.

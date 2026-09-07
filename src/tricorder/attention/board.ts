@@ -11,7 +11,10 @@ import { watchKey } from "../../core/slug.js";
 import { type Tier, tier } from "../../core/tier.js";
 import { TOPICS, type Topic, topicOf } from "../../core/topics.js";
 import type { RepoRef } from "../../core/types.js";
-import type { CoverageObservation } from "../collect/coverage.js";
+import {
+  LANE as COVERAGE_LANE,
+  type CoverageObservation,
+} from "../collect/coverage.js";
 import { LANE as ISSUE_LANE } from "../collect/issues.js";
 import {
   REVIEWS_INSTALLATION,
@@ -26,6 +29,8 @@ import {
   type FreshnessPolicy,
   freshness,
 } from "./freshness.js";
+import { buildCollectionHealth, type CollectionHealth } from "./health.js";
+import { laneTopic } from "./lane-topics.js";
 import { topicPath } from "./links.js";
 import type { QueueItem } from "./queue.js";
 import {
@@ -78,12 +83,23 @@ export interface Tile {
   topic: Topic;
   label: string;
   href: string;
-  /** The confirmed chips' counts summed across watched repositories, or `unconfirmed`. */
-  count: number | "unconfirmed";
+  /**
+   * The confirmed chips' counts summed across watched repositories, or
+   * `unconfirmed`; `never collected` on every tile while no sweep has ever
+   * completed (#127).
+   */
+  count: number | "unconfirmed" | "never collected";
   /** Items whose own tier is `now`, among repositories whose chip is a count. */
   nowCount: number;
   /** Why the tile is `unconfirmed`. Null when it carries a count. */
   reason: string | null;
+  /**
+   * One line per lane of this topic whose latest run failed or stalled, in
+   * health-table order: `alerts sweep failed for riptide-labs 3h ago; counts
+   * may be low`. The count above it is then a lower bound, and the tile
+   * says so where the reader looks rather than only at the foot of the page.
+   */
+  warnings: string[];
 }
 
 export interface BoardRow {
@@ -119,8 +135,24 @@ export interface Board {
    * has looked, which is not quiet at all (AD-28). Never folded into `quiet`.
    */
   unconfirmed: string[];
-  /** Queue rows that could not be read. Carried for the page to state (Story 1.7). */
+  /** Queue rows that could not be read. Carried for the page to state (#127). */
   unreadable: number;
+  /**
+   * Whether anything has ever been collected: true when any latest-per-lane
+   * health row has outcome `ok` or `partial`, or when any `present`
+   * repository confirmation exists. The health table keeps only the latest
+   * run per lane, so an estate whose lanes all failed once after good
+   * sweeps still holds its confirmations and stays collected. False is the
+   * empty store, or one holding nothing but failures and in-flight runs:
+   * nothing on the board is then a finding, and the page says `nothing
+   * collected yet` instead.
+   */
+  collected: boolean;
+  /**
+   * The latest run per lane, installation and scope, from the same read the
+   * tile warnings come from, so the table and the tiles cannot disagree.
+   */
+  health: CollectionHealth[];
 }
 
 /** The two absences an `unconfirmed` chip or tile can stand for. */
@@ -183,6 +215,63 @@ export function buildBoard(
     if (!repos.has(slug)) repos.set(slug, repo);
   }
 
+  // The repository confirmation is the source of truth for "did we look".
+  // Deriving it from alert rows cannot work: a healthy repository has none,
+  // and a newly-clean one stops having its rows updated the moment they are
+  // tombstoned, so both would read as never collected. Only `present` rows:
+  // a tombstoned confirmation is a retracted assertion.
+  const confirmations = new Map<string, CurrentValue>();
+  for (const value of store.currentByType("repository")) {
+    if (value.state === "present") confirmations.set(value.subject.key, value);
+  }
+
+  // One read of collection health for the whole page: the tile warnings and
+  // the table at the foot come from it (#127). A lane whose latest full
+  // sweep failed, stalled or came back partial warns on its topic's tile,
+  // because the count above it is then a lower bound and a low count reads
+  // as a quiet estate.
+  // Coverage is judged on its own cadence here as everywhere else, or a
+  // daily run in flight past the sweep cadence would read stalled.
+  const health = buildCollectionHealth(store, now, deps.policy, {
+    ...deps.lanePolicies,
+    [COVERAGE_LANE]:
+      deps.coveragePolicy ?? deps.lanePolicies?.[COVERAGE_LANE] ?? deps.policy,
+  });
+  const collected =
+    health.some((h) => h.outcome === "ok" || h.outcome === "partial") ||
+    confirmations.size > 0;
+  const owners = new Set(
+    [...repos.values()].map((repo) => repo.owner.toLowerCase()),
+  );
+  const warnings = new Map<Topic, string[]>();
+  for (const h of health) {
+    // Every outcome but a clean one and a run still inside its budget: a
+    // partial sweep is a lower bound exactly as a failed one is.
+    if (h.outcome === "ok" || h.outcome === "running") continue;
+    // A hot run is a subset; the full run is what vouches for the count.
+    if (h.scope !== "full") continue;
+    // A lane this map does not know is a programming error, caught by the
+    // test that walks every LANE export; here it must not 500 the page, and
+    // the health table still lists the row.
+    const lane = laneTopic(h.lane);
+    if (lane === undefined) continue;
+    // A per-installation lane failing on an owner nobody watches any more
+    // would otherwise warn on every render until the row is purged.
+    if (lane.installation === null && !owners.has(h.installation.toLowerCase()))
+      continue;
+    const where = lane.installation === null ? ` for ${h.installation}` : "";
+    const line = `${lane.word} sweep ${h.outcome}${where} ${h.age}`;
+    warnings.set(lane.topic, [...(warnings.get(lane.topic) ?? []), line]);
+  }
+  /**
+   * The topic's warning lines. `counts may be low` is appended only under a
+   * count: a tile reading `unconfirmed` or `never collected` has none.
+   */
+  const warningsFor = (topic: Topic, counted: boolean): string[] =>
+    (warnings.get(topic) ?? []).map((line) =>
+      counted ? `${line}; counts may be low` : line,
+    );
+
   // Coverage is trusted only while its own attestation is fresh. If the
   // coverage lane dies and somebody then switches Dependabot off, a cached
   // `covered` would keep the page showing a confident zero (AD-28).
@@ -218,14 +307,35 @@ export function buildBoard(
     notCovered,
   );
 
-  // The repository confirmation is the source of truth for "did we look".
-  // Deriving it from alert rows cannot work: a healthy repository has none,
-  // and a newly-clean one stops having its rows updated the moment they are
-  // tombstoned, so both would read as never collected. Only `present` rows:
-  // a tombstoned confirmation is a retracted assertion.
-  const confirmations = new Map<string, CurrentValue>();
-  for (const value of store.currentByType("repository")) {
-    if (value.state === "present") confirmations.set(value.subject.key, value);
+  // Nothing has ever been collected. No count on this page would be a
+  // finding, so none is offered (AD-28): every tile reads `never collected`,
+  // no row or quiet block is built, and every repository is unconfirmed.
+  // The page replaces the board with one note pointing at the health table.
+  if (!collected) {
+    return {
+      summary: {
+        watched: repos.size,
+        now: 0,
+        soon: 0,
+        quiet: 0,
+        unconfirmed: repos.size,
+      },
+      tiles: TOPICS.map(({ topic, label }) => ({
+        topic,
+        label,
+        href: topicPath(topic),
+        count: "never collected",
+        nowCount: 0,
+        reason: null,
+        warnings: warningsFor(topic, false),
+      })),
+      rows: [],
+      quiet: [],
+      unconfirmed: [...repos.keys()],
+      unreadable: queue.unreadable,
+      collected,
+      health,
+    };
   }
 
   // A lane's standing on an installation, asked once per lane and owner
@@ -413,6 +523,7 @@ export function buildBoard(
         nowCount: 0,
         reason:
           kinds.length === 0 && topic !== "reviews" ? NO_COLLECTOR : NO_SWEEP,
+        warnings: warningsFor(topic, false),
       };
     }
     const countedSlugs = new Set(
@@ -429,6 +540,7 @@ export function buildBoard(
       count: chips.reduce((sum, { chip }) => sum + chip.count, 0),
       nowCount,
       reason: null,
+      warnings: warningsFor(topic, true),
     };
   });
 
@@ -445,5 +557,7 @@ export function buildBoard(
     quiet,
     unconfirmed,
     unreadable: queue.unreadable,
+    collected,
+    health,
   };
 }
