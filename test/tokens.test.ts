@@ -53,21 +53,24 @@ describe("design tokens (DESIGN.md Colors)", () => {
   it.each([
     ["light", LIGHT, 0],
     ["dark", DARK, 1],
-  ] as const)("%s pairs do not fall below the ratios DESIGN.md records", (_theme, palette, i) => {
-    for (const [text, ground] of TEXT_PAIRS) {
-      const key = `${text}/${ground}` as const;
-      const documented = DOCUMENTED_MIN[key]?.[i];
-      if (documented === undefined) {
-        throw new Error(`${key} has no documented ratio in DOCUMENTED_MIN`);
+  ] as const)(
+    "%s pairs do not fall below the ratios DESIGN.md records",
+    (_theme, palette, i) => {
+      for (const [text, ground] of TEXT_PAIRS) {
+        const key = `${text}/${ground}` as const;
+        const documented = DOCUMENTED_MIN[key]?.[i];
+        if (documented === undefined) {
+          throw new Error(`${key} has no documented ratio in DOCUMENTED_MIN`);
+        }
+        const ratio = contrast(palette[text], palette[ground]);
+        // Records are rounded to one decimal, so allow half a step of
+        // rounding. A palette edit that costs more than that fails here even
+        // if it still passes AA. Lightening warn or warn-tint drops 4.52
+        // under 4.5 and fails.
+        expect(ratio, key).toBeGreaterThanOrEqual(documented - 0.05);
       }
-      const ratio = contrast(palette[text], palette[ground]);
-      // Records are rounded to one decimal, so allow half a step of
-      // rounding. A palette edit that costs more than that fails here even
-      // if it still passes AA. Lightening warn or warn-tint drops 4.52
-      // under 4.5 and fails.
-      expect(ratio, key).toBeGreaterThanOrEqual(documented - 0.05);
-    }
-  });
+    },
+  );
 
   it("emits light values on :root and dark values under the media query", () => {
     expect(TOKEN_STYLE).toContain(`--bg: ${LIGHT.bg};`);
@@ -115,31 +118,29 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
     return m?.[1] ?? "";
   };
 
-  it.each([
-    "/",
-    "/queue",
-    "/reviews",
-    "/repo/no42-org/twiki",
-  ])("%s paints from tokens only and loads nothing from the network", async (path) => {
-    const html = await render(path);
-    const m = /<style>([\s\S]*?)<\/style>/.exec(html);
-    expect(m, "one inline style block").not.toBeNull();
-    const style = m?.[1] ?? "";
-    expect(style).toBe(STYLE);
+  it.each(["/", "/queue", "/reviews", "/repo/no42-org/twiki"])(
+    "%s paints from tokens only and loads nothing from the network",
+    async (path) => {
+      const html = await render(path);
+      const m = /<style>([\s\S]*?)<\/style>/.exec(html);
+      expect(m, "one inline style block").not.toBeNull();
+      const style = m?.[1] ?? "";
+      expect(style).toBe(STYLE);
 
-    // Every hex on the page lives in the token block; component rules name
-    // custom properties. Strip the token block and nothing may remain.
-    const rules = style.replace(TOKEN_STYLE, "");
-    expect(rules).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-    expect(rules).toContain("var(--fg)");
-    expect(rules).toContain("background: var(--bg)");
+      // Every hex on the page lives in the token block; component rules name
+      // custom properties. Strip the token block and nothing may remain.
+      const rules = style.replace(TOKEN_STYLE, "");
+      expect(rules).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+      expect(rules).toContain("var(--fg)");
+      expect(rules).toContain("background: var(--bg)");
 
-    // Distroless, offline: no script, no external stylesheet, font or import.
-    expect(html).not.toMatch(/<script/i);
-    expect(html).not.toMatch(/<link/i);
-    expect(style).not.toMatch(/@import|url\(/);
-    expect(html.slice(0, html.indexOf("</head>"))).not.toMatch(/https?:\/\//);
-  });
+      // Distroless, offline: no script, no external stylesheet, font or import.
+      expect(html).not.toMatch(/<script/i);
+      expect(html).not.toMatch(/<link/i);
+      expect(style).not.toMatch(/@import|url\(/);
+      expect(html.slice(0, html.indexOf("</head>"))).not.toMatch(/https?:\/\//);
+    },
+  );
 
   it("sets text in rem so platform text scaling applies", () => {
     const sizes = [...STYLE.matchAll(/font-size: ([^;]+);/g)].map((m) => m[1]);
