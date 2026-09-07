@@ -34,6 +34,7 @@ import type {
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
+  ReleaseState,
   RequestValidator,
   ReviewRequestPage,
   UpdatePrPage,
@@ -588,6 +589,12 @@ export class FakeGitHub extends FakeGitHubReadPort implements GitHubPort {
   async pushTag(repo: RepoRef, tag: string, sha: string): Promise<void> {
     if (this.failTagWith) throw this.failTagWith;
     this.tagged.push({ repo: repoSlug(repo), tag, sha });
+  }
+  /** Release state per "<slug>@<tag>"; anything unlisted is "none". */
+  releaseStates = new Map<string, ReleaseState>();
+
+  async releaseStateForTag(repo: RepoRef, tag: string): Promise<ReleaseState> {
+    return this.releaseStates.get(`${repoSlug(repo)}@${tag}`) ?? "none";
   }
   async rerunFailedJobs(repo: RepoRef, runId: number): Promise<void> {
     const fail = this.failRerunOn.get(runId);

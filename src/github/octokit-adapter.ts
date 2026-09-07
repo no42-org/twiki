@@ -39,11 +39,13 @@ import type {
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
+  ReleaseState,
   RequestValidator,
   ReviewRequestPage,
   UpdatePrPage,
   WorkflowRunPage,
 } from "./port.js";
+import { TagExistsError } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
 
@@ -1608,12 +1610,35 @@ export class OctokitGitHub implements GitHubPort {
 
   async pushTag(repo: RepoRef, tag: string, sha: string): Promise<void> {
     const gh = await this.client(repo);
-    await gh.git.createRef({
+    try {
+      await gh.git.createRef({
+        owner: repo.owner,
+        repo: repo.name,
+        ref: `refs/tags/${tag}`,
+        sha,
+      });
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const message = err instanceof Error ? err.message : String(err);
+      if (status === 422 && /already exists/i.test(message)) {
+        throw new TagExistsError(tag);
+      }
+      throw err;
+    }
+  }
+
+  async releaseStateForTag(repo: RepoRef, tag: string): Promise<ReleaseState> {
+    const gh = await this.client(repo);
+    // One page is enough: the tag in question is by construction the newest
+    // one, and drafts are included for an App with contents access.
+    const { data } = await gh.repos.listReleases({
       owner: repo.owner,
       repo: repo.name,
-      ref: `refs/tags/${tag}`,
-      sha,
+      per_page: 100,
     });
+    const rel = data.find((r) => r.tag_name === tag);
+    if (!rel) return "none";
+    return rel.draft ? "draft" : "published";
   }
 
   async rerunFailedJobs(repo: RepoRef, runId: number): Promise<void> {

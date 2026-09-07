@@ -14,6 +14,7 @@ import {
   type WorkflowRunRef,
 } from "../core/types.js";
 import type { GitHubPort } from "../github/port.js";
+import { TagExistsError } from "../github/port.js";
 import { canRebase, canRerunCi, isSettled, mergeBlock } from "./gates.js";
 import type { Plan, RepoPlan } from "./plan.js";
 import type {
@@ -355,7 +356,20 @@ async function evaluateRelease(
 
   if (enforce) {
     const sha = await github.defaultBranchSha(facts.repo);
-    await github.pushTag(facts.repo, version, sha);
+    try {
+      await github.pushTag(facts.repo, version, sha);
+    } catch (err) {
+      if (!(err instanceof TagExistsError)) throw err;
+      // Someone tagged between the re-check above and this push. The tag is
+      // theirs; say what GitHub holds for it and move on. Nothing was
+      // written, so the repository is neither errored nor stopped (#110).
+      const state = await github.releaseStateForTag(facts.repo, version);
+      return {
+        status: "tag-exists",
+        version,
+        detail: `tag ${version} appeared before twiki could push it (release: ${state})`,
+      };
+    }
     return { status: "released", version, detail: "patch release tagged" };
   }
   return {
