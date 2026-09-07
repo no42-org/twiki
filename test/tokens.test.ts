@@ -218,6 +218,20 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
     expect(rule(".quiet")).toContain("background: var(--surface)");
   });
 
+  it("styles attestation notes in italic muted, warn when a count may be low, and the breadcrumb", () => {
+    expect(rule(".attest")).toContain("color: var(--muted)");
+    expect(rule(".attest")).toContain("font-style: italic");
+    expect(rule(".attest.warn")).toContain("color: var(--warn)");
+    // The warn variant changes the color only; the italic stays.
+    expect(rule(".attest.warn")).not.toContain("font-style");
+    expect(rule(".crumb")).toContain("color: var(--muted)");
+    // DESIGN.md sets the breadcrumb in `small`, not body size.
+    expect(rule(".crumb")).toContain("font-size: 0.867rem");
+    // `N shown` is a plain count beside a heading, not a second heading.
+    expect(rule(".shown")).toContain("font-weight: 400");
+    expect(rule(".shown")).toContain("color: var(--muted)");
+  });
+
   it("colors every collection-health outcome, with running kept muted", () => {
     expect(rule(".ok")).toContain("color: var(--ok)");
     expect(rule(".partial")).toContain("color: var(--warn)");

@@ -316,8 +316,11 @@ describe("the reviews page", () => {
     expect(html).toContain("opennms/opennms#8803");
     expect(html).toContain("not watched");
     expect(html).toContain("Waiting on your review");
-    // And says plainly what an unwatched row does not carry.
-    expect(html).toContain("no alerts, no coverage, no build status");
+    // And says plainly what an unwatched row does not carry, in a footer
+    // outside main.
+    expect(html).toContain(
+      '</main><footer class="policy-note">Review requests are collected wherever they land, not only in watched repositories, because a request is a claim on your attention either way. Rows marked not watched carry nothing else from this dashboard: no alerts, no coverage, no build status.</footer>',
+    );
   });
 
   it("lists the oldest request first, and says how long it has waited", () => {

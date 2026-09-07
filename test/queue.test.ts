@@ -942,6 +942,10 @@ describe("the queue page", () => {
   it("labels the ordering a local policy, never SSVC (AD-20)", async () => {
     const html = await (await app().request("/queue")).text();
     expect(html).toContain("local policy");
+    // The whole note, as the page's footer outside main.
+    expect(html).toContain(
+      '</main><footer class="policy-note">Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</footer>',
+    );
     expect(html).toContain("not SSVC");
   });
 

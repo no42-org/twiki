@@ -3,11 +3,11 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { FC, PropsWithChildren } from "hono/jsx";
+import type { Child, FC, PropsWithChildren } from "hono/jsx";
 import { safeUrl } from "../../core/safe-url.js";
 import { foldSlug } from "../../core/slug.js";
 import type { Tier } from "../../core/tier.js";
-import { TOPICS, topicOf } from "../../core/topics.js";
+import { TOPICS, type Topic, topicOf } from "../../core/topics.js";
 import type { SectionState } from "../attention/attestation.js";
 import type { Board, Chip, Tile } from "../attention/board.js";
 import type { FilteredQueue, QueueFilter } from "../attention/filter.js";
@@ -96,6 +96,10 @@ export const STYLE = `${TOKEN_STYLE}
   .chip.uncovered { color: var(--warn); font-style: normal; text-decoration: underline dotted; }
   .chip.unconfirmed { color: var(--muted); font-style: italic; }
   .attest { color: var(--muted); font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; font-style: italic; margin: ${SPACE[2]} 0 0; }
+  .attest.warn { color: var(--warn); }
+  .shown { color: var(--muted); font-size: ${TYPE.small.size}; font-weight: 400; line-height: ${TYPE.small.lineHeight}; }
+  .crumb { color: var(--muted); font-size: ${TYPE.small.size}; margin-bottom: ${SPACE[2]}; }
+  .crumb a { margin-right: 0; }
   .legend { color: var(--muted); font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; margin: 0; }
   .quiet { background: var(--surface); border: 1px solid var(--border); border-radius: ${RADIUS.md}; padding: ${SPACE[3]} ${SPACE[4]}; margin-top: ${SPACE[6]}; }
   .quiet summary { font-weight: 600; }
@@ -252,10 +256,14 @@ const TopicTile: FC<{ tile: Tile }> = ({ tile }) =>
  *
  * Both pages used to carry their own copy of the html/head/nav chrome, which
  * meant a nav link or a meta fix had to land twice and a missed copy shipped
- * divergent pages.
+ * divergent pages. The content is the `main` landmark and the page's policy
+ * note is a `footer` outside it, so a screen reader finds the caveat as
+ * `contentinfo` rather than as content. `id="main"` is the target Story
+ * 1.8's skip links will use; nothing links to it yet.
  */
-const Layout: FC<PropsWithChildren<{ title: string }>> = ({
+const Layout: FC<PropsWithChildren<{ title: string; footer?: string }>> = ({
   title,
+  footer,
   children,
 }) => (
   <html lang="en">
@@ -271,10 +279,30 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({
         <a href={queueClearPath()}>queue</a>
         <a href={reviewsPath()}>reviews</a>
       </nav>
-      {children}
+      <main id="main">{children}</main>
+      {footer === undefined ? null : (
+        <footer class="policy-note">{footer}</footer>
+      )}
     </body>
   </html>
 );
+
+/**
+ * The overview's policy note. Tiers are buckets over the queue's order, so
+ * the note names the same local policy the queue does: a reader must not
+ * take `now` for a standard's verdict any more than a rank.
+ */
+const OVERVIEW_POLICY =
+  "Tiers are buckets over the ordering of the queue, which is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.";
+
+const QUEUE_POLICY =
+  "Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.";
+
+const REPO_POLICY =
+  "Every value carries its own freshness, because each lane confirms on its own cadence. A section that no lane has vouched for says so rather than showing an empty table.";
+
+const REVIEWS_POLICY =
+  "Review requests are collected wherever they land, not only in watched repositories, because a request is a claim on your attention either way. Rows marked not watched carry nothing else from this dashboard: no alerts, no coverage, no build status.";
 
 /**
  * The overview (AD-32): the attention board, then collection health.
@@ -291,7 +319,7 @@ export const Page: FC<{
   health: CollectionHealth[];
   generatedAt: string;
 }> = ({ board, health, generatedAt }) => (
-  <Layout title="gitricorder">
+  <Layout title="gitricorder" footer={OVERVIEW_POLICY}>
     <h1>gitricorder</h1>
     <p class="sub">
       {board.summary.watched} watched{" "}
@@ -539,7 +567,7 @@ export const QueuePage: FC<{
     filter.topic?.topic ?? (filter.unknownTopic === null ? "all" : null);
   const repoRef = filter.repoRef;
   return (
-    <Layout title="gitricorder queue">
+    <Layout title="gitricorder queue" footer={QUEUE_POLICY}>
       <h1>What to deal with next</h1>
       <p class="sub">
         {filtered.counted.filter((i) => i.kind === "alert").length} open alerts
@@ -637,62 +665,343 @@ export const QueuePage: FC<{
           </table>
         </>
       ) : null}
-
-      <p class="policy-note">
-        Ordering is a local policy: CISA KEV listing, then EPSS, then severity,
-        then update size. It is not SSVC and not any published standard.
-      </p>
     </Layout>
   );
 };
 
+/** Heading label per topic. TOPICS is exhaustive over Topic, so no fallback. */
+const TOPIC_LABEL: Readonly<Record<Topic, string>> = Object.fromEntries(
+  TOPICS.map((t) => [t.topic, t.label]),
+) as Record<Topic, string>;
+
 /**
- * One section's heading plus its standing.
+ * One repo-page section: heading, standing, and the table when there is one.
  *
  * The standing is the point of the component. An empty section means one of
  * two entirely different things - we looked and there is nothing, or no lane
  * has vouched for this repository - and the reader must never have to guess
- * which (AD-28).
+ * which (AD-28). So the heading always carries the section's own freshness
+ * and how many rows are shown, an attested empty is a sentence rather than
+ * an empty table, and rows no completed sweep confirmed sit under a note
+ * that says so. A suppressed section (Security under withdrawn coverage)
+ * has no count to state, so its heading carries none. The label and the
+ * heading id come from TOPICS (AD-32), so this page cannot spell a topic
+ * differently from the overview; the ids are the anchors Story 1.8's skip
+ * links will target.
  */
-const Section: FC<{
-  title: string;
+type SectionProps = { topic: Topic; state: SectionState } & (
+  | {
+      /**
+       * A note that replaces the table and the standing altogether, for a
+       * section the page refuses to list.
+       */
+      suppressed: string;
+    }
+  | {
+      suppressed?: undefined;
+      /** Rows in the table below, which is also what `N shown` says. */
+      count: number;
+      /** The sentence for an attested empty. */
+      empty: string;
+      children?: Child;
+    }
+);
+
+const Section: FC<SectionProps> = (props) => (
+  <>
+    <h2 id={props.topic}>
+      {TOPIC_LABEL[props.topic]}{" "}
+      <FreshnessBadge freshness={props.state.freshness} age={props.state.age} />
+      {props.suppressed === undefined ? (
+        <>
+          {" "}
+          <span class="shown">{props.count} shown</span>
+        </>
+      ) : null}
+    </h2>
+    {props.suppressed !== undefined ? (
+      <p class="attest">{props.suppressed}</p>
+    ) : (
+      <SectionBody {...props} />
+    )}
+  </>
+);
+
+const SectionBody: FC<{
   state: SectionState;
   count: number;
   empty: string;
-}> = ({ title, state, count, empty }) => (
-  <p class="sub">
-    <strong>{title}</strong>{" "}
+  children?: Child;
+}> = ({ state, count, empty, children }) => (
+  <>
     {state.attested ? (
-      <>
-        <FreshnessBadge freshness={state.freshness} age={state.age} />{" "}
-        {count === 0 ? empty : `${count} shown`}
-      </>
+      count === 0 ? (
+        <p class="attest">{empty}</p>
+      ) : (
+        children
+      )
     ) : count > 0 ? (
       // Rows collected by an earlier sweep, which the latest one did not
       // confirm. Saying "never collected" over a table of them would be
       // false; the rows carry their own freshness in the table below.
-      <span class="stale">
-        {count} collected earlier; the latest sweep did not confirm them
-      </span>
+      <>
+        <p class="attest warn">
+          {count} collected earlier; the latest sweep did not confirm them
+        </p>
+        {children}
+      </>
     ) : (
       // No rows AND no clean sweep. Deliberately not "never collected": the
       // store keeps only the latest run per lane, so an earlier clean sweep
       // cannot be ruled out from here. What is certain is that nothing
       // currently vouches for this section.
-      <span class="never">not confirmed by any completed sweep</span>
+      <p class="attest">not confirmed by any completed sweep</p>
     )}
-  </p>
+  </>
 );
 
 /**
+ * One topic's section on the repo page, with the columns EXPERIENCE.md fixes.
+ *
+ * A switch over the topic rather than six components listed by hand, so the
+ * order on the page is TOPICS' order and nothing else (AD-32): a section
+ * cannot be forgotten or moved without the exhaustiveness check noticing.
+ */
+const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
+  switch (topic) {
+    case "security":
+      return view.notCovered ? (
+        // Suppressed as a whole, not just the count. Rows collected before
+        // coverage was withdrawn would otherwise be listed directly beneath
+        // a header saying we have no count to give, each contradicting the
+        // other (AD-28).
+        <Section
+          topic={topic}
+          state={view.summary}
+          suppressed={view.coverageReason ?? "not covered"}
+        />
+      ) : (
+        <Section
+          topic={topic}
+          state={view.summary}
+          count={view.alerts.length}
+          empty="no open alerts in this repository"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>Alert</th>
+                <th>Severity</th>
+                <th>Package</th>
+                <th>Last confirmed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.alerts.map((a) => (
+                <tr key={`alert-${a.number}`}>
+                  <td>
+                    <ExternalLink href={a.htmlUrl}>#{a.number}</ExternalLink>
+                    {a.advisory ? ` · ${a.advisory}` : ""}
+                  </td>
+                  <td class={a.severity === "critical" ? "crit" : ""}>
+                    {a.severity}
+                  </td>
+                  <td>{a.packageName ?? "unknown"}</td>
+                  <td>
+                    <FreshnessBadge freshness={a.freshness} age={a.age} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      );
+    case "ci":
+      return (
+        <Section
+          topic={topic}
+          state={view.actionsSection}
+          count={view.runs.length}
+          empty="no workflow runs in this repository"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>Workflow</th>
+                <th>Result</th>
+                <th>Branch</th>
+                <th>Last confirmed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.runs.map((r) => (
+                <tr key={`run-${r.workflowName}-${r.runNumber}`}>
+                  <td>
+                    <ExternalLink href={r.htmlUrl}>
+                      {r.workflowName}
+                    </ExternalLink>{" "}
+                    <span class="why">#{r.runNumber}</span>
+                  </td>
+                  <td class={r.conclusion === "failure" ? "crit" : ""}>
+                    {/* A run still going has no conclusion yet, which is a
+                        state to show rather than a gap to paper over. */}
+                    {r.conclusion ?? `${r.status}, no result yet`}
+                  </td>
+                  <td>{r.headBranch ?? "unknown"}</td>
+                  <td>
+                    <FreshnessBadge freshness={r.freshness} age={r.age} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      );
+    case "dependencies":
+      return (
+        <Section
+          topic={topic}
+          state={view.prSection}
+          count={view.updatePrs.length}
+          empty="no update pull requests in this repository"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>PR</th>
+                <th>Package</th>
+                <th>Linked alert</th>
+                <th>Last confirmed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.updatePrs.map((p) => (
+                <tr key={`pr-${p.number}`}>
+                  <td>
+                    <ExternalLink href={p.htmlUrl}>#{p.number}</ExternalLink>{" "}
+                    {p.title}
+                  </td>
+                  <td>{p.packageName ?? "unknown"}</td>
+                  <td>
+                    {/* From the update statuses that name this PR, or the
+                        honest absence of any: not the package heuristic.
+                        Under withdrawn coverage the page lists no alerts,
+                        so it names none here either (AD-28). */}
+                    {view.notCovered
+                      ? "alerts not covered"
+                      : p.linkedAlerts.length === 0
+                        ? "none on record"
+                        : p.linkedAlerts.map((n) => `#${n}`).join(", ")}
+                  </td>
+                  <td>
+                    <FreshnessBadge freshness={p.freshness} age={p.age} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      );
+    case "pulls":
+      // No lane until Epic 3, so never attested and never a table: the
+      // section reads `not confirmed by any completed sweep`, never `0`.
+      return (
+        <Section
+          topic={topic}
+          state={view.pullsSection}
+          count={view.pulls.length}
+          empty="no open pull requests in this repository"
+        />
+      );
+    case "issues":
+      return (
+        <Section
+          topic={topic}
+          state={view.issueSection}
+          count={view.issues.length}
+          empty="no untriaged issues in this repository"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>Issue</th>
+                <th>Opened by</th>
+                <th>Last confirmed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.issues.map((i) => (
+                <tr key={`issue-${i.number}`}>
+                  <td>
+                    <ExternalLink href={i.htmlUrl}>#{i.number}</ExternalLink>{" "}
+                    {i.title}
+                  </td>
+                  <td>{i.author}</td>
+                  <td>
+                    <FreshnessBadge freshness={i.freshness} age={i.age} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      );
+    case "reviews":
+      return (
+        <Section
+          topic={topic}
+          state={view.reviewSection}
+          count={view.reviews.length}
+          empty="no review requests in this repository"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>PR</th>
+                <th>Requested from</th>
+                <th>Waiting</th>
+                <th>Last confirmed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.reviews.map((r) => (
+                <tr key={r.key}>
+                  <td>
+                    <ExternalLink href={r.htmlUrl}>#{r.number}</ExternalLink>{" "}
+                    {r.title}
+                  </td>
+                  <td>
+                    {r.requestedReviewers.length === 0
+                      ? "unknown"
+                      : r.requestedReviewers.join(", ")}
+                  </td>
+                  <td>{r.waiting}</td>
+                  <td>
+                    <FreshnessBadge freshness={r.freshness} age={r.age} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      );
+  }
+};
+
+/**
  * The per-repository page (CAP-7): every lane's signals for one repository,
- * each carrying its own freshness.
+ * grouped by topic in the vocabulary's order, each section carrying its own
+ * freshness. The breadcrumb is the way back. Nav labelling (`aria-current`,
+ * which this page will never carry) is Story 1.8's.
  */
 export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
   view,
   generatedAt,
 }) => (
-  <Layout title={`gitricorder · ${view.slug}`}>
+  <Layout title={`gitricorder · ${view.slug}`} footer={REPO_POLICY}>
+    <nav class="crumb" aria-label="breadcrumb">
+      <a href={overviewPath()}>overview</a> › {view.slug}
+    </nav>
     <header>
       <h1>
         {view.slug} <TierChip tier={view.summary.tier} />
@@ -745,202 +1054,9 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
       </p>
     ) : null}
 
-    {view.notCovered ? (
-      // Suppressed as a whole, not just the count. Rows collected before
-      // coverage was withdrawn would otherwise be listed directly beneath a
-      // header saying we have no count to give, each contradicting the
-      // other (AD-28).
-      <p class="sub">
-        <strong>Security alerts</strong>{" "}
-        <span class="uncovered">
-          no count and no list: {view.coverageReason ?? "not covered"}
-        </span>
-      </p>
-    ) : (
-      <Section
-        title="Security alerts"
-        state={view.summary}
-        count={view.alerts.length}
-        empty="none open"
-      />
-    )}
-    {!view.notCovered && view.alerts.length > 0 ? (
-      <table>
-        <thead>
-          <tr>
-            <th>Alert</th>
-            <th>Severity</th>
-            <th>Package</th>
-            <th>Last confirmed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {view.alerts.map((a) => (
-            <tr key={`alert-${a.number}`}>
-              <td>
-                <ExternalLink href={a.htmlUrl}>#{a.number}</ExternalLink>
-                {a.advisory ? ` · ${a.advisory}` : ""}
-              </td>
-              <td class={a.severity === "critical" ? "crit" : ""}>
-                {a.severity}
-              </td>
-              <td>{a.packageName ?? "unknown"}</td>
-              <td>
-                <FreshnessBadge freshness={a.freshness} age={a.age} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    ) : null}
-
-    <Section
-      title="Dependency-update pull requests"
-      state={view.prSection}
-      count={view.updatePrs.length}
-      empty="none open"
-    />
-    {view.updatePrs.length > 0 ? (
-      <table>
-        <thead>
-          <tr>
-            <th>Pull request</th>
-            <th>Package</th>
-            <th>Bump</th>
-            <th>Last confirmed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {view.updatePrs.map((p) => (
-            <tr key={`pr-${p.number}`}>
-              <td>
-                <ExternalLink href={p.htmlUrl}>#{p.number}</ExternalLink>{" "}
-                {p.title}
-              </td>
-              <td>{p.packageName ?? "unknown"}</td>
-              <td>{p.bump ?? "unknown"}</td>
-              <td>
-                <FreshnessBadge freshness={p.freshness} age={p.age} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    ) : null}
-
-    <Section
-      title="Actions status"
-      state={view.actionsSection}
-      count={view.runs.length}
-      empty="no runs recorded"
-    />
-    {view.runs.length > 0 ? (
-      <table>
-        <thead>
-          <tr>
-            <th>Workflow</th>
-            <th>Result</th>
-            <th>Branch</th>
-            <th>Last confirmed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {view.runs.map((r) => (
-            <tr key={`run-${r.workflowName}-${r.runNumber}`}>
-              <td>
-                <ExternalLink href={r.htmlUrl}>{r.workflowName}</ExternalLink>{" "}
-                <span class="why">#{r.runNumber}</span>
-              </td>
-              <td class={r.conclusion === "failure" ? "crit" : ""}>
-                {/* A run still going has no conclusion yet, which is a state
-                    to show rather than a gap to paper over. */}
-                {r.conclusion ?? `${r.status}, no result yet`}
-              </td>
-              <td>{r.headBranch ?? "unknown"}</td>
-              <td>
-                <FreshnessBadge freshness={r.freshness} age={r.age} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    ) : null}
-
-    <Section
-      title="Untriaged issues"
-      state={view.issueSection}
-      count={view.issues.length}
-      empty="none open"
-    />
-    {view.issues.length > 0 ? (
-      <table>
-        <thead>
-          <tr>
-            <th>Issue</th>
-            <th>Opened by</th>
-            <th>Last confirmed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {view.issues.map((i) => (
-            <tr key={`issue-${i.number}`}>
-              <td>
-                <ExternalLink href={i.htmlUrl}>#{i.number}</ExternalLink>{" "}
-                {i.title}
-              </td>
-              <td>{i.author}</td>
-              <td>
-                <FreshnessBadge freshness={i.freshness} age={i.age} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    ) : null}
-
-    <Section
-      title="Review requests"
-      state={view.reviewSection}
-      count={view.reviews.length}
-      empty="none waiting on you"
-    />
-    {view.reviews.length > 0 ? (
-      <table>
-        <thead>
-          <tr>
-            <th>Pull request</th>
-            <th>Opened by</th>
-            <th>Requested from</th>
-            <th>Last confirmed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {view.reviews.map((r) => (
-            <tr key={r.key}>
-              <td>
-                <ExternalLink href={r.htmlUrl}>#{r.number}</ExternalLink>{" "}
-                {r.title}
-              </td>
-              <td>{r.author}</td>
-              <td>
-                {r.requestedReviewers.length === 0
-                  ? "unknown"
-                  : r.requestedReviewers.join(", ")}
-              </td>
-              <td>
-                <FreshnessBadge freshness={r.freshness} age={r.age} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    ) : null}
-
-    <p class="policy-note">
-      Every value carries its own freshness, because each lane confirms on its
-      own cadence. A section that no lane has vouched for says so rather than
-      showing an empty table.
-    </p>
+    {TOPICS.map((t) => (
+      <RepoSection key={t.topic} topic={t.topic} view={view} />
+    ))}
   </Layout>
 );
 
@@ -951,6 +1067,9 @@ export const UnknownRepoPage: FC<{ slug: string }> = ({ slug }) => (
     <p class="never">
       This repository is not in the watched set, so nothing has ever been
       collected for it. Add it to repos.yaml to start collecting.
+    </p>
+    <p>
+      <a href={overviewPath()}>back to the overview</a>
     </p>
   </Layout>
 );
@@ -968,7 +1087,7 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
   view,
   generatedAt,
 }) => (
-  <Layout title="gitricorder reviews">
+  <Layout title="gitricorder reviews" footer={REVIEWS_POLICY}>
     <h1>Waiting on your review</h1>
     <p class="sub">
       {view.attested ? (
@@ -1046,12 +1165,5 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
         </tbody>
       </table>
     ) : null}
-
-    <p class="policy-note">
-      Review requests are collected wherever they land, not only in watched
-      repositories, because a request is a claim on your attention either way.
-      Rows marked not watched carry nothing else from this dashboard: no alerts,
-      no coverage, no build status.
-    </p>
   </Layout>
 );
