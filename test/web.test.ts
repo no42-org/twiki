@@ -25,7 +25,12 @@ import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { DEFAULT_HOST, startServer } from "../src/tricorder/web/server.js";
 import { parsePort } from "../src/tricorder.js";
-import { makeAlert, makeReviewRequest, makeUpdatePr } from "./fakes.js";
+import {
+  makeAlert,
+  makeReviewRequest,
+  makeUpdatePr,
+  primaryNav,
+} from "./fakes.js";
 
 const REPO = { owner: "no42-org", name: "twiki" };
 const OTHER = { owner: "no42-org", name: "quiet" };
@@ -115,7 +120,7 @@ describe("the page", () => {
 
     expect(res.status).toBe(200);
     expect(html).toContain(
-      '<p class="sub">2 watched repositories · 0 need attention now · 0 soon · 1 quiet · 1 unconfirmed · rendered 2026-08-16T12:00:00.000Z</p>',
+      '<p class="sub">2 watched repositories · 0 need attention now · 0 soon · 1 quiet · 1 unconfirmed</p>',
     );
     expect(html).toContain(
       '<details class="quiet" open=""><summary id="quiet">1 repository is quiet</summary>' +
@@ -147,7 +152,7 @@ describe("the page", () => {
     const html = await (await app().request("/")).text();
 
     expect(html).toContain(
-      '<p class="sub">2 watched repositories · 0 need attention now · 0 soon · 2 quiet · rendered 2026-08-16T12:00:00.000Z</p>',
+      '<p class="sub">2 watched repositories · 0 need attention now · 0 soon · 2 quiet</p>',
     );
     expect(html).toContain("No repository needs attention right now.");
     expect(html).not.toContain('id="unconfirmed"');
@@ -622,7 +627,7 @@ describe("issues found in review (round 2)", () => {
           "</nav>",
       );
       expect(html).toContain(
-        '<p class="sub">3 watched repositories · 1 needs attention now · 0 soon · 2 quiet · rendered 2026-08-16T12:00:00.000Z</p>',
+        '<p class="sub">3 watched repositories · 1 needs attention now · 0 soon · 2 quiet</p>',
       );
       expect(html).toContain(
         '<p class="legend">now: act today · soon: act this week · quiet: nothing pressing</p>',
@@ -778,7 +783,7 @@ describe("issues found in review (round 2)", () => {
       const html = await render();
 
       expect(html).toContain(
-        '<p class="sub">3 watched repositories · 0 need attention now · 1 soon · 0 quiet · 2 unconfirmed · rendered 2026-08-16T12:00:00.000Z</p>',
+        '<p class="sub">3 watched repositories · 0 need attention now · 1 soon · 0 quiet · 2 unconfirmed</p>',
       );
       expect(html).toContain(
         '<a class="tile" href="/queue?topic=security"><span class="count">2</span><span class="label">Security</span>' +
@@ -826,7 +831,7 @@ describe("issues found in review (round 2)", () => {
       ).text();
 
       expect(html).toContain(
-        '<p class="sub">1 watched repository · 0 need attention now · 0 soon · 1 quiet · rendered 2026-08-16T12:00:00.000Z</p>',
+        '<p class="sub">1 watched repository · 0 need attention now · 0 soon · 1 quiet</p>',
       );
       expect(html).toContain(
         '<a class="tile" href="/queue?topic=security"><span class="count">0</span><span class="label">Security</span>' +
@@ -856,7 +861,7 @@ describe("issues found in review (round 2)", () => {
       // The queue's sentence, verbatim, and in the one place the reader
       // sees before any count.
       expect(html).toContain(
-        '<p class="sub">3 watched repositories · 0 need attention now · 0 soon · 3 quiet · rendered 2026-08-16T12:00:00.000Z</p>' +
+        '<p class="sub">3 watched repositories · 0 need attention now · 0 soon · 3 quiet</p>' +
           '<p class="failed">2 stored items could not be read and are not shown. This list is incomplete.</p>',
       );
       expect(html).not.toContain("No repository needs attention right now.");
@@ -876,7 +881,7 @@ describe("issues found in review (round 2)", () => {
       const never = (label: string) =>
         `<div class="tile"><span class="count never">never collected</span><span class="label">${label}</span></div>`;
       expect(html).toContain(
-        '<p class="sub">3 watched repositories · nothing collected yet · rendered 2026-08-16T12:00:00.000Z</p>',
+        '<p class="sub">3 watched repositories · nothing collected yet</p>',
       );
       expect(html).toContain(
         '<nav class="tiles" aria-label="topics">' +
@@ -1099,6 +1104,96 @@ describe("issues found in review (round 2)", () => {
         ).toBe(false);
         server.close();
       }
+    });
+  });
+
+  // Story 1.8 (#129): the title says what the page found, the primary nav
+  // says where the reader is, and the skip links are the first Tab stops.
+  // Each is asserted whole, never one attribute of it.
+  describe("titles, landmarks and skip links", () => {
+    const NAV = primaryNav("overview", "2026-08-16T12:00:00.000Z");
+
+    const app = () =>
+      createApp({
+        store,
+        watched: [REPO, NEVER],
+        policy: POLICY,
+        now: () => NOW,
+      });
+
+    /** Complete the run the outer beforeEach began, with these rows. */
+    const sweep = (payloads: { subject: unknown; payload: unknown }[]) => {
+      store.recordObservations(
+        run,
+        "2026-08-16T11:55:00.000Z",
+        payloads as never[],
+      );
+      store.finishRun(run, "ok", "2026-08-16T11:55:00.000Z");
+    };
+
+    it("announces the tiers in the title, marks the overview current, and skips to each block", async () => {
+      const alerts = [
+        makeAlert({ number: 1, repo: REPO, epssPercentage: 0.5 }),
+      ];
+      sweep([...alerts.map(normalise), summariseRepo(REPO, alerts)]);
+
+      const html = await (await app().request("/")).text();
+
+      expect(html).toContain("<title>1 now, 0 soon · gitricorder</title>");
+      // The skip links are the first focusable things on the page, in this
+      // order, before the nav; the nav marks this page and carries the
+      // rendered-at time as text.
+      expect(html).toContain(
+        "<body>" +
+          '<a class="skip" href="#board">skip to board</a>' +
+          '<a class="skip" href="#quiet">skip to quiet repositories</a>' +
+          '<a class="skip" href="#health">skip to collection health</a>' +
+          NAV +
+          '<main id="main">',
+      );
+      // Each target is a block heading that exists on the page.
+      expect(html).toContain('<h2 id="board">What needs attention</h2>');
+      expect(html).toContain('<summary id="quiet">');
+      expect(html).toContain('<h2 id="health">Collection health</h2>');
+      // The rendered-at time appears once, in the nav, and no longer on the
+      // summary line.
+      expect(html.match(/<time /g)).toHaveLength(1);
+      expect(html).not.toContain("· rendered");
+      expect(html).toContain('</main><footer class="policy-note">');
+    });
+
+    it("reads nothing pressing when no repository needs attention", async () => {
+      sweep([summariseRepo(REPO, []), summariseRepo(NEVER, [])]);
+
+      const html = await (await app().request("/")).text();
+
+      expect(html).toContain("<title>nothing pressing · gitricorder</title>");
+    });
+
+    it("reads 0 now, 0 soon rather than nothing pressing while a repository is unconfirmed", async () => {
+      // The board withholds its "nothing needs attention" sentence here;
+      // the title must not say it either (AD-28).
+      sweep([summariseRepo(REPO, [])]);
+
+      const html = await (await app().request("/")).text();
+
+      expect(html).toContain("<title>0 now, 0 soon · gitricorder</title>");
+      expect(html).not.toContain("No repository needs attention right now.");
+    });
+
+    it("reads nothing collected yet before the first sweep, and offers no link to a quiet block that is not there", async () => {
+      const html = await (await app().request("/")).text();
+
+      expect(html).toContain(
+        "<title>nothing collected yet · gitricorder</title>",
+      );
+      expect(html).toContain(
+        "<body>" +
+          '<a class="skip" href="#board">skip to board</a>' +
+          '<a class="skip" href="#health">skip to collection health</a>' +
+          NAV,
+      );
+      expect(html).not.toContain('id="quiet"');
     });
   });
 

@@ -17,7 +17,7 @@ import {
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { buildReviewView } from "../src/tricorder/web/review-view.js";
-import { FakeGitHubReadPort, makeReviewRequest } from "./fakes.js";
+import { FakeGitHubReadPort, makeReviewRequest, primaryNav } from "./fakes.js";
 
 const NOW = new Date("2026-08-21T12:00:00.000Z");
 const SWEEP = { cadenceMs: 15 * 60_000 };
@@ -379,5 +379,60 @@ describe("the reviews page", () => {
   it("links the reviews page from the nav", async () => {
     const html = await (await app().request("/queue")).text();
     expect(html).toContain('href="/reviews"');
+  });
+
+  // Story 1.8 (#129): the title counts what waits, the nav marks this page,
+  // and one skip link leads to the list. Asserted whole.
+  const NAV = primaryNav("reviews", "2026-08-21T12:00:00.000Z");
+
+  it("counts the waiting requests in the title and marks reviews current", async () => {
+    seed([
+      request(),
+      request({ number: 41, repo: "no42-org/packyard" }),
+    ] as never[]);
+
+    const html = await (await app().request("/reviews")).text();
+
+    expect(html).toContain("<title>reviews · 2 waiting · gitricorder</title>");
+    expect(html).toContain(
+      '<body><a class="skip" href="#list">skip to list</a>' +
+        NAV +
+        '<main id="main"><h1>Waiting on your review</h1>',
+    );
+    expect(html).toContain(
+      '<section id="list" aria-label="review requests"><table>',
+    );
+    expect(html).toContain(
+      '</table></section></main><footer class="policy-note">',
+    );
+    // The rendered-at time is in the nav only.
+    expect(html.match(/<time /g)).toHaveLength(1);
+    expect(html).not.toContain("· rendered");
+  });
+
+  it("says 0 waiting once a sweep has confirmed it", async () => {
+    seed([]);
+
+    const html = await (await app().request("/reviews")).text();
+
+    expect(html).toContain("<title>reviews · 0 waiting · gitricorder</title>");
+    expect(html).toContain(
+      '<section id="list" aria-label="review requests"><p class="none">Nothing waiting on you.</p></section>',
+    );
+  });
+
+  it("says unconfirmed, not 0 waiting, before any sweep has completed", async () => {
+    // Nothing collected and nothing waiting are different facts (AD-28):
+    // the title says so, and the list region says so rather than landing
+    // the skip link on silence.
+    const html = await (await app().request("/reviews")).text();
+
+    expect(html).toContain(
+      "<title>reviews · unconfirmed · gitricorder</title>",
+    );
+    expect(html).toContain(
+      '<section id="list" aria-label="review requests"><p class="attest">not confirmed by any completed sweep</p></section>',
+    );
+    expect(html).not.toContain("Nothing waiting on you.");
   });
 });
