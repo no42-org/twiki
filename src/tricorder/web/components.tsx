@@ -8,41 +8,68 @@ import type { Freshness } from "./freshness.js";
 import type { Queue } from "./queue.js";
 import type { RepoView, SectionState } from "./repo-view.js";
 import type { ReviewView } from "./review-view.js";
-import type { CollectionHealth, RepoRow } from "./view.js";
+import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
+import type { CollectionHealth, HealthOutcome, RepoRow } from "./view.js";
 
 // Server-rendered tables. There is no client-side interactivity layer in this
 // build, deliberately: nothing here needs partial updates.
+//
+// Colors, sizes and spacing come from tokens.ts. Rules here name tokens only,
+// so the contrast test in test/tokens.test.ts covers every text color the page
+// can paint, including muted text over the hatch stripes. The one painted
+// color in no pair is the border rule, which is decorative. No hex, no px for
+// text, no shadow: the dashboard is an instrument.
 
-const STYLE = `
-  :root { color-scheme: light dark; }
-  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; }
-  h1 { font-size: 1.4rem; margin-bottom: .25rem; }
-  .sub { color: #666; margin-top: 0; font-size: .9rem; }
-  table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
-  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid #8883; }
-  th { font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: #666; }
+export const STYLE = `${TOKEN_STYLE}
+  @supports (font: -apple-system-body) { @media (hover: none) and (pointer: coarse) { html { font: -apple-system-body; } } }
+  body { font-family: system-ui, sans-serif; font-size: ${TYPE.body.size}; line-height: ${TYPE.body.lineHeight}; color: var(--fg); background: var(--bg); margin: ${SPACE[8]} auto; max-width: ${SPACE.contentMax}; padding: 0 ${SPACE.gutter}; }
+  a { color: var(--link); }
+  :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+  h1 { font-size: ${TYPE.title.size}; font-weight: ${TYPE.title.weight}; line-height: ${TYPE.title.lineHeight}; margin-bottom: ${SPACE[1]}; }
+  h2 { font-size: ${TYPE.section.size}; font-weight: ${TYPE.section.weight}; line-height: ${TYPE.section.lineHeight}; margin-top: ${SPACE[8]}; }
+  .sub { color: var(--muted); margin-top: 0; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; }
+  table { border-collapse: collapse; width: 100%; margin: ${SPACE[6]} 0; }
+  th, td { text-align: left; padding: ${SPACE[2]} ${SPACE[3]}; border-bottom: 1px solid var(--border); }
+  th { font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .badge { font-size: .75rem; padding: .1rem .45rem; border-radius: .7rem; border: 1px solid; white-space: nowrap; }
-  .fresh   { color: #1a7f37; border-color: #1a7f3755; }
-  .stale   { color: #9a6700; border-color: #9a670055; background: #9a670012; }
-  .unknown { color: #57606a; border-color: #57606a55; background: repeating-linear-gradient(45deg, #57606a08 0 4px, transparent 4px 8px); }
-  .none  { color: #1a7f37; }
-  .some  { font-weight: 600; }
-  .crit  { color: #cf222e; }
-  .high  { color: #bc4c00; }
-  .never { color: #57606a; font-style: italic; }
-  .uncovered { color: #9a6700; font-style: italic; text-decoration: underline dotted; }
-  .why { color: #666; font-size: .85em; }
-  .failed { color: #cf222e; font-weight: 600; }
-  .partial { color: #9a6700; font-weight: 600; }
-  .stalled { color: #cf222e; font-weight: 600; }
-  .running { color: #57606a; }
-  .why-rank { color: #57606a; font-size: .85em; }
-  .kev-hit { color: #cf222e; font-weight: 700; }
-  .policy-note { color: #57606a; font-size: .85em; margin-top: 2rem; }
-  nav { margin-bottom: 1rem; font-size: .9rem; }
-  nav a { margin-right: 1rem; }
+  .badge { display: inline-block; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; padding: ${SPACE[1]} ${SPACE[2]}; border-radius: ${RADIUS.full}; border: 1px solid currentColor; }
+  .fresh   { color: var(--ok); }
+  .stale   { color: var(--warn); }
+  .badge.stale { font-weight: 600; }
+  .unknown { color: var(--muted); background: repeating-linear-gradient(45deg, var(--hatch) 0 4px, transparent 4px 8px); }
+  .none  { color: var(--ok); }
+  .ok    { color: var(--ok); }
+  .crit  { color: var(--critical); }
+  .high  { color: var(--high); }
+  .some.crit { font-weight: 700; }
+  .some.high { font-weight: 400; }
+  .never { color: var(--muted); font-style: italic; }
+  .uncovered { color: var(--warn); font-style: italic; text-decoration: underline dotted; }
+  .why { color: var(--muted); font-size: ${TYPE.small.size}; }
+  .failed { color: var(--critical); font-weight: 600; }
+  .partial { color: var(--warn); font-weight: 600; }
+  .stalled { color: var(--critical); font-weight: 600; }
+  .running { color: var(--muted); }
+  .why-rank { color: var(--muted); font-size: ${TYPE.small.size}; }
+  .kev-hit { color: var(--critical); font-weight: 700; }
+  .policy-note { color: var(--muted); font-size: ${TYPE.small.size}; margin-top: ${SPACE[8]}; }
+  nav { margin-bottom: ${SPACE[4]}; font-size: ${TYPE.small.size}; }
+  nav a { margin-right: ${SPACE[4]}; }
 `;
+
+/**
+ * Outcome word to style class, spelled out per outcome so a new member of
+ * HealthOutcome fails to compile here rather than rendering unstyled. Running
+ * stays muted on purpose: every tick shows a running lane, and amber on the
+ * normal state would train the reader to ignore amber.
+ */
+const OUTCOME_CLASS: Readonly<Record<HealthOutcome, string>> = {
+  ok: "ok",
+  partial: "partial",
+  failed: "failed",
+  running: "running",
+  stalled: "stalled",
+};
 
 export const FreshnessBadge: FC<{ freshness: Freshness; age: string }> = ({
   freshness,
@@ -165,7 +192,7 @@ export const Page: FC<{
       </tbody>
     </table>
 
-    <h2 style="font-size:1.1rem">Collection health</h2>
+    <h2>Collection health</h2>
     <p class="sub">A dead lane is visible here rather than only in the logs.</p>
     {health.length === 0 ? (
       <p class="never">No collection has run yet.</p>
@@ -186,7 +213,7 @@ export const Page: FC<{
               <td>{h.lane}</td>
               <td>{h.installation}</td>
               <td>{h.scope}</td>
-              <td class={h.outcome === "ok" ? "" : h.outcome}>
+              <td class={OUTCOME_CLASS[h.outcome]}>
                 {h.outcome}
                 {h.detail ? ` · ${h.detail}` : ""}
               </td>
@@ -673,7 +700,10 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
                   // Said on every row rather than once at the top: this
                   // repository has no coverage, no alert sweep and no
                   // freshness behind it beyond this one line.
-                  <span class="badge unknown"> not watched</span>
+                  <>
+                    {" "}
+                    <span class="badge unknown">not watched</span>
+                  </>
                 )}
                 <div class="why">{r.title}</div>
               </td>
