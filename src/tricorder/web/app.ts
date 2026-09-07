@@ -8,6 +8,7 @@ import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import { DEFAULT_REVIEW_BUDGET_DAYS, defaultCutRank } from "../../core/tier.js";
 import type { RepoRef } from "../../core/types.js";
 import { buildBoard } from "../attention/board.js";
+import { applyQueueFilter, parseQueueFilter } from "../attention/filter.js";
 import type { FreshnessPolicy } from "../attention/freshness.js";
 import { buildQueue } from "../attention/queue.js";
 import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
@@ -96,7 +97,21 @@ export function createApp(deps: AppDeps): Hono {
       kevPolicy,
       rankPolicy,
     });
-    const body = QueuePage({ queue, generatedAt: now.toISOString() });
+    // The two parameters are the whole filter grammar (AD-39). A value the
+    // grammar does not know renders the no-matches state, still 200: a
+    // stale link must land on a sentence, never on an error page.
+    const filter = parseQueueFilter(
+      c.req.query("topic"),
+      c.req.query("repo"),
+      deps.watched,
+    );
+    const filtered = applyQueueFilter(queue, filter, deps.watched);
+    const body = QueuePage({
+      queue,
+      filtered,
+      filter,
+      generatedAt: now.toISOString(),
+    });
     c.header("Cache-Control", "no-store");
     return c.html(`<!DOCTYPE html>${body}`);
   });

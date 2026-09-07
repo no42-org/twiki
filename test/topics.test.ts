@@ -8,6 +8,7 @@ import {
   KIND_REASONS,
   kevListedFor,
   TOPICS,
+  topicByQuery,
   topicOf,
 } from "../src/core/topics.js";
 
@@ -40,6 +41,25 @@ describe("TOPICS", () => {
     expect(topicOf("update_pr")).toBe("dependencies");
     expect(topicOf("issue")).toBe("issues");
     expect(() => topicOf("workflow" as never)).toThrow(/belongs to no topic/);
+  });
+
+  it("names each topic's singular noun for the filter sentence", () => {
+    expect(TOPICS.map((t) => [t.topic, t.noun])).toEqual([
+      ["security", "Security"],
+      ["ci", "CI"],
+      ["dependencies", "Dependency"],
+      ["pulls", "Pull request"],
+      ["issues", "Issue"],
+      ["reviews", "Review"],
+    ]);
+  });
+
+  it("finds a topic by its query value, and never reviews", () => {
+    expect(topicByQuery("dependencies")).toBe(TOPICS[2]);
+    expect(topicByQuery("issues")).toBe(TOPICS[4]);
+    expect(topicByQuery("reviews")).toBeUndefined();
+    expect(topicByQuery("foo")).toBeUndefined();
+    expect(topicByQuery("")).toBeUndefined();
   });
 });
 

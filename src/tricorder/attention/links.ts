@@ -16,6 +16,11 @@ import type { RepoRef } from "../../core/types.js";
 // functions, the repository is emitted through `watchKey` (the one folding
 // every layer agrees on, AD-33), and the topic value comes from TOPICS.
 
+/** The overview. */
+export function overviewPath(): string {
+  return "/";
+}
+
 /** The per-repository page. The slug is already folded; each segment is encoded. */
 export function repoPath(slug: string): string {
   return `/repo/${slug.split("/").map(encodeURIComponent).join("/")}`;
@@ -38,9 +43,35 @@ export function queuePath(topic: Topic, repo?: RepoRef): string {
   return `/queue?${params.toString()}`;
 }
 
+/** The unfiltered queue, where every `clear` link on it leads. */
+export function queueClearPath(): string {
+  return "/queue";
+}
+
+/** The queue narrowed to one repository, every topic. */
+export function queueRepoPath(repo: RepoRef): string {
+  const params = new URLSearchParams();
+  params.set("repo", watchKey(repo));
+  return `/queue?${params.toString()}`;
+}
+
 /** The review-request page. */
 export function reviewsPath(): string {
   return "/reviews";
+}
+
+/**
+ * An internal path joined to TRICORDER_BASE_URL, for a link that leaves the
+ * dashboard (a notification, Epic 4). The base's own path is kept and its
+ * trailing slashes dropped, so a deployment under a prefix still lands. The
+ * path must be one of the helpers' above, which all start with `/`; anything
+ * else is a programming error, not a link.
+ */
+export function absoluteUrl(base: URL, path: string): string {
+  if (!path.startsWith("/")) {
+    throw new Error(`absoluteUrl needs a path starting with /: ${path}`);
+  }
+  return `${base.href.replace(/\/+$/, "")}${path}`;
 }
 
 /** Where a topic's tile or chip leads: the queue filter, or /reviews. */

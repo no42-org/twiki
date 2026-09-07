@@ -5,13 +5,22 @@
 
 import type { FC, PropsWithChildren } from "hono/jsx";
 import { safeUrl } from "../../core/safe-url.js";
+import { foldSlug } from "../../core/slug.js";
 import type { Tier } from "../../core/tier.js";
-import { TOPICS } from "../../core/topics.js";
+import { TOPICS, topicOf } from "../../core/topics.js";
 import type { SectionState } from "../attention/attestation.js";
 import type { Board, Chip, Tile } from "../attention/board.js";
+import type { FilteredQueue, QueueFilter } from "../attention/filter.js";
 import type { Freshness } from "../attention/freshness.js";
-import { repoPath } from "../attention/links.js";
-import type { Queue } from "../attention/queue.js";
+import {
+  overviewPath,
+  queueClearPath,
+  queuePath,
+  queueRepoPath,
+  repoPath,
+  reviewsPath,
+} from "../attention/links.js";
+import type { Queue, QueueItem } from "../attention/queue.js";
 import type { RepoView } from "./repo-view.js";
 import type { ReviewView } from "./review-view.js";
 import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
@@ -92,6 +101,11 @@ export const STYLE = `${TOKEN_STYLE}
   .quiet summary { font-weight: 600; }
   .quiet p { margin: ${SPACE[2]} 0 0; font-size: ${TYPE.small.size}; line-height: 1.8; }
   .quiet a { margin-right: ${SPACE[3]}; }
+  .filters { display: flex; flex-wrap: wrap; gap: ${SPACE[4]}; margin: ${SPACE[4]} 0 ${SPACE[2]}; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; }
+  .filters a { display: inline-block; min-width: 24px; min-height: 24px; box-sizing: border-box; margin: 0; padding: ${SPACE[1]}; text-align: center; text-decoration: none; border-bottom: 2px solid transparent; }
+  .filters a[aria-current] { color: var(--fg); border-bottom-color: var(--link); }
+  .filter-state { margin: 0 0 ${SPACE[2]}; }
+  .topic { font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); }
 `;
 
 /**
@@ -253,9 +267,9 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({
     </head>
     <body>
       <nav>
-        <a href="/">repositories</a>
-        <a href="/queue">queue</a>
-        <a href="/reviews">reviews</a>
+        <a href={overviewPath()}>repositories</a>
+        <a href={queueClearPath()}>queue</a>
+        <a href={reviewsPath()}>reviews</a>
       </nav>
       {children}
     </body>
@@ -437,90 +451,200 @@ export const Page: FC<{
 );
 
 /**
- * The ranked queue (CAP-6).
+ * One queue row: rank, topic, repository, item, rationale, freshness.
+ *
+ * The repository is a link only while it is watched; a de-listed one has
+ * no page, and a link to a 404 would say the dashboard knows something it
+ * does not. The item link leaves for GitHub in a new tab.
+ */
+const QueueRow: FC<{ item: QueueItem; rank: number; linked: boolean }> = ({
+  item,
+  rank,
+  linked,
+}) => {
+  const slug = foldSlug(item.repo);
+  return (
+    <tr>
+      <td class="num">{rank}</td>
+      <td class="topic">{topicOf(item.kind)}</td>
+      <td>
+        {linked ? (
+          <a class="slug" href={repoPath(slug)}>
+            {slug}
+          </a>
+        ) : (
+          <span class="slug">{slug}</span>
+        )}
+      </td>
+      <td>
+        {item.kind === "update_pr" ? (
+          <span class="badge">PR</span>
+        ) : item.kind === "issue" ? (
+          <span class="badge">issue</span>
+        ) : null}{" "}
+        <ExternalLink href={item.htmlUrl}>
+          {item.repo}#{item.number}
+        </ExternalLink>
+        {item.packageName ? ` · ${item.packageName}` : ""}
+        {item.title ? ` · ${item.title}` : ""}
+        {item.advisory ? ` · ${item.advisory}` : ""}
+      </td>
+      <td>
+        <div class={item.kevListed ? "kev-hit" : "why-rank"}>
+          {item.explanation}
+        </div>
+      </td>
+      <td>
+        <FreshnessBadge freshness={item.freshness} age={item.age} />
+      </td>
+    </tr>
+  );
+};
+
+const QueueHead: FC = () => (
+  <thead>
+    <tr>
+      <th scope="col">#</th>
+      <th scope="col">Topic</th>
+      <th scope="col">Repository</th>
+      <th scope="col">Item</th>
+      <th scope="col">Why it ranks here</th>
+      <th scope="col">Last confirmed</th>
+    </tr>
+  </thead>
+);
+
+/**
+ * The ranked queue (CAP-6), filtered by topic and repository (AD-39).
  *
  * Every row shows the reason it ranks where it does, and every value carries
- * its own freshness. The ordering is labelled a LOCAL POLICY because AD-20
- * binds the UI here: it is not SSVC, not CVSS, and naming a standard it does
- * not implement would borrow authority the chain has not earned.
+ * its own freshness. The filter lives in the URL and nowhere else: the bar
+ * is links, the sentence says what is shown, and `clear` is a link back to
+ * the whole queue. The summary counts the allowlisted estate whatever the
+ * filter, so `0 open alerts` is never the filter's zero (AD-28, AD-32). The
+ * ordering is labelled a LOCAL POLICY because AD-20 binds the UI here: it
+ * is not SSVC, not CVSS, and naming a standard it does not implement would
+ * borrow authority the chain has not earned.
  */
-export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
-  queue,
-  generatedAt,
-}) => (
-  <Layout title="gitricorder queue">
-    <h1>What to deal with next</h1>
-    <p class="sub">
-      {queue.items.filter((i) => i.kind === "alert").length} open alerts
-      {" · "}
-      {queue.items.filter((i) => i.kind === "update_pr").length} update PRs
-      {" · "}
-      {queue.items.filter((i) => i.kind === "issue").length} untriaged issues
-      {" · KEV catalogue "}
-      {queue.kev.usable
-        ? `${queue.kev.version ?? "?"} · ${queue.kev.age}`
-        : "unavailable, so KEV status ranks as unknown"}
-      {" · rendered "}
-      {generatedAt}
-    </p>
-
-    {queue.unreadable > 0 ? (
-      <p class="failed">
-        {queue.unreadable} stored {queue.unreadable === 1 ? "item" : "items"}{" "}
-        could not be read and {queue.unreadable === 1 ? "is" : "are"} not shown.
-        This list is incomplete.
+export const QueuePage: FC<{
+  queue: Queue;
+  filtered: FilteredQueue;
+  filter: QueueFilter;
+  generatedAt: string;
+}> = ({ queue, filtered, filter, generatedAt }) => {
+  // `all` is current only on the unfiltered topic dimension; an unknown
+  // topic is current nowhere, so the bar does not claim a filter it is not
+  // applying.
+  const current =
+    filter.topic?.topic ?? (filter.unknownTopic === null ? "all" : null);
+  const repoRef = filter.repoRef;
+  return (
+    <Layout title="gitricorder queue">
+      <h1>What to deal with next</h1>
+      <p class="sub">
+        {filtered.counted.filter((i) => i.kind === "alert").length} open alerts
+        {" · "}
+        {filtered.counted.filter((i) => i.kind === "update_pr").length} update
+        PRs
+        {" · "}
+        {filtered.counted.filter((i) => i.kind === "issue").length} untriaged
+        issues
+        {" · KEV catalogue "}
+        {queue.kev.usable
+          ? `${queue.kev.version ?? "?"} · ${queue.kev.age}`
+          : "unavailable, so KEV status ranks as unknown"}
+        {" · rendered "}
+        {generatedAt}
       </p>
-    ) : null}
 
-    {queue.items.length === 0 ? (
-      <p class="none">Nothing needs attention.</p>
-    ) : (
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Item</th>
-            <th>Why it ranks here</th>
-            <th>Last confirmed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {queue.items.map((item, i) => (
-            <tr key={item.key}>
-              <td class="num">{i + 1}</td>
-              <td>
-                {item.kind === "update_pr" ? (
-                  <span class="badge">PR</span>
-                ) : item.kind === "issue" ? (
-                  <span class="badge">issue</span>
-                ) : null}{" "}
-                <ExternalLink href={item.htmlUrl}>
-                  {item.repo}#{item.number}
-                </ExternalLink>
-                {item.packageName ? ` · ${item.packageName}` : ""}
-                {item.title ? ` · ${item.title}` : ""}
-                {item.advisory ? ` · ${item.advisory}` : ""}
-              </td>
-              <td>
-                <div class={item.kevListed ? "kev-hit" : "why-rank"}>
-                  {item.explanation}
-                </div>
-              </td>
-              <td>
-                <FreshnessBadge freshness={item.freshness} age={item.age} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    )}
+      {queue.unreadable > 0 ? (
+        <p class="failed">
+          {queue.unreadable} stored {queue.unreadable === 1 ? "item" : "items"}{" "}
+          could not be read and {queue.unreadable === 1 ? "is" : "are"} not
+          shown. This list is incomplete.
+        </p>
+      ) : null}
 
-    <p class="policy-note">
-      Ordering is a local policy: CISA KEV listing, then EPSS, then severity,
-      then update size. It is not SSVC and not any published standard.
-    </p>
-  </Layout>
-);
+      {/* The bar narrows topics within an active repository filter rather
+          than silently widening back to the estate; `all` keeps the repo. */}
+      <nav class="filters" aria-label="topic filter">
+        <a
+          href={repoRef === null ? queueClearPath() : queueRepoPath(repoRef)}
+          aria-current={current === "all" ? "true" : undefined}
+        >
+          all
+        </a>
+        {TOPICS.filter((t) => t.query !== null).map((t) => (
+          <a
+            key={t.topic}
+            href={queuePath(t.topic, repoRef ?? undefined)}
+            aria-current={current === t.topic ? "true" : undefined}
+          >
+            {t.query}
+          </a>
+        ))}
+        <a href={reviewsPath()}>reviews</a>
+      </nav>
+
+      {/* One landmark on every render, filtered or not, so the skip link
+          of Story 1.8 always has a target. */}
+      <section id="list">
+        {filtered.empty !== null ? (
+          <p class="filter-state">
+            {filtered.empty} <a href={queueClearPath()}>Clear filter.</a>
+          </p>
+        ) : filtered.sentence !== null ? (
+          <p class="filter-state">
+            {filtered.sentence}
+            {" · "}
+            <a href={queueClearPath()}>clear</a>
+          </p>
+        ) : null}
+
+        {filtered.shown.length > 0 ? (
+          <table>
+            <QueueHead />
+            <tbody>
+              {filtered.shown.map((item, i) => (
+                <QueueRow key={item.key} item={item} rank={i + 1} linked />
+              ))}
+            </tbody>
+          </table>
+        ) : filtered.empty !== null ? null : filtered.delisted.length > 0 ? (
+          <p class="none">Nothing needs attention in watched repositories.</p>
+        ) : (
+          <p class="none">Nothing needs attention.</p>
+        )}
+      </section>
+
+      {filtered.delisted.length > 0 ? (
+        // Still open on GitHub, no longer in repos.yaml: listed so they are
+        // not silently lost, counted nowhere so they inflate nothing.
+        <>
+          <h2>no longer watched</h2>
+          <table>
+            <QueueHead />
+            <tbody>
+              {filtered.delisted.map((item, i) => (
+                <QueueRow
+                  key={item.key}
+                  item={item}
+                  rank={i + 1}
+                  linked={false}
+                />
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : null}
+
+      <p class="policy-note">
+        Ordering is a local policy: CISA KEV listing, then EPSS, then severity,
+        then update size. It is not SSVC and not any published standard.
+      </p>
+    </Layout>
+  );
+};
 
 /**
  * One section's heading plus its standing.

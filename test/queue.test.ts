@@ -1017,7 +1017,309 @@ describe("the queue page", () => {
   it("links the two pages to each other", async () => {
     const queue = await (await app().request("/queue")).text();
     const home = await (await app().request("/")).text();
-    expect(queue).toContain('href="/"');
-    expect(home).toContain('href="/queue"');
+    const nav =
+      '<nav><a href="/">repositories</a><a href="/queue">queue</a><a href="/reviews">reviews</a></nav>';
+    expect(queue).toContain(nav);
+    expect(home).toContain(nav);
+  });
+
+  // Story 1.5 (AD-39): the filter lives in the URL. The bar, the sentence
+  // and the no-matches state are asserted whole, never one attribute of
+  // them, so a dropped entry or a swapped aria-current cannot pass.
+
+  const bar = (current: string | null, repo?: string) => {
+    const entry = (href: string, text: string) =>
+      current === text
+        ? `<a href="${href}" aria-current="true">${text}</a>`
+        : `<a href="${href}">${text}</a>`;
+    // Under a repository filter every entry keeps it, `all` included.
+    const r = repo === undefined ? "" : `repo=${encodeURIComponent(repo)}`;
+    const topic = (t: string) =>
+      `/queue?${r === "" ? "" : `${r}&amp;`}topic=${t}`;
+    return (
+      '<nav class="filters" aria-label="topic filter">' +
+      entry(r === "" ? "/queue" : `/queue?${r}`, "all") +
+      entry(topic("security"), "security") +
+      entry(topic("ci"), "ci") +
+      entry(topic("dependencies"), "dependencies") +
+      entry(topic("pulls"), "pulls") +
+      entry(topic("issues"), "issues") +
+      '<a href="/reviews">reviews</a>' +
+      "</nav>"
+    );
+  };
+
+  const updatePr = (repo: string, number: number) => ({
+    subject: {
+      type: "dependency_update_pr" as const,
+      key: `PR_${repo}_${number}`,
+    },
+    payload: {
+      repo,
+      number,
+      title: `Bump x from 1.0.${number} to 1.1.0`,
+      author: "dependabot",
+      htmlUrl: `https://github.com/${repo}/pull/${number}`,
+      createdAt: "2026-08-17T00:00:00.000Z",
+      packageName: "x",
+      bump: "minor",
+    },
+  });
+
+  it("filters by topic, marks the bar and says what is shown", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number: 1 })),
+      ...Array.from({ length: 7 }, (_, i) => updatePr("no42-org/twiki", i + 1)),
+    ]);
+
+    const res = await app().request("/queue?topic=dependencies");
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toContain(bar("dependencies"));
+    expect(html).toContain(
+      '<p class="filter-state">Dependency items · 7 shown · <a href="/queue">clear</a></p>',
+    );
+    // Only update PRs are rows; the alert is in the summary, not the list.
+    expect(html).not.toContain("CVE-2026-0001");
+    expect(html.match(/<td class="topic">dependencies<\/td>/g)).toHaveLength(7);
+    expect(html).not.toContain('<td class="topic">security</td>');
+    expect(html).toContain("1 open alerts · 7 update PRs");
+  });
+
+  it("matches the repository by folded slug, with the topic", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(
+        makeAlert({
+          number: 1,
+          repo: { owner: "Riptide-Labs", name: "riptide" },
+        }),
+      ),
+      normalise(
+        makeAlert({
+          number: 2,
+          repo: { owner: "riptide-labs", name: "Riptide" },
+        }),
+      ),
+      normalise(makeAlert({ number: 3 })),
+      updatePr("Riptide-Labs/riptide", 4),
+    ]);
+    const mixed = createApp({
+      store,
+      watched: [
+        { owner: "no42-org", name: "twiki" },
+        { owner: "Riptide-Labs", name: "riptide" },
+      ],
+      policy: SWEEP,
+      lanePolicies: { kev: DAILY },
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+
+    const res = await mixed.request(
+      "/queue?repo=RIPTIDE-labs%2Friptide&topic=security",
+    );
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toContain(bar("security", "riptide-labs/riptide"));
+    expect(html).toContain(
+      '<p class="filter-state">Security items in riptide-labs/riptide · 2 shown · <a href="/queue">clear</a></p>',
+    );
+    expect(
+      html.match(
+        /<td class="topic">security<\/td><td><a class="slug" href="\/repo\/riptide-labs\/riptide">riptide-labs\/riptide<\/a><\/td>/g,
+      ),
+    ).toHaveLength(2);
+    expect(html).not.toContain("no42-org/twiki#3");
+    expect(html).not.toContain("riptide#4");
+  });
+
+  it("answers an unknown topic with 200 and the no-matches sentence", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number: 1 })),
+    ]);
+
+    const res = await app().request("/queue?topic=foo");
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toContain(bar(null));
+    // The list landmark is there with nothing in it but the sentence, so a
+    // skip link still has somewhere to go.
+    expect(html).toContain(
+      '<section id="list"><p class="filter-state">No foo items open. <a href="/queue">Clear filter.</a></p></section>',
+    );
+    expect(html).not.toContain("<table>");
+    expect(html).not.toContain("Nothing needs attention");
+  });
+
+  it("treats reviews as an unknown topic: they are not queue items", async () => {
+    const res = await app().request("/queue?topic=reviews");
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toContain(bar(null));
+    expect(html).toContain(
+      '<p class="filter-state">No reviews items open. <a href="/queue">Clear filter.</a></p>',
+    );
+  });
+
+  it("answers an unwatched repository with 200 and the no-matches sentence", async () => {
+    const res = await app().request("/queue?repo=not%2Fwatched");
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toContain(bar("all"));
+    expect(html).toContain(
+      '<p class="filter-state">No items open in not/watched. <a href="/queue">Clear filter.</a></p>',
+    );
+  });
+
+  it("says a topic with no collector is not collected, never that it is empty", async () => {
+    const html = await (await app().request("/queue?topic=pulls")).text();
+    expect(html).toContain(bar("pulls"));
+    expect(html).toContain(
+      '<p class="filter-state">Pull request items are not collected yet. <a href="/queue">Clear filter.</a></p>',
+    );
+  });
+
+  it("filters by repository alone, keeping the repo in the bar and the estate in the summary", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number: 1 })),
+      normalise(
+        makeAlert({ number: 2, repo: { owner: "no42-org", name: "other" } }),
+      ),
+      updatePr("no42-org/twiki", 3),
+      updatePr("no42-org/gone", 4),
+    ]);
+    const two = createApp({
+      store,
+      watched: [
+        { owner: "no42-org", name: "twiki" },
+        { owner: "no42-org", name: "other" },
+      ],
+      policy: SWEEP,
+      lanePolicies: { kev: DAILY },
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+
+    const html = await (await two.request("/queue?repo=No42-Org/twiki")).text();
+
+    expect(html).toContain(bar("all", "no42-org/twiki"));
+    expect(html).toContain(
+      '<p class="filter-state">Items in no42-org/twiki · 2 shown · <a href="/queue">clear</a></p>',
+    );
+    // Two watched repositories, one de-listed: the summary counts the
+    // watched estate, not the filter and not the de-listed PR.
+    expect(html).toContain("2 open alerts · 1 update PRs · 0 untriaged issues");
+    expect(html).not.toContain("no42-org/other#2");
+    // The de-listed item is omitted under a filter, heading and all.
+    expect(html).not.toContain("no42-org/gone");
+    expect(html).not.toContain("no longer watched");
+  });
+
+  it("says a de-listed repository is no longer watched when asked for by name", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(
+        makeAlert({ number: 2, repo: { owner: "no42-org", name: "gone" } }),
+      ),
+    ]);
+
+    const res = await app().request("/queue?repo=no42-org%2Fgone");
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toContain(
+      '<p class="filter-state">no42-org/gone is no longer watched. <a href="/queue">Clear filter.</a></p>',
+    );
+  });
+
+  it("does not say nothing needs attention over a table of de-listed items", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(
+        makeAlert({ number: 2, repo: { owner: "no42-org", name: "gone" } }),
+      ),
+    ]);
+
+    const html = await (await app().request("/queue")).text();
+
+    expect(html).toContain("0 open alerts · 0 update PRs · 0 untriaged issues");
+    expect(html).toContain(
+      '<section id="list"><p class="none">Nothing needs attention in watched repositories.</p></section><h2>no longer watched</h2>',
+    );
+    expect(html).not.toContain("Nothing needs attention.</p>");
+  });
+
+  it("says a topic with nothing open has nothing open, not zero rows", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number: 1 })),
+    ]);
+
+    const html = await (await app().request("/queue?topic=issues")).text();
+
+    expect(html).toContain(bar("issues"));
+    expect(html).toContain(
+      '<p class="filter-state">No issue items open. <a href="/queue">Clear filter.</a></p>',
+    );
+  });
+
+  it("lists a de-listed repository apart, counted nowhere, with no repo link", async () => {
+    const r = run();
+    store.recordObservations(r, "2026-08-17T11:55:00.000Z", [
+      normalise(makeAlert({ number: 1, severity: "high" })),
+      normalise(
+        makeAlert({
+          number: 2,
+          severity: "critical",
+          repo: { owner: "no42-org", name: "gone" },
+        }),
+      ),
+      updatePr("no42-org/gone", 3),
+    ]);
+
+    const html = await (await app().request("/queue")).text();
+
+    expect(html).toContain("1 open alerts · 0 update PRs · 0 untriaged issues");
+    expect(html).toContain(bar("all"));
+    expect(html).not.toContain('class="filter-state"');
+    // The watched row ranks 1 in its list; the de-listed rows rank 1 and 2
+    // in theirs, after the heading, with the slug as plain text.
+    const heading = html.indexOf("<h2>no longer watched</h2>");
+    expect(heading).toBeGreaterThan(html.indexOf("no42-org/twiki#1"));
+    const after = html.slice(heading);
+    expect(after).toContain(
+      '<td class="num">1</td><td class="topic">security</td><td><span class="slug">no42-org/gone</span></td>',
+    );
+    expect(after).toContain(
+      '<td class="num">2</td><td class="topic">dependencies</td><td><span class="slug">no42-org/gone</span></td>',
+    );
+    expect(after).not.toContain('href="/repo/no42-org/gone"');
+    // Under a topic filter the de-listed item is omitted, heading and all.
+    const filtered = await (
+      await app().request("/queue?topic=security")
+    ).text();
+    expect(filtered).not.toContain("no longer watched");
+    expect(filtered).not.toContain("no42-org/gone");
+    expect(filtered).toContain(
+      '<p class="filter-state">Security items · 1 shown · <a href="/queue">clear</a></p>',
+    );
+  });
+
+  it("keeps the honesty strings on the unfiltered queue", async () => {
+    const html = await (await app().request("/queue")).text();
+    expect(html).toContain(bar("all"));
+    expect(html).toContain(
+      '<section id="list"><p class="none">Nothing needs attention.</p></section>',
+    );
+    expect(html).not.toContain('class="filter-state"');
   });
 });
