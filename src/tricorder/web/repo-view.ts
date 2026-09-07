@@ -30,6 +30,7 @@ import {
   readReviewRequest,
   readWorkflowRun,
 } from "./payloads.js";
+import { safeUrl } from "./safe-url.js";
 
 // The per-repository view (CAP-7): every lane's signals for one repository,
 // each carrying its own freshness.
@@ -158,11 +159,6 @@ export interface RepoViewDeps {
   coveragePolicy?: FreshnessPolicy;
   /** The Actions lane's cadence, for judging its attestation. */
   actionsPolicy?: FreshnessPolicy;
-}
-
-/** Every https URL survives; anything else is dropped, never rendered. */
-function safeUrl(url: string | null | undefined): string | null {
-  return url?.startsWith("https://") ? url : null;
 }
 
 /**

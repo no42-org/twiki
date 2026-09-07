@@ -8,6 +8,7 @@ import type { Freshness } from "./freshness.js";
 import type { Queue } from "./queue.js";
 import type { RepoView, SectionState } from "./repo-view.js";
 import type { ReviewView } from "./review-view.js";
+import { safeUrl } from "./safe-url.js";
 import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
 import type { CollectionHealth, HealthOutcome, RepoRow } from "./view.js";
 
@@ -53,6 +54,7 @@ export const STYLE = `${TOKEN_STYLE}
   .why-rank { color: var(--muted); font-size: ${TYPE.small.size}; }
   .kev-hit { color: var(--critical); font-weight: 700; }
   .policy-note { color: var(--muted); font-size: ${TYPE.small.size}; margin-top: ${SPACE[8]}; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   nav { margin-bottom: ${SPACE[4]}; font-size: ${TYPE.small.size}; }
   nav a { margin-right: ${SPACE[4]}; }
 `;
@@ -69,6 +71,36 @@ const OUTCOME_CLASS: Readonly<Record<HealthOutcome, string>> = {
   failed: "failed",
   running: "running",
   stalled: "stalled",
+};
+
+/**
+ * Every link that leaves gitricorder.
+ *
+ * The maintainer acts on GitHub and comes back; a link that replaced this tab
+ * would lose the page and its scroll position on every item. So: a new tab,
+ * no opener, a visible marker joined to the text by a narrow no-break space
+ * (U+202F, which cannot break, so no wrapper rule is needed), and a spoken
+ * suffix so a screen reader hears where the link goes. The href goes through
+ * safeUrl here, so a caller passes whatever the store holds and gets plain
+ * text back when it is not a GitHub URL. Nothing else writes `<a target>`
+ * (AD-40).
+ */
+export const ExternalLink: FC<
+  PropsWithChildren<{ href: string | null | undefined }>
+> = ({ href, children }) => {
+  const safe = safeUrl(href);
+  if (safe === null) {
+    return <>{children}</>;
+  }
+  return (
+    <a href={safe} target="_blank" rel="noopener noreferrer">
+      {children}
+      <span class="ext" aria-hidden="true">
+        {"\u202F\u2197"}
+      </span>
+      <span class="sr-only">, opens GitHub in a new tab</span>
+    </a>
+  );
 };
 
 export const FreshnessBadge: FC<{ freshness: Freshness; age: string }> = ({
@@ -286,13 +318,9 @@ export const QueuePage: FC<{ queue: Queue; generatedAt: string }> = ({
                 ) : item.kind === "issue" ? (
                   <span class="badge">issue</span>
                 ) : null}{" "}
-                {item.htmlUrl ? (
-                  <a href={item.htmlUrl}>
-                    {item.repo}#{item.number}
-                  </a>
-                ) : (
-                  `${item.repo}#${item.number}`
-                )}
+                <ExternalLink href={item.htmlUrl}>
+                  {item.repo}#{item.number}
+                </ExternalLink>
                 {item.packageName ? ` · ${item.packageName}` : ""}
                 {item.title ? ` · ${item.title}` : ""}
                 {item.advisory ? ` · ${item.advisory}` : ""}
@@ -434,11 +462,7 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
           {view.alerts.map((a) => (
             <tr key={`alert-${a.number}`}>
               <td>
-                {a.htmlUrl ? (
-                  <a href={a.htmlUrl}>#{a.number}</a>
-                ) : (
-                  `#${a.number}`
-                )}
+                <ExternalLink href={a.htmlUrl}>#{a.number}</ExternalLink>
                 {a.advisory ? ` · ${a.advisory}` : ""}
               </td>
               <td class={a.severity === "critical" ? "crit" : ""}>
@@ -474,11 +498,7 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
           {view.updatePrs.map((p) => (
             <tr key={`pr-${p.number}`}>
               <td>
-                {p.htmlUrl ? (
-                  <a href={p.htmlUrl}>#{p.number}</a>
-                ) : (
-                  `#${p.number}`
-                )}{" "}
+                <ExternalLink href={p.htmlUrl}>#{p.number}</ExternalLink>{" "}
                 {p.title}
               </td>
               <td>{p.packageName ?? "unknown"}</td>
@@ -512,11 +532,7 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
           {view.runs.map((r) => (
             <tr key={`run-${r.workflowName}-${r.runNumber}`}>
               <td>
-                {r.htmlUrl ? (
-                  <a href={r.htmlUrl}>{r.workflowName}</a>
-                ) : (
-                  r.workflowName
-                )}{" "}
+                <ExternalLink href={r.htmlUrl}>{r.workflowName}</ExternalLink>{" "}
                 <span class="why">#{r.runNumber}</span>
               </td>
               <td class={r.conclusion === "failure" ? "crit" : ""}>
@@ -553,11 +569,7 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
           {view.issues.map((i) => (
             <tr key={`issue-${i.number}`}>
               <td>
-                {i.htmlUrl ? (
-                  <a href={i.htmlUrl}>#{i.number}</a>
-                ) : (
-                  `#${i.number}`
-                )}{" "}
+                <ExternalLink href={i.htmlUrl}>#{i.number}</ExternalLink>{" "}
                 {i.title}
               </td>
               <td>{i.author}</td>
@@ -590,11 +602,7 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
           {view.reviews.map((r) => (
             <tr key={r.key}>
               <td>
-                {r.htmlUrl ? (
-                  <a href={r.htmlUrl}>#{r.number}</a>
-                ) : (
-                  `#${r.number}`
-                )}{" "}
+                <ExternalLink href={r.htmlUrl}>#{r.number}</ExternalLink>{" "}
                 {r.title}
               </td>
               <td>{r.author}</td>
@@ -689,13 +697,9 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
           {view.rows.map((r) => (
             <tr key={r.key}>
               <td>
-                {r.htmlUrl ? (
-                  <a href={r.htmlUrl}>
-                    {r.repo}#{r.number}
-                  </a>
-                ) : (
-                  `${r.repo}#${r.number}`
-                )}
+                <ExternalLink href={r.htmlUrl}>
+                  {r.repo}#{r.number}
+                </ExternalLink>
                 {r.watched ? null : (
                   // Said on every row rather than once at the top: this
                   // repository has no coverage, no alert sweep and no

@@ -21,6 +21,7 @@ import {
   freshness,
 } from "./freshness.js";
 import { readAlert, readIssue, readPr, readStatus } from "./payloads.js";
+import { safeUrl } from "./safe-url.js";
 
 // The ranked queue (CAP-6): one cross-repository list answering "what should I
 // deal with next, and why does it rank there".
@@ -186,7 +187,7 @@ export function buildQueue(
       // GitHub only ever hands out https URLs, so anything else in this field
       // is a corrupted or foreign row, and this is the first store-derived
       // href in the codebase: hono/jsx renders `javascript:` schemes verbatim.
-      htmlUrl: alert.htmlUrl?.startsWith("https://") ? alert.htmlUrl : null,
+      htmlUrl: safeUrl(alert.htmlUrl),
       explanation: ranking.explanation,
       kevListed: kev === true,
       ranking,
@@ -300,7 +301,7 @@ export function buildQueue(
       packageName: pr.packageName,
       title: null,
       advisory,
-      htmlUrl: pr.htmlUrl.startsWith("https://") ? pr.htmlUrl : null,
+      htmlUrl: safeUrl(pr.htmlUrl),
       explanation: best.explanation,
       kevListed,
       ranking: best,
@@ -341,7 +342,7 @@ export function buildQueue(
       packageName: null,
       title: issue.title,
       advisory: null,
-      htmlUrl: issue.htmlUrl.startsWith("https://") ? issue.htmlUrl : null,
+      htmlUrl: safeUrl(issue.htmlUrl),
       explanation: "untriaged issue, nobody assigned",
       kevListed: false,
       ranking,
