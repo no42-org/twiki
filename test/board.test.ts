@@ -19,6 +19,10 @@ import {
   type Chip,
   type Tile,
 } from "../src/tricorder/attention/board.js";
+import type {
+  CollectionHealth,
+  HealthOutcome,
+} from "../src/tricorder/attention/health.js";
 import {
   normalise,
   summariseRepo,
@@ -53,6 +57,8 @@ const NEVER = { owner: "no42-org", name: "unseen" };
 
 const daysAgo = (days: number): string =>
   new Date(NOW.getTime() - days * 24 * 60 * 60_000).toISOString();
+const hoursAgo = (hours: number): string =>
+  new Date(NOW.getTime() - hours * 60 * 60_000).toISOString();
 
 // The two absences, spelled here rather than imported: a constant asserted
 // against itself cannot fail.
@@ -103,7 +109,12 @@ const TILE_FACTS: Record<Topic, [label: string, href: string, absent: string]> =
     issues: ["Issues", "/queue?topic=issues", NO_SWEEP],
     reviews: ["Reviews", "/reviews", NO_SWEEP],
   };
-const tile = (topic: Topic, count: Tile["count"], nowCount = 0): Tile => {
+const tile = (
+  topic: Topic,
+  count: Tile["count"],
+  nowCount = 0,
+  warnings: string[] = [],
+): Tile => {
   const [label, href, reason] = TILE_FACTS[topic];
   return {
     topic,
@@ -112,8 +123,37 @@ const tile = (topic: Topic, count: Tile["count"], nowCount = 0): Tile => {
     count,
     nowCount,
     reason: count === "unconfirmed" ? reason : null,
+    warnings,
   };
 };
+const TOPICS_ORDER: Topic[] = [
+  "security",
+  "ci",
+  "dependencies",
+  "pulls",
+  "issues",
+  "reviews",
+];
+/** A tile before the first completed sweep. */
+const never = (topic: Topic, warnings: string[] = []): Tile =>
+  tile(topic, "never collected", 0, warnings);
+
+/** One health-table row: a full-scope run five minutes ago, ok unless said. */
+const ran = (
+  lane: string,
+  installation: string,
+  outcome: HealthOutcome = "ok",
+  over: Partial<CollectionHealth> = {},
+): CollectionHealth => ({
+  lane,
+  installation,
+  scope: "full",
+  outcome,
+  detail: null,
+  age: "5m ago",
+  freshness: "fresh",
+  ...over,
+});
 
 describe("buildBoard (AD-32, AD-35)", () => {
   let dir: string;
@@ -125,6 +165,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
     observations: { subject: unknown; payload: unknown }[],
     at = AT,
     outcome: "ok" | "partial" | "failed" = "ok",
+    detail?: string,
   ) => {
     const r = store.beginRun({
       lane,
@@ -133,7 +174,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
       startedAt: at,
     });
     store.recordObservations(r, at, observations as never[]);
-    store.finishRun(r, outcome, at);
+    store.finishRun(r, outcome, at, detail);
     return r;
   };
 
@@ -296,6 +337,13 @@ describe("buildBoard (AD-32, AD-35)", () => {
       quiet: ["no42-org/twiki", "no42-org/quiet"],
       unconfirmed: [],
       unreadable: 0,
+      collected: true,
+      health: [
+        ran("graphql-issues", "no42-org"),
+        ran("graphql-review-requests", "reviews"),
+        ran("graphql-update-prs", "no42-org"),
+        ran("rest-org-dependabot", "no42-org"),
+      ],
     } satisfies Board);
   });
 
@@ -320,6 +368,11 @@ describe("buildBoard (AD-32, AD-35)", () => {
       quiet: ["no42-org/twiki"],
       unconfirmed: ["no42-org/unseen", "no42-org/off"],
       unreadable: 0,
+      collected: true,
+      health: [
+        ran("coverage", "no42-org"),
+        ran("rest-org-dependabot", "no42-org"),
+      ],
     } satisfies Board);
   });
 
@@ -913,6 +966,12 @@ describe("buildBoard (AD-32, AD-35)", () => {
       quiet: ["no42-org/twiki"],
       unconfirmed: [],
       unreadable: 0,
+      collected: true,
+      health: [
+        ran("graphql-issues", "no42-org"),
+        ran("graphql-review-requests", "reviews"),
+        ran("rest-org-dependabot", "no42-org"),
+      ],
     } satisfies Board);
   });
 
@@ -926,6 +985,406 @@ describe("buildBoard (AD-32, AD-35)", () => {
     ]);
 
     expect(buildBoard(store, [REPO], NOW, DEPS).unreadable).toBe(1);
+  });
+
+  describe("what the board does not know (#127)", () => {
+    const RIPTIDE = { owner: "riptide-labs", name: "riptide" };
+    const LOW = "; counts may be low";
+    const FAILED_ALERTS = "alerts sweep failed for riptide-labs 3h ago";
+    const STALE_3H = { age: "3h ago", freshness: "stale" as const };
+    /** Every tile unconfirmed but Security, which is `security`. */
+    const securityTiles = (security: Tile): Tile[] => [
+      security,
+      tile("ci", "unconfirmed"),
+      tile("dependencies", "unconfirmed"),
+      tile("pulls", "unconfirmed"),
+      tile("issues", "unconfirmed"),
+      tile("reviews", "unconfirmed"),
+    ];
+    const malformed = {
+      subject: { type: "dependabot_alert" as const, key: "no42-org/twiki#9" },
+      payload: { number: 9, repo: "no42-org/twiki", cveId: 42 },
+    };
+
+    it("warns on the tile whose lane failed, names the installation, and keeps the count", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      seed("rest-org-dependabot", "riptide-labs", [], hoursAgo(3), "failed");
+
+      expect(buildBoard(store, [REPO, RIPTIDE], NOW, DEPS)).toEqual({
+        summary: { watched: 2, now: 0, soon: 1, quiet: 0, unconfirmed: 1 },
+        tiles: securityTiles(
+          tile("security", 1, 0, [`${FAILED_ALERTS}${LOW}`]),
+        ),
+        rows: [
+          {
+            slug: "no42-org/twiki",
+            tier: "soon",
+            reason:
+              "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+            chips: alertsOnly(linked(1, SECURITY, "high")),
+            freshness: "fresh",
+            age: "5m ago",
+          },
+        ],
+        quiet: [],
+        unconfirmed: ["riptide-labs/riptide"],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("rest-org-dependabot", "no42-org"),
+          ran("rest-org-dependabot", "riptide-labs", "failed", STALE_3H),
+        ],
+      } satisfies Board);
+    });
+
+    it("says stalled for a run that never finished", () => {
+      sweep([{ repo: REPO, alerts: [] }]);
+      store.beginRun({
+        lane: "rest-org-dependabot",
+        installation: "riptide-labs",
+        scope: "full",
+        startedAt: hoursAgo(3),
+      });
+
+      expect(buildBoard(store, [REPO, RIPTIDE], NOW, DEPS)).toEqual({
+        summary: { watched: 2, now: 0, soon: 0, quiet: 1, unconfirmed: 1 },
+        tiles: securityTiles(
+          tile("security", 0, 0, [
+            "alerts sweep stalled for riptide-labs 3h ago; counts may be low",
+          ]),
+        ),
+        rows: [],
+        quiet: ["no42-org/twiki"],
+        unconfirmed: ["riptide-labs/riptide"],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("rest-org-dependabot", "no42-org"),
+          ran("rest-org-dependabot", "riptide-labs", "stalled", STALE_3H),
+        ],
+      } satisfies Board);
+    });
+
+    it("carries one line per failed lane of a topic, in lane order, without a suffix under no count", () => {
+      // Both dependency lanes failed: two lines on one tile, which is
+      // itself unconfirmed since no update-prs sweep completed, so there is
+      // no count for `counts may be low` to qualify.
+      sweep([{ repo: REPO, alerts: [] }]);
+      seed("graphql-update-status", "no42-org", [], AT, "failed");
+      seed("graphql-update-prs", "no42-org", [], AT, "failed");
+
+      const board = buildBoard(store, [REPO], NOW, DEPS);
+
+      expect(board.tiles).toEqual([
+        tile("security", 0),
+        tile("ci", "unconfirmed"),
+        tile("dependencies", "unconfirmed", 0, [
+          "update PRs sweep failed for no42-org 5m ago",
+          "update status sweep failed for no42-org 5m ago",
+        ]),
+        tile("pulls", "unconfirmed"),
+        tile("issues", "unconfirmed"),
+        tile("reviews", "unconfirmed"),
+      ]);
+    });
+
+    it("leaves the installation off a lane that has only one", () => {
+      // Reviews and the KEV catalogue run once for the estate, so `for
+      // reviews` or `for cisa` would name nothing the reader can act on.
+      sweep([{ repo: REPO, alerts: [] }]);
+      seed("graphql-review-requests", "reviews", [], AT, "failed");
+      seed("kev", "cisa", [], AT, "failed");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 1, unconfirmed: 0 },
+        tiles: [
+          tile("security", 0, 0, [`KEV catalogue sweep failed 5m ago${LOW}`]),
+          tile("ci", "unconfirmed"),
+          tile("dependencies", "unconfirmed"),
+          tile("pulls", "unconfirmed"),
+          tile("issues", "unconfirmed"),
+          tile("reviews", "unconfirmed", 0, [
+            "review requests sweep failed 5m ago",
+          ]),
+        ],
+        rows: [],
+        quiet: ["no42-org/twiki"],
+        unconfirmed: [],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("graphql-review-requests", "reviews", "failed"),
+          ran("kev", "cisa", "failed"),
+          ran("rest-org-dependabot", "no42-org"),
+        ],
+      } satisfies Board);
+    });
+
+    it("judges a coverage run in flight on the coverage cadence, not the sweep's", () => {
+      // Two hours in on a daily lane is running, not stalled: judged on the
+      // fifteen-minute sweep policy it would warn on Security every render.
+      sweep([{ repo: REPO, alerts: [] }]);
+      store.beginRun({
+        lane: "coverage",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: hoursAgo(2),
+      });
+
+      const daily = { cadenceMs: 24 * 60 * 60_000 };
+      expect(
+        buildBoard(store, [REPO], NOW, { ...DEPS, coveragePolicy: daily }),
+      ).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 1, unconfirmed: 0 },
+        tiles: securityTiles(tile("security", 0)),
+        rows: [],
+        quiet: ["no42-org/twiki"],
+        unconfirmed: [],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("coverage", "no42-org", "running", { age: "2h ago" }),
+          ran("rest-org-dependabot", "no42-org"),
+        ],
+      } satisfies Board);
+    });
+
+    it("does not warn for a failed hot run while the full run is current", () => {
+      sweep([{ repo: REPO, alerts: [] }]);
+      const hot = store.beginRun({
+        lane: "rest-org-dependabot",
+        installation: "no42-org",
+        scope: "hot",
+        startedAt: AT,
+      });
+      store.finishRun(hot, "failed", AT, "boom");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 1, unconfirmed: 0 },
+        tiles: securityTiles(tile("security", 0)),
+        rows: [],
+        quiet: ["no42-org/twiki"],
+        unconfirmed: [],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("rest-org-dependabot", "no42-org"),
+          ran("rest-org-dependabot", "no42-org", "failed", {
+            scope: "hot",
+            detail: "boom",
+          }),
+        ],
+      } satisfies Board);
+    });
+
+    it("does not warn for an installation no watched repository belongs to", () => {
+      // The owner left repos.yaml; its dead lane row stays in the store and
+      // the table, but it qualifies no count on this page.
+      sweep([{ repo: REPO, alerts: [] }]);
+      seed("rest-org-dependabot", "riptide-labs", [], hoursAgo(3), "failed");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 1, unconfirmed: 0 },
+        tiles: securityTiles(tile("security", 0)),
+        rows: [],
+        quiet: ["no42-org/twiki"],
+        unconfirmed: [],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("rest-org-dependabot", "no42-org"),
+          ran("rest-org-dependabot", "riptide-labs", "failed", STALE_3H),
+        ],
+      } satisfies Board);
+    });
+
+    it("lists a lane the map does not know in the table and warns on no tile", () => {
+      sweep([{ repo: REPO, alerts: [] }]);
+      seed("retired-lane", "no42-org", [], AT, "failed");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 1, unconfirmed: 0 },
+        tiles: securityTiles(tile("security", 0)),
+        rows: [],
+        quiet: ["no42-org/twiki"],
+        unconfirmed: [],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("rest-org-dependabot", "no42-org"),
+          ran("retired-lane", "no42-org", "failed"),
+        ],
+      } satisfies Board);
+    });
+
+    it("stays collected when every lane fails after a good sweep, and keeps the confirmed rows", () => {
+      // The health table holds only the latest run per lane, so a bad tick
+      // after a good one would otherwise read as an estate never swept.
+      // The confirmations are still there; the rows show, stale, under
+      // tiles that say every lane failed.
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }], hoursAgo(3));
+      seed("graphql-issues", "no42-org", [], hoursAgo(3));
+      seed("graphql-update-prs", "no42-org", [], hoursAgo(3));
+      seed("graphql-review-requests", "reviews", [], hoursAgo(3));
+      for (const [lane, installation] of [
+        ["rest-org-dependabot", "no42-org"],
+        ["graphql-issues", "no42-org"],
+        ["graphql-update-prs", "no42-org"],
+        ["graphql-review-requests", "reviews"],
+      ] as const) {
+        seed(lane, installation, [], AT, "failed");
+      }
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 1, quiet: 0, unconfirmed: 0 },
+        tiles: [
+          tile("security", 1, 0, [
+            "alerts sweep failed for no42-org 5m ago; counts may be low",
+          ]),
+          tile("ci", "unconfirmed"),
+          tile("dependencies", "unconfirmed", 0, [
+            "update PRs sweep failed for no42-org 5m ago",
+          ]),
+          tile("pulls", "unconfirmed"),
+          tile("issues", "unconfirmed", 0, [
+            "issues sweep failed for no42-org 5m ago",
+          ]),
+          tile("reviews", "unconfirmed", 0, [
+            "review requests sweep failed 5m ago",
+          ]),
+        ],
+        rows: [
+          {
+            slug: "no42-org/twiki",
+            tier: "soon",
+            reason:
+              "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+            chips: alertsOnly(linked(1, SECURITY, "high")),
+            freshness: "stale",
+            age: "3h ago",
+          },
+        ],
+        quiet: [],
+        unconfirmed: [],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("graphql-issues", "no42-org", "failed"),
+          ran("graphql-review-requests", "reviews", "failed"),
+          ran("graphql-update-prs", "no42-org", "failed"),
+          ran("rest-org-dependabot", "no42-org", "failed"),
+        ],
+      } satisfies Board);
+    });
+
+    it("counts a partial completion as collected, and warns under its count", () => {
+      // A partial sweep looked and may have skipped something: what it
+      // confirmed stands, with the tile saying the count is a lower bound.
+      // A detail, or the health view reads a same-stamp partial as in
+      // flight; a real partial run always says what it skipped.
+      seed(
+        "rest-org-dependabot",
+        "no42-org",
+        [summariseRepo(REPO, [])],
+        AT,
+        "partial",
+        "3 unreadable",
+      );
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 1, unconfirmed: 0 },
+        tiles: securityTiles(
+          tile("security", 0, 0, [
+            "alerts sweep partial for no42-org 5m ago; counts may be low",
+          ]),
+        ),
+        rows: [],
+        quiet: ["no42-org/twiki"],
+        unconfirmed: [],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("rest-org-dependabot", "no42-org", "partial", {
+            detail: "3 unreadable",
+          }),
+        ],
+      } satisfies Board);
+    });
+
+    it("counts a partial completion that confirmed nothing as collected", () => {
+      seed("graphql-issues", "no42-org", [], AT, "partial", "3 unreadable");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 0, unconfirmed: 1 },
+        tiles: [
+          tile("security", "unconfirmed"),
+          tile("ci", "unconfirmed"),
+          tile("dependencies", "unconfirmed"),
+          tile("pulls", "unconfirmed"),
+          tile("issues", "unconfirmed", 0, [
+            "issues sweep partial for no42-org 5m ago",
+          ]),
+          tile("reviews", "unconfirmed"),
+        ],
+        rows: [],
+        quiet: [],
+        unconfirmed: ["no42-org/twiki"],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("graphql-issues", "no42-org", "partial", {
+            detail: "3 unreadable",
+          }),
+        ],
+      } satisfies Board);
+    });
+
+    it("reads never collected everywhere while no sweep has ever completed", () => {
+      // An empty store: no run at all.
+      expect(buildBoard(store, [REPO, OTHER, NEVER], NOW, DEPS)).toEqual({
+        summary: { watched: 3, now: 0, soon: 0, quiet: 0, unconfirmed: 3 },
+        tiles: TOPICS_ORDER.map((topic) => never(topic)),
+        rows: [],
+        quiet: [],
+        unconfirmed: ["no42-org/twiki", "no42-org/quiet", "no42-org/unseen"],
+        unreadable: 0,
+        collected: false,
+        health: [],
+      } satisfies Board);
+    });
+
+    it("does not count a failed sweep's rows as collected", () => {
+      // The failed run wrote an alert and a row nothing can read before it
+      // died, and confirmed no repository. Neither row is a finding: the
+      // tiles read never collected, the failure warns on its tile with no
+      // count to qualify, the unreadable row is still counted, and the
+      // repository is unconfirmed, not quiet.
+      seed(
+        "rest-org-dependabot",
+        "no42-org",
+        [normalise(soonAlert(REPO, 1)), malformed],
+        hoursAgo(3),
+        "failed",
+      );
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 0, unconfirmed: 1 },
+        tiles: [
+          never("security", ["alerts sweep failed for no42-org 3h ago"]),
+          never("ci"),
+          never("dependencies"),
+          never("pulls"),
+          never("issues"),
+          never("reviews"),
+        ],
+        rows: [],
+        quiet: [],
+        unconfirmed: ["no42-org/twiki"],
+        unreadable: 1,
+        collected: false,
+        health: [ran("rest-org-dependabot", "no42-org", "failed", STALE_3H)],
+      } satisfies Board);
+    });
   });
 
   it("lists every watched repository exactly once, so a missing one never means healthy", () => {

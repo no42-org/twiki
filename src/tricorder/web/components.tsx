@@ -12,6 +12,7 @@ import type { SectionState } from "../attention/attestation.js";
 import type { Board, Chip, Tile } from "../attention/board.js";
 import type { FilteredQueue, QueueFilter } from "../attention/filter.js";
 import type { Freshness } from "../attention/freshness.js";
+import type { CollectionHealth, HealthOutcome } from "../attention/health.js";
 import {
   overviewPath,
   queueClearPath,
@@ -24,7 +25,6 @@ import type { Queue, QueueItem } from "../attention/queue.js";
 import type { RepoView } from "./repo-view.js";
 import type { ReviewView } from "./review-view.js";
 import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
-import type { CollectionHealth, HealthOutcome } from "./view.js";
 
 // Server-rendered tables. There is no client-side interactivity layer in this
 // build, deliberately: nothing here needs partial updates.
@@ -226,18 +226,44 @@ const CountChip: FC<{ chip: Chip }> = ({ chip }) => {
 };
 
 /**
+ * A lane of this tile's topic failed or stalled, so the count is a lower
+ * bound. Said on the tile, where the reader looks, and not only in the
+ * health table at the foot of the page (#127).
+ */
+const TileWarnings: FC<{ tile: Tile }> = ({ tile }) => (
+  <>
+    {tile.warnings.map((line) => (
+      <p key={line} class="attest warn">
+        {line}
+      </p>
+    ))}
+  </>
+);
+
+/**
  * One topic tile. The count turns critical, with a `· N now` marker, only
  * when an item of this topic put a repository in `now`. A topic no sweep has
  * confirmed reads `unconfirmed` in the count's place, says which absence
  * that is, and is not a link: the filter behind it has nothing to show.
+ * Before the first completed sweep every tile reads `never collected`; the
+ * note under the board says where to look.
  */
 const TopicTile: FC<{ tile: Tile }> = ({ tile }) =>
-  tile.count === "unconfirmed" ? (
-    <span class="tile">
+  // A div rather than a span for the non-link tile: the warning lines are
+  // paragraphs, which phrasing content may not hold.
+  tile.count === "never collected" ? (
+    <div class="tile">
+      <span class="count never">never collected</span>
+      <span class="label">{tile.label}</span>
+      <TileWarnings tile={tile} />
+    </div>
+  ) : tile.count === "unconfirmed" ? (
+    <div class="tile">
       <span class="count unconfirmed">unconfirmed</span>
       <span class="label">{tile.label}</span>
       <span class="attest">{tile.reason}</span>
-    </span>
+      <TileWarnings tile={tile} />
+    </div>
   ) : (
     <a class="tile" href={tile.href}>
       {tile.nowCount > 0 ? (
@@ -248,8 +274,23 @@ const TopicTile: FC<{ tile: Tile }> = ({ tile }) =>
         <span class="count">{tile.count}</span>
       )}
       <span class="label">{tile.label}</span>
+      <TileWarnings tile={tile} />
     </a>
   );
+
+/**
+ * Rows the store holds but nothing could read. One sentence for every page
+ * that shows counts, so the overview and the queue cannot word the same
+ * gap two ways: a count over unreadable rows is a lower bound, and the
+ * page must say so before it says anything is quiet (AD-28).
+ */
+const UnreadableNote: FC<{ count: number }> = ({ count }) =>
+  count > 0 ? (
+    <p class="failed">
+      {count} stored {count === 1 ? "item" : "items"} could not be read and{" "}
+      {count === 1 ? "is" : "are"} not shown. This list is incomplete.
+    </p>
+  ) : null;
 
 /**
  * The one page shell.
@@ -313,30 +354,41 @@ const REVIEWS_POLICY =
  * a hidden `why` header are one group, and the tier paints the group's left
  * rule. Quiet repositories fold into one block and every one of them is a
  * link; a missing repository would be indistinguishable from a healthy one.
+ *
+ * What the page does not know is said where the reader looks (#127):
+ * a failed lane on its tile, unreadable rows under the summary, and before
+ * the first completed sweep one note in the board's place, pointing at the
+ * health table, which is the same read the tiles were warned from.
  */
 export const Page: FC<{
   board: Board;
-  health: CollectionHealth[];
   generatedAt: string;
-}> = ({ board, health, generatedAt }) => (
+}> = ({ board, generatedAt }) => (
   <Layout title="gitricorder" footer={OVERVIEW_POLICY}>
     <h1>gitricorder</h1>
     <p class="sub">
       {board.summary.watched} watched{" "}
       {board.summary.watched === 1 ? "repository" : "repositories"}
-      {" · "}
-      {board.summary.now} {board.summary.now === 1 ? "needs" : "need"} attention
-      now
-      {" · "}
-      {board.summary.soon} soon
-      {" · "}
-      {board.summary.quiet} quiet
-      {board.summary.unconfirmed > 0
-        ? ` · ${board.summary.unconfirmed} unconfirmed`
-        : ""}
+      {board.collected ? (
+        <>
+          {" · "}
+          {board.summary.now} {board.summary.now === 1 ? "needs" : "need"}{" "}
+          attention now
+          {" · "}
+          {board.summary.soon} soon
+          {" · "}
+          {board.summary.quiet} quiet
+          {board.summary.unconfirmed > 0
+            ? ` · ${board.summary.unconfirmed} unconfirmed`
+            : ""}
+        </>
+      ) : (
+        " · nothing collected yet"
+      )}
       {" · rendered "}
       {generatedAt}
     </p>
+    <UnreadableNote count={board.unreadable} />
 
     <nav class="tiles" aria-label="topics">
       {board.tiles.map((tile) => (
@@ -345,6 +397,29 @@ export const Page: FC<{
     </nav>
 
     <h2 id="board">What needs attention</h2>
+    {!board.collected ? (
+      // No sweep has ever completed, so there is no row, no quiet block and
+      // no legend to show: none of them would be a finding (AD-28).
+      <p class="attest">
+        nothing collected yet; see <a href="#health">Collection health</a>
+      </p>
+    ) : (
+      <BoardBody board={board} />
+    )}
+
+    <h2 id="health">Collection health</h2>
+    <p class="sub">A dead lane is visible here rather than only in the logs.</p>
+    {board.health.length === 0 ? (
+      <p class="never">No collection has run yet.</p>
+    ) : (
+      <HealthTable health={board.health} />
+    )}
+  </Layout>
+);
+
+/** The rows, the legend, the quiet block and the unconfirmed list. */
+const BoardBody: FC<{ board: Board }> = ({ board }) => (
+  <>
     {board.rows.length === 0 ? (
       // Only when the board can vouch for it: with a repository nobody has
       // confirmed, or a row nobody could read, "nothing" is not a finding.
@@ -441,41 +516,42 @@ export const Page: FC<{
         ))}
       </p>
     ) : null}
+  </>
+);
 
-    <h2>Collection health</h2>
-    <p class="sub">A dead lane is visible here rather than only in the logs.</p>
-    {health.length === 0 ? (
-      <p class="never">No collection has run yet.</p>
-    ) : (
-      <table>
-        <thead>
-          <tr>
-            <th>Lane</th>
-            <th>Installation</th>
-            <th>Scope</th>
-            <th>Outcome</th>
-            <th>Last run</th>
-          </tr>
-        </thead>
-        <tbody>
-          {health.map((h) => (
-            <tr key={`${h.lane}|${h.installation}|${h.scope}`}>
-              <td>{h.lane}</td>
-              <td>{h.installation}</td>
-              <td>{h.scope}</td>
-              <td class={OUTCOME_CLASS[h.outcome]}>
-                {h.outcome}
-                {h.detail ? ` · ${h.detail}` : ""}
-              </td>
-              <td>
-                <FreshnessBadge freshness={h.freshness} age={h.age} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    )}
-  </Layout>
+/**
+ * The latest run per lane, installation and scope. Row key, order and
+ * columns are the table's contract: the rows arrive sorted by that key, so
+ * the table does not reshuffle between refreshes.
+ */
+const HealthTable: FC<{ health: CollectionHealth[] }> = ({ health }) => (
+  <table>
+    <thead>
+      <tr>
+        <th>Lane</th>
+        <th>Installation</th>
+        <th>Scope</th>
+        <th>Outcome</th>
+        <th>Last run</th>
+      </tr>
+    </thead>
+    <tbody>
+      {health.map((h) => (
+        <tr key={`${h.lane}|${h.installation}|${h.scope}`}>
+          <td>{h.lane}</td>
+          <td>{h.installation}</td>
+          <td>{h.scope}</td>
+          <td class={OUTCOME_CLASS[h.outcome]}>
+            {h.outcome}
+            {h.detail ? ` · ${h.detail}` : ""}
+          </td>
+          <td>
+            <FreshnessBadge freshness={h.freshness} age={h.age} />
+          </td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
 );
 
 /**
@@ -585,13 +661,7 @@ export const QueuePage: FC<{
         {generatedAt}
       </p>
 
-      {queue.unreadable > 0 ? (
-        <p class="failed">
-          {queue.unreadable} stored {queue.unreadable === 1 ? "item" : "items"}{" "}
-          could not be read and {queue.unreadable === 1 ? "is" : "are"} not
-          shown. This list is incomplete.
-        </p>
-      ) : null}
+      <UnreadableNote count={queue.unreadable} />
 
       {/* The bar narrows topics within an active repository filter rather
           than silently widening back to the estate; `all` keeps the repo. */}

@@ -891,8 +891,9 @@ describe("the queue page", () => {
 
     expect(res.status).toBe(200);
     expect(html).toContain("no42-org/twiki#1");
-    expect(html).toContain("could not be read");
-    expect(html).toContain("incomplete");
+    expect(html).toContain(
+      '<p class="failed">1 stored item could not be read and is not shown. This list is incomplete.</p>',
+    );
   });
 
   it("counts alerts, PRs and issues separately in the header", async () => {

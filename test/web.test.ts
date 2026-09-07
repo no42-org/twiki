@@ -13,6 +13,7 @@ import {
   DEFAULT_STALE_AFTER_CADENCES,
   freshness,
 } from "../src/tricorder/attention/freshness.js";
+import { buildCollectionHealth } from "../src/tricorder/attention/health.js";
 import {
   normalise,
   summariseRepo,
@@ -23,7 +24,6 @@ import type { RunRef } from "../src/tricorder/store/port.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { DEFAULT_HOST, startServer } from "../src/tricorder/web/server.js";
-import { buildCollectionHealth } from "../src/tricorder/web/view.js";
 import { parsePort } from "../src/tricorder.js";
 import { makeAlert, makeReviewRequest, makeUpdatePr } from "./fakes.js";
 
@@ -446,9 +446,17 @@ describe("issues found in review (round 2)", () => {
     });
   });
 
+  /**
+   * The shared run is in flight until a test says otherwise. A page with no
+   * completed sweep behind it reads `nothing collected yet` (#127), so
+   * every rendering test that expects counts completes the run first.
+   */
+  const complete = () => store.finishRun(run, "ok", "2026-08-16T11:55:00.000Z");
+
   describe("the rendered page", () => {
-    const render = async () =>
-      (
+    const render = async () => {
+      complete();
+      return (
         await createApp({
           store,
           watched: [REPO, OTHER, NEVER],
@@ -456,6 +464,7 @@ describe("issues found in review (round 2)", () => {
           now: () => NOW,
         }).request("/")
       ).text();
+    };
 
     /** A review old enough to lift its repository to soon, so its row shows. */
     const lift = (repo: { owner: string; name: string }, number: number) =>
@@ -580,7 +589,7 @@ describe("issues found in review (round 2)", () => {
     });
 
     const unconfirmedTile = (label: string, reason: string) =>
-      `<span class="tile"><span class="count unconfirmed">unconfirmed</span><span class="label">${label}</span><span class="attest">${reason}</span></span>`;
+      `<div class="tile"><span class="count unconfirmed">unconfirmed</span><span class="label">${label}</span><span class="attest">${reason}</span></div>`;
     const NO_COLLECTOR = "no collector for this topic yet";
     const NO_SWEEP = "not confirmed by any completed sweep";
     /** Every tile but Security, none of which has a confirmed chip here. */
@@ -684,6 +693,359 @@ describe("issues found in review (round 2)", () => {
       );
     });
 
+    it("warns on the tile whose lane failed, where the count is read (#127)", async () => {
+      const alerts = [
+        makeAlert({ number: 1, repo: REPO, epssPercentage: 0.02 }),
+        makeAlert({ number: 2, repo: REPO, epssPercentage: 0.02 }),
+      ];
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        ...alerts.map(normalise),
+        summariseRepo(REPO, alerts),
+      ]);
+      const dead = store.beginRun({
+        lane: "rest-org-dependabot",
+        installation: "riptide-labs",
+        scope: "full",
+        startedAt: "2026-08-16T09:00:00.000Z",
+      });
+      store.finishRun(dead, "failed", "2026-08-16T09:00:00.000Z", "HTTP 502");
+      complete();
+
+      // riptide-labs has a watched repository, or its failure would qualify
+      // no count on this page.
+      const html = await (
+        await createApp({
+          store,
+          watched: [REPO, { owner: "riptide-labs", name: "riptide" }],
+          policy: POLICY,
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      // The count stays: it is a lower bound, and the line says so.
+      expect(html).toContain(
+        '<nav class="tiles" aria-label="topics">' +
+          '<a class="tile" href="/queue?topic=security"><span class="count">2</span><span class="label">Security</span>' +
+          '<p class="attest warn">alerts sweep failed for riptide-labs 3h ago; counts may be low</p></a>' +
+          REST_TILES +
+          "</nav>",
+      );
+    });
+
+    it("renders every warning line on a tile that has no count, without the suffix", async () => {
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, []),
+      ]);
+      for (const lane of ["graphql-update-prs", "graphql-update-status"]) {
+        const r = store.beginRun({
+          lane,
+          installation: "no42-org",
+          scope: "full",
+          startedAt: "2026-08-16T11:55:00.000Z",
+        });
+        store.finishRun(r, "failed", "2026-08-16T11:55:00.000Z", "boom");
+      }
+
+      const html = await render();
+
+      expect(html).toContain(
+        '<div class="tile"><span class="count unconfirmed">unconfirmed</span><span class="label">Dependencies</span>' +
+          `<span class="attest">${NO_SWEEP}</span>` +
+          '<p class="attest warn">update PRs sweep failed for no42-org 5m ago</p>' +
+          '<p class="attest warn">update status sweep failed for no42-org 5m ago</p></div>',
+      );
+    });
+
+    it("keeps the confirmed rows, stale, when every lane failed after a good sweep", async () => {
+      const alerts = [
+        makeAlert({ number: 1, repo: REPO, epssPercentage: 0.02 }),
+        makeAlert({ number: 2, repo: REPO, epssPercentage: 0.02 }),
+      ];
+      store.recordObservations(run, "2026-08-16T09:00:00.000Z", [
+        ...alerts.map(normalise),
+        summariseRepo(REPO, alerts),
+      ]);
+      const dead = store.beginRun({
+        lane: "rest-org-dependabot",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-08-16T11:55:00.000Z",
+      });
+      store.finishRun(dead, "failed", "2026-08-16T11:55:00.000Z", "HTTP 502");
+
+      // render() completes the earlier run; the failed one is still the
+      // latest for its key.
+      const html = await render();
+
+      expect(html).toContain(
+        '<p class="sub">3 watched repositories · 0 need attention now · 1 soon · 0 quiet · 2 unconfirmed · rendered 2026-08-16T12:00:00.000Z</p>',
+      );
+      expect(html).toContain(
+        '<a class="tile" href="/queue?topic=security"><span class="count">2</span><span class="label">Security</span>' +
+          '<p class="attest warn">alerts sweep failed for no42-org 5m ago; counts may be low</p></a>',
+      );
+      expect(html).toContain(
+        '<tbody class="soon"><tr class="repo">' +
+          slug("no42-org/twiki") +
+          tier("soon") +
+          cell(
+            '<a class="chip high" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">2 high</a>',
+          ) +
+          REST +
+          badge(
+            '<span class="badge stale" title="3h ago">stale · 3h ago</span>',
+          ) +
+          "</tr>" +
+          why(
+            "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+          ) +
+          "</tbody>",
+      );
+      expect(html).not.toContain("nothing collected yet");
+    });
+
+    it("treats a store holding only a partial completion as collected", async () => {
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, []),
+      ]);
+      store.finishRun(
+        run,
+        "partial",
+        "2026-08-16T11:55:00.000Z",
+        "3 unreadable",
+      );
+
+      // Not through render(), which would complete the run as ok.
+      const html = await (
+        await createApp({
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      expect(html).toContain(
+        '<p class="sub">1 watched repository · 0 need attention now · 0 soon · 1 quiet · rendered 2026-08-16T12:00:00.000Z</p>',
+      );
+      expect(html).toContain(
+        '<a class="tile" href="/queue?topic=security"><span class="count">0</span><span class="label">Security</span>' +
+          '<p class="attest warn">alerts sweep partial for no42-org 5m ago; counts may be low</p></a>',
+      );
+      expect(html).not.toContain("nothing collected yet");
+    });
+
+    it("states unreadable rows directly under the summary and withholds the all-quiet sentence", async () => {
+      const bad = (number: number) => ({
+        subject: {
+          type: "dependabot_alert" as const,
+          key: `no42-org/twiki#${number}`,
+        },
+        payload: { number, repo: "no42-org/twiki", cveId: 42 },
+      });
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        bad(8),
+        bad(9),
+        summariseRepo(REPO, []),
+        summariseRepo(OTHER, []),
+        summariseRepo(NEVER, []),
+      ]);
+
+      const html = await render();
+
+      // The queue's sentence, verbatim, and in the one place the reader
+      // sees before any count.
+      expect(html).toContain(
+        '<p class="sub">3 watched repositories · 0 need attention now · 0 soon · 3 quiet · rendered 2026-08-16T12:00:00.000Z</p>' +
+          '<p class="failed">2 stored items could not be read and are not shown. This list is incomplete.</p>',
+      );
+      expect(html).not.toContain("No repository needs attention right now.");
+    });
+
+    it("replaces the board with one note before the first completed sweep", async () => {
+      // The shared run is still in flight; nothing has completed.
+      const html = await (
+        await createApp({
+          store,
+          watched: [REPO, OTHER, NEVER],
+          policy: POLICY,
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      const never = (label: string) =>
+        `<div class="tile"><span class="count never">never collected</span><span class="label">${label}</span></div>`;
+      expect(html).toContain(
+        '<p class="sub">3 watched repositories · nothing collected yet · rendered 2026-08-16T12:00:00.000Z</p>',
+      );
+      expect(html).toContain(
+        '<nav class="tiles" aria-label="topics">' +
+          never("Security") +
+          never("CI") +
+          never("Dependencies") +
+          never("Pull requests") +
+          never("Issues") +
+          never("Reviews") +
+          "</nav>" +
+          '<h2 id="board">What needs attention</h2>' +
+          '<p class="attest">nothing collected yet; see <a href="#health">Collection health</a></p>' +
+          '<h2 id="health">Collection health</h2>',
+      );
+      expect(html).not.toContain('class="quiet"');
+      expect(html).not.toContain('class="legend"');
+      expect(html).not.toContain("No repository needs attention right now.");
+    });
+
+    it("says both that nothing was collected and which lane failed", async () => {
+      store.finishRun(
+        run,
+        "failed",
+        "2026-08-16T11:55:00.000Z",
+        "token expired",
+      );
+
+      // Not through render(), which would complete the shared run as ok.
+      const html = await (
+        await createApp({
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      expect(html).toContain(
+        '<div class="tile"><span class="count never">never collected</span><span class="label">Security</span>' +
+          '<p class="attest warn">alerts sweep failed for no42-org 5m ago</p></div>',
+      );
+      expect(html).toContain(
+        '<p class="attest">nothing collected yet; see <a href="#health">Collection health</a></p>',
+      );
+      expect(html).toContain('<td class="failed">failed · token expired</td>');
+    });
+
+    /** The health table's body: the one `<tbody>` on the page with no class. */
+    const healthBody = (html: string): string => {
+      const start = html.lastIndexOf("<tbody>");
+      return html.slice(start, html.indexOf("</tbody>", start) + 8);
+    };
+    const healthRow = (
+      lane: string,
+      installation: string,
+      outcome: string,
+      badge: string,
+    ) =>
+      `<tr><td>${lane}</td><td>${installation}</td><td>full</td><td class="${outcome.split(" ")[0]}">${outcome}</td><td>${badge}</td></tr>`;
+    const FRESH_BADGE =
+      '<span class="badge fresh" title="5m ago">fresh · 5m ago</span>';
+
+    it("keeps the health table in lane, installation, scope order across renders, failed rows included", async () => {
+      // Inserted out of order, so an insertion-ordered table cannot pass.
+      const at = "2026-08-16T11:55:00.000Z";
+      const runs: [string, string, "ok" | "failed"][] = [
+        ["rest-org-dependabot", "riptide-labs", "failed"],
+        ["kev", "cisa", "ok"],
+        ["graphql-issues", "no42-org", "ok"],
+        ["rest-org-dependabot", "labmonkeys-space", "ok"],
+      ];
+      for (const [lane, installation, outcome] of runs) {
+        const r = store.beginRun({
+          lane,
+          installation,
+          scope: "full",
+          startedAt: at,
+        });
+        store.finishRun(
+          r,
+          outcome,
+          at,
+          outcome === "failed" ? "HTTP 502" : undefined,
+        );
+      }
+
+      const first = healthBody(await render());
+      const second = healthBody(await render());
+
+      expect(first).toBe(
+        "<tbody>" +
+          healthRow("graphql-issues", "no42-org", "ok", FRESH_BADGE) +
+          healthRow("kev", "cisa", "ok", FRESH_BADGE) +
+          healthRow(
+            "rest-org-dependabot",
+            "labmonkeys-space",
+            "ok",
+            FRESH_BADGE,
+          ) +
+          healthRow("rest-org-dependabot", "no42-org", "ok", FRESH_BADGE) +
+          healthRow(
+            "rest-org-dependabot",
+            "riptide-labs",
+            "failed · HTTP 502",
+            FRESH_BADGE,
+          ) +
+          "</tbody>",
+      );
+      expect(second).toBe(first);
+    });
+
+    it("paints every health outcome by its own class", async () => {
+      const at = "2026-08-16T11:55:00.000Z";
+      const finished = (
+        installation: string,
+        outcome: "partial" | "failed",
+        detail: string,
+      ) => {
+        const r = store.beginRun({
+          lane: "coverage",
+          installation,
+          scope: "full",
+          startedAt: at,
+        });
+        store.finishRun(r, outcome, at, detail);
+      };
+      finished("a-partial", "partial", "3 unreadable");
+      finished("b-failed", "failed", "boom");
+      store.beginRun({
+        lane: "coverage",
+        installation: "c-running",
+        scope: "full",
+        startedAt: "2026-08-16T11:58:00.000Z",
+      });
+      store.beginRun({
+        lane: "coverage",
+        installation: "d-stalled",
+        scope: "full",
+        startedAt: "2026-08-16T06:00:00.000Z",
+      });
+
+      const body = healthBody(await render());
+
+      expect(body).toBe(
+        "<tbody>" +
+          healthRow(
+            "coverage",
+            "a-partial",
+            "partial · 3 unreadable",
+            FRESH_BADGE,
+          ) +
+          healthRow("coverage", "b-failed", "failed · boom", FRESH_BADGE) +
+          healthRow(
+            "coverage",
+            "c-running",
+            "running",
+            '<span class="badge fresh" title="2m ago">fresh · 2m ago</span>',
+          ) +
+          healthRow(
+            "coverage",
+            "d-stalled",
+            "stalled",
+            '<span class="badge stale" title="6h ago">stale · 6h ago</span>',
+          ) +
+          healthRow("rest-org-dependabot", "no42-org", "ok", FRESH_BADGE) +
+          "</tbody>",
+      );
+    });
+
     it("refuses to be cached, so a stale copy cannot claim to be fresh", async () => {
       const res = await createApp({
         store,
@@ -782,6 +1144,7 @@ describe("issues found in review (round 2)", () => {
           }),
         ),
       ]);
+      complete();
 
       const html = await (
         await createApp({

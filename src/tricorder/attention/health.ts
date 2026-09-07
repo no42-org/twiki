@@ -3,18 +3,20 @@
  * SPDX-License-Identifier: MIT
  */
 
+import type { RunOutcome, StorePort } from "../store/port.js";
 import {
   ageLabel,
   type Freshness,
   type FreshnessPolicy,
   freshness,
-} from "../attention/freshness.js";
-import type { RunOutcome, StorePort } from "../store/port.js";
+} from "./freshness.js";
 
 // The collection-health view model. Kept separate from rendering so the
 // interesting decisions, which are all about what we do and do not know, can
-// be tested without a server or a DOM. The repository rows themselves come
-// from attention/board.ts, the one computation every page element reads.
+// be tested without a server or a DOM. It lives in attention rather than
+// web because the board reads it too (AD-34): the tile warnings and the
+// health table at the foot of the page come from one build, so they cannot
+// disagree about which lane failed.
 
 /**
  * A run's displayed outcome.
