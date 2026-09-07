@@ -27,6 +27,7 @@ export const COLOR_NAMES = [
   "warn",
   "warn-tint",
   "ok",
+  "hatch",
 ] as const;
 
 export type ColorName = (typeof COLOR_NAMES)[number];
@@ -46,6 +47,7 @@ export const LIGHT: Palette = {
   warn: "#9A6700",
   "warn-tint": "#FFF8C5",
   ok: "#1A7F37",
+  hatch: "#E8EBEF",
 };
 
 export const DARK: Palette = {
@@ -61,12 +63,16 @@ export const DARK: Palette = {
   warn: "#D29922",
   "warn-tint": "#2E2A12",
   ok: "#3FB950",
+  hatch: "#1E232A",
 };
 
 /**
  * Text-on-ground pairs that must reach WCAG AA for normal text (4.5:1) in
- * both themes. The tint pairs are the washes behind a signal word. The
- * contrast test walks this list against both palettes.
+ * both themes. The tint pairs are the washes behind a signal word; hatch is
+ * the stripe color under an unknown badge, so muted text on it must pass too.
+ * The focus ring is `link`, which these pairs already hold to 4.5:1, above
+ * the 3:1 non-text floor, so it needs no list of its own. The contrast test
+ * walks this list against both palettes.
  */
 export const TEXT_PAIRS: ReadonlyArray<readonly [ColorName, ColorName]> = [
   ["fg", "bg"],
@@ -85,6 +91,7 @@ export const TEXT_PAIRS: ReadonlyArray<readonly [ColorName, ColorName]> = [
   ["link", "surface"],
   ["critical", "critical-tint"],
   ["warn", "warn-tint"],
+  ["muted", "hatch"],
 ];
 
 /**
@@ -114,19 +121,14 @@ export const DOCUMENTED_MIN: Readonly<
   "link/surface": [4.9, 5.6],
   "critical/critical-tint": [4.7, 6.5],
   "warn/warn-tint": [4.5, 5.7],
+  "muted/hatch": [5.3, 5.1],
 };
 
-/** The focus ring is non-text and needs 3:1 against both grounds. */
-export const NON_TEXT_PAIRS: ReadonlyArray<readonly [ColorName, ColorName]> = [
-  ["link", "bg"],
-  ["link", "surface"],
-];
-
 /**
- * Type ramp in rem. The page sets the root to the platform body text style
- * where the browser offers one (`font: -apple-system-body` on iOS), so a user
- * who asked for larger text gets it; the px in comments are the documentation
- * values at a 15px root.
+ * Type ramp in rem. On touch devices that offer the platform body text style
+ * (`font: -apple-system-body` on iOS) the page sets the root to it, so a user
+ * who asked for larger text gets it; elsewhere the root is the browser default.
+ * The px in comments are the documentation values at a 15px root.
  */
 export const TYPE = {
   title: { size: "1.467rem", weight: 600, lineHeight: 1.25 }, // 22px

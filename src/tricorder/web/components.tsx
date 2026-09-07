@@ -9,20 +9,19 @@ import type { Queue } from "./queue.js";
 import type { RepoView, SectionState } from "./repo-view.js";
 import type { ReviewView } from "./review-view.js";
 import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
-import type { CollectionHealth, RepoRow } from "./view.js";
+import type { CollectionHealth, HealthOutcome, RepoRow } from "./view.js";
 
 // Server-rendered tables. There is no client-side interactivity layer in this
 // build, deliberately: nothing here needs partial updates.
 //
 // Colors, sizes and spacing come from tokens.ts. Rules here name tokens only,
 // so the contrast test in test/tokens.test.ts covers every text color the page
-// can paint. Two painted colors are decorative and not in any pair: the border
-// rule and the hatch stripes on an unknown badge. No hex, no px for text, no
-// shadow: the dashboard is an instrument.
+// can paint, including muted text over the hatch stripes. The one painted
+// color in no pair is the border rule, which is decorative. No hex, no px for
+// text, no shadow: the dashboard is an instrument.
 
-const STYLE = `${TOKEN_STYLE}
-  html { font-size: 100%; }
-  @supports (font: -apple-system-body) { html { font: -apple-system-body; } }
+export const STYLE = `${TOKEN_STYLE}
+  @supports (font: -apple-system-body) { @media (hover: none) and (pointer: coarse) { html { font: -apple-system-body; } } }
   body { font-family: system-ui, sans-serif; font-size: ${TYPE.body.size}; line-height: ${TYPE.body.lineHeight}; color: var(--fg); background: var(--bg); margin: ${SPACE[8]} auto; max-width: ${SPACE.contentMax}; padding: 0 ${SPACE.gutter}; }
   a { color: var(--link); }
   :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
@@ -37,10 +36,9 @@ const STYLE = `${TOKEN_STYLE}
   .fresh   { color: var(--ok); }
   .stale   { color: var(--warn); }
   .badge.stale { font-weight: 600; }
-  .unknown { color: var(--muted); background: repeating-linear-gradient(45deg, var(--border) 0 4px, transparent 4px 8px); }
+  .unknown { color: var(--muted); background: repeating-linear-gradient(45deg, var(--hatch) 0 4px, transparent 4px 8px); }
   .none  { color: var(--ok); }
   .ok    { color: var(--ok); }
-  .some  { font-weight: 600; }
   .crit  { color: var(--critical); }
   .high  { color: var(--high); }
   .some.crit { font-weight: 700; }
@@ -51,13 +49,27 @@ const STYLE = `${TOKEN_STYLE}
   .failed { color: var(--critical); font-weight: 600; }
   .partial { color: var(--warn); font-weight: 600; }
   .stalled { color: var(--critical); font-weight: 600; }
-  .running { color: var(--warn); }
+  .running { color: var(--muted); }
   .why-rank { color: var(--muted); font-size: ${TYPE.small.size}; }
   .kev-hit { color: var(--critical); font-weight: 700; }
   .policy-note { color: var(--muted); font-size: ${TYPE.small.size}; margin-top: ${SPACE[8]}; }
   nav { margin-bottom: ${SPACE[4]}; font-size: ${TYPE.small.size}; }
   nav a { margin-right: ${SPACE[4]}; }
 `;
+
+/**
+ * Outcome word to style class, spelled out per outcome so a new member of
+ * HealthOutcome fails to compile here rather than rendering unstyled. Running
+ * stays muted on purpose: every tick shows a running lane, and amber on the
+ * normal state would train the reader to ignore amber.
+ */
+const OUTCOME_CLASS: Readonly<Record<HealthOutcome, string>> = {
+  ok: "ok",
+  partial: "partial",
+  failed: "failed",
+  running: "running",
+  stalled: "stalled",
+};
 
 export const FreshnessBadge: FC<{ freshness: Freshness; age: string }> = ({
   freshness,
@@ -201,7 +213,7 @@ export const Page: FC<{
               <td>{h.lane}</td>
               <td>{h.installation}</td>
               <td>{h.scope}</td>
-              <td class={h.outcome}>
+              <td class={OUTCOME_CLASS[h.outcome]}>
                 {h.outcome}
                 {h.detail ? ` · ${h.detail}` : ""}
               </td>
@@ -688,7 +700,10 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
                   // Said on every row rather than once at the top: this
                   // repository has no coverage, no alert sweep and no
                   // freshness behind it beyond this one line.
-                  <span class="badge unknown"> not watched</span>
+                  <>
+                    {" "}
+                    <span class="badge unknown">not watched</span>
+                  </>
                 )}
                 <div class="why">{r.title}</div>
               </td>

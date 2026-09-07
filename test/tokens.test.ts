@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
+import { STYLE } from "../src/tricorder/web/components.js";
 import {
   COLOR_NAMES,
   contrast,
@@ -16,13 +17,11 @@ import {
   DOCUMENTED_MIN,
   LIGHT,
   luminance,
-  NON_TEXT_PAIRS,
   TEXT_PAIRS,
   TOKEN_STYLE,
 } from "../src/tricorder/web/tokens.js";
 
 const AA_TEXT = 4.5;
-const AA_NON_TEXT = 3;
 
 describe("design tokens (DESIGN.md Colors)", () => {
   it("defines every color in both palettes as #RRGGBB", () => {
@@ -52,35 +51,26 @@ describe("design tokens (DESIGN.md Colors)", () => {
   });
 
   it.each([
-    ["light", LIGHT],
-    ["dark", DARK],
-  ] as const)("%s focus ring reaches 3:1 non-text contrast", (_theme, palette) => {
-    for (const [ring, ground] of NON_TEXT_PAIRS) {
-      expect(contrast(palette[ring], palette[ground])).toBeGreaterThanOrEqual(
-        AA_NON_TEXT,
-      );
-    }
-  });
-
-  it.each([
     ["light", LIGHT, 0],
     ["dark", DARK, 1],
   ] as const)("%s pairs do not fall below the ratios DESIGN.md records", (_theme, palette, i) => {
     for (const [text, ground] of TEXT_PAIRS) {
       const key = `${text}/${ground}` as const;
       const documented = DOCUMENTED_MIN[key]?.[i];
-      expect(documented, `${key} has a documented ratio`).toBeDefined();
+      if (documented === undefined) {
+        throw new Error(`${key} has no documented ratio in DOCUMENTED_MIN`);
+      }
       const ratio = contrast(palette[text], palette[ground]);
-      // Records are rounded to one decimal, so allow half a step of rounding.
-      // A palette edit that costs more than that fails here even if it still
-      // passes AA. Lightening warn or warn-tint drops 4.52 under 4.5 and fails.
-      expect(ratio, key).toBeGreaterThanOrEqual((documented ?? 0) - 0.05);
+      // Records are rounded to one decimal, so allow half a step of
+      // rounding. A palette edit that costs more than that fails here even
+      // if it still passes AA. Lightening warn or warn-tint drops 4.52
+      // under 4.5 and fails.
+      expect(ratio, key).toBeGreaterThanOrEqual(documented - 0.05);
     }
   });
 
   it("emits light values on :root and dark values under the media query", () => {
     expect(TOKEN_STYLE).toContain(`--bg: ${LIGHT.bg};`);
-    expect(TOKEN_STYLE).toContain(`--bg: ${DARK.bg};`);
     expect(TOKEN_STYLE).toContain(
       `@media (prefers-color-scheme: dark) { :root { --bg: ${DARK.bg};`,
     );
@@ -114,9 +104,14 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
     return res.text();
   };
 
-  const styleOf = (html: string): string => {
-    const m = /<style>([\s\S]*?)<\/style>/.exec(html);
-    expect(m, "one inline style block").not.toBeNull();
+  // Anchored at a line start and fully escaped, so `.stale` cannot match
+  // `.badge.stale` and a dot cannot act as a wildcard.
+  const rule = (selector: string): string => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const m = new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(
+      STYLE,
+    );
+    expect(m, selector).not.toBeNull();
     return m?.[1] ?? "";
   };
 
@@ -127,7 +122,10 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
     "/repo/no42-org/twiki",
   ])("%s paints from tokens only and loads nothing from the network", async (path) => {
     const html = await render(path);
-    const style = styleOf(html);
+    const m = /<style>([\s\S]*?)<\/style>/.exec(html);
+    expect(m, "one inline style block").not.toBeNull();
+    const style = m?.[1] ?? "";
+    expect(style).toBe(STYLE);
 
     // Every hex on the page lives in the token block; component rules name
     // custom properties. Strip the token block and nothing may remain.
@@ -143,30 +141,26 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
     expect(html.slice(0, html.indexOf("</head>"))).not.toMatch(/https?:\/\//);
   });
 
-  it("sets text in rem so platform text scaling applies", async () => {
-    const style = styleOf(await render("/"));
-    const sizes = [...style.matchAll(/font-size: ([^;]+);/g)].map((m) => m[1]);
+  it("sets text in rem so platform text scaling applies", () => {
+    const sizes = [...STYLE.matchAll(/font-size: ([^;]+);/g)].map((m) => m[1]);
     expect(sizes.length).toBeGreaterThan(5);
     for (const size of sizes) {
-      expect(size, `font-size ${size}`).toMatch(/rem$|%$/);
+      expect(size, `font-size ${size}`).toMatch(/rem$/);
     }
-    expect(style).toContain("max-width: 72rem");
-    expect(style).toContain(
+    expect(STYLE).toContain("max-width: 72rem");
+    expect(STYLE).toContain(
       ":focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }",
     );
-    expect(style).not.toMatch(/scroll-margin-top/);
-    expect(style).toContain(
-      "@supports (font: -apple-system-body) { html { font: -apple-system-body; } }",
+    expect(STYLE).not.toMatch(/scroll-margin-top/);
+    // Only touch devices take the platform body style; desktop Safari would
+    // otherwise resolve it to 13px while every other browser sits at 16px.
+    expect(STYLE).toContain(
+      "@supports (font: -apple-system-body) { @media (hover: none) and (pointer: coarse) { html { font: -apple-system-body; } } }",
     );
+    expect(STYLE).not.toMatch(/font-size: 100%/);
   });
 
-  it("styles the freshness badge as an outline pill with no wash on stale", async () => {
-    const style = styleOf(await render("/"));
-    const rule = (selector: string): string => {
-      const m = new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`).exec(style);
-      expect(m, selector).not.toBeNull();
-      return m?.[1] ?? "";
-    };
+  it("styles the freshness badge as an outline pill with no wash on stale", () => {
     expect(rule(".badge")).toContain("border: 1px solid currentColor");
     expect(rule(".badge")).toContain("border-radius: 9999px");
     expect(rule(".badge")).toContain("display: inline-block");
@@ -174,12 +168,33 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
     expect(rule(".stale")).not.toContain("font-weight");
     expect(rule(".badge.stale")).toContain("font-weight: 600");
     expect(rule(".stale")).not.toContain("background");
-    // Weight follows the chip's class pair, not rule order.
+    expect(rule(".unknown")).toContain("repeating-linear-gradient");
+    expect(rule(".unknown")).toContain("var(--hatch)");
+    expect(rule(".fresh")).toContain("color: var(--ok)");
+  });
+
+  it("carries severity in weight on count chips only, independent of rule order", () => {
     expect(rule(".some.crit")).toContain("font-weight: 700");
     expect(rule(".some.high")).toContain("font-weight: 400");
+    // No bare `.some` rule at all: a plain count carries no weight of its own.
+    expect(STYLE).not.toMatch(/(?:^|\n)\s*\.some\s*\{/);
     expect(rule(".crit")).not.toContain("font-weight");
+    expect(rule(".high")).not.toContain("font-weight");
+  });
+
+  it("colors every collection-health outcome, with running kept muted", () => {
     expect(rule(".ok")).toContain("color: var(--ok)");
-    expect(rule(".unknown")).toContain("repeating-linear-gradient");
-    expect(rule(".fresh")).toContain("color: var(--ok)");
+    expect(rule(".partial")).toContain("color: var(--warn)");
+    expect(rule(".failed")).toContain("color: var(--critical)");
+    expect(rule(".stalled")).toContain("color: var(--critical)");
+    // A running lane in amber would train the reader to ignore amber.
+    expect(rule(".running")).toContain("color: var(--muted)");
+  });
+
+  it("keeps a space between a review link and its not-watched badge", async () => {
+    // inline-block trims a leading space inside the span, so the separator
+    // must be a text node outside it.
+    const html = await render("/reviews");
+    expect(html).not.toMatch(/<\/a><span class="badge unknown">/);
   });
 });
