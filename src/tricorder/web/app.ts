@@ -7,6 +7,7 @@ import { Hono } from "hono";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import { DEFAULT_REVIEW_BUDGET_DAYS, defaultCutRank } from "../../core/tier.js";
 import type { RepoRef } from "../../core/types.js";
+import { buildBoard } from "../attention/board.js";
 import type { FreshnessPolicy } from "../attention/freshness.js";
 import { buildQueue } from "../attention/queue.js";
 import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
@@ -22,7 +23,7 @@ import {
 } from "./components.js";
 import { buildRepoView } from "./repo-view.js";
 import { buildReviewView } from "./review-view.js";
-import { buildCollectionHealth, buildRepoRows } from "./view.js";
+import { buildCollectionHealth } from "./view.js";
 
 // Routes read through StorePort only: no SQL, no table name, no predicate
 // composed here (AD-27). No GitHub call happens on the request path (AD-3).
@@ -50,16 +51,28 @@ export function createApp(deps: AppDeps): Hono {
   const rankPolicy = deps.rankPolicy ?? DEFAULT_RANK_POLICY;
   const cutRank = deps.cutRank ?? defaultCutRank(rankPolicy);
   const reviewBudgetDays = deps.reviewBudgetDays ?? DEFAULT_REVIEW_BUDGET_DAYS;
+  // The KEV catalogue is judged on its own daily cadence, or the index
+  // would read stale within the hour and every verdict would be unknown.
+  // Keyed by the exported constant, exactly as COVERAGE_LANE is below: a
+  // string literal here would survive a lane rename and silently judge the
+  // daily catalogue on the sweep cadence, degrading every verdict to
+  // unknown with no error anywhere. Unpinnable by mutation while the
+  // constant equals the literal; the shared symbol is the protection.
+  const kevPolicy = deps.lanePolicies?.[KEV_LANE] ?? deps.policy;
 
   app.get("/", (c) => {
     const now = deps.now();
-    const rows = buildRepoRows(
-      deps.store,
-      deps.watched,
-      now,
-      deps.policy,
-      deps.lanePolicies?.[COVERAGE_LANE],
-    );
+    // One queue build per request (AD-32): tiles, rows and summary all read
+    // this one result.
+    const board = buildBoard(deps.store, deps.watched, now, {
+      policy: deps.policy,
+      kevPolicy,
+      rankPolicy,
+      cutRank,
+      reviewBudgetDays,
+      coveragePolicy: deps.lanePolicies?.[COVERAGE_LANE],
+      lanePolicies: deps.lanePolicies,
+    });
     const health = buildCollectionHealth(
       deps.store,
       now,
@@ -68,7 +81,7 @@ export function createApp(deps: AppDeps): Hono {
     );
     // Without the doctype browsers render in quirks mode, where the box model
     // and table metrics differ from what the styles were written against.
-    const body = Page({ rows, health, generatedAt: now.toISOString() });
+    const body = Page({ board, health, generatedAt: now.toISOString() });
     // Every freshness verdict on this page is computed against the render
     // clock. A cached copy re-presents those verdicts later, still claiming
     // "fresh", which is the one thing the page must never do.
@@ -80,14 +93,7 @@ export function createApp(deps: AppDeps): Hono {
     const now = deps.now();
     const queue = buildQueue(deps.store, now, {
       policy: deps.policy,
-      // The KEV catalogue is judged on its own daily cadence, or the index
-      // would read stale within the hour and every verdict would be unknown.
-      // Keyed by the exported constant, exactly as COVERAGE_LANE is above: a
-      // string literal here would survive a lane rename and silently judge the
-      // daily catalogue on the sweep cadence, degrading every verdict to
-      // unknown with no error anywhere. Unpinnable by mutation while the
-      // constant equals the literal; the shared symbol is the protection.
-      kevPolicy: deps.lanePolicies?.[KEV_LANE] ?? deps.policy,
+      kevPolicy,
       rankPolicy,
     });
     const body = QueuePage({ queue, generatedAt: now.toISOString() });
@@ -120,7 +126,7 @@ export function createApp(deps: AppDeps): Hono {
       actionsPolicy: deps.lanePolicies?.[ACTIONS_LANE],
       // The same policy, cut and KEV cadence the queue ranks with, so the
       // header's tier and the queue's order come from one chain (AD-29).
-      kevPolicy: deps.lanePolicies?.[KEV_LANE] ?? deps.policy,
+      kevPolicy,
       rankPolicy,
       cutRank,
       reviewBudgetDays,

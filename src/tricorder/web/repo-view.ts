@@ -15,6 +15,10 @@ import {
 } from "../../core/tier.js";
 import type { RepoRef } from "../../core/types.js";
 import {
+  laneAttestation,
+  type SectionState,
+} from "../attention/attestation.js";
+import {
   ageLabel,
   type Freshness,
   type FreshnessPolicy,
@@ -48,17 +52,6 @@ import type { CurrentValue, StorePort } from "../store/port.js";
 // this dashboard exists to avoid (AD-28). Each section therefore carries an
 // explicit `attested` flag rather than leaving the reader to infer it from a
 // count of zero.
-
-/** One section's standing: did anything actually establish this is complete? */
-export interface SectionState {
-  /**
-   * True when a lane confirmed this repository's set, so an empty list means
-   * "none". False means "we have not looked", and the page says so.
-   */
-  attested: boolean;
-  freshness: Freshness;
-  age: string;
-}
 
 export interface RepoAlertRow {
   number: number;
@@ -186,42 +179,6 @@ export interface RepoViewDeps {
   reviewBudgetDays?: number;
 }
 
-/**
- * Whether a lane vouched for this installation's set, and how current that
- * claim is.
- *
- * Read from the lane's own run rows rather than from the presence of data,
- * because presence cannot distinguish the two empties. Only an `ok` run
- * counts: a partial one skipped something, and it may have been exactly this
- * repository.
- */
-function laneAttestation(
-  store: StorePort,
-  lane: string,
-  installation: string,
-  now: Date,
-  policy: FreshnessPolicy,
-): SectionState {
-  const run = store
-    .latestRunPerKey()
-    .filter((r) => r.lane === lane)
-    .filter((r) => r.installation.toLowerCase() === installation)
-    .filter((r) => r.scope === "full")
-    .sort((a, b) => b.verifiedAt.localeCompare(a.verifiedAt))[0];
-  if (!run || run.outcome !== "ok") {
-    return {
-      attested: false,
-      freshness: freshness(run?.verifiedAt ?? null, now, policy),
-      age: ageLabel(run?.verifiedAt ?? null, now),
-    };
-  }
-  return {
-    attested: true,
-    freshness: freshness(run.verifiedAt, now, policy),
-    age: ageLabel(run.verifiedAt, now),
-  };
-}
-
 /** Rows of one node-keyed type belonging to this repository. */
 function forRepo<T extends { repo: string }>(
   values: readonly CurrentValue[],
@@ -271,27 +228,11 @@ export function buildRepoView(
     .find((v) => v.state === "present" && v.subject.key === slug);
   const summaryPayload = confirmation?.payload as RepoObservation | undefined;
 
-  // The one tier computation (AD-34). Nothing on this page derives a tier
-  // from the rows it lists; it reads this result.
-  const rankPolicy = deps.rankPolicy ?? DEFAULT_RANK_POLICY;
-  const attention = repoAttention(store, repo, now, {
-    policy: deps.policy,
-    kevPolicy: deps.kevPolicy ?? deps.policy,
-    rankPolicy,
-    cutRank: deps.cutRank ?? defaultCutRank(rankPolicy),
-    reviewBudgetDays: deps.reviewBudgetDays ?? DEFAULT_REVIEW_BUDGET_DAYS,
-  });
-  // Counted from the same items the tier was judged on, so the sentence
-  // beside the chip cannot disagree with it (AD-32). With no alert items
-  // there is nothing to count, and the lane's confirmation, or its absence,
-  // is the honest answer.
-  const counted = attention.openAlerts > 0;
-
   const coverageValue = store
     .currentByType("repository_coverage")
     .find((v) => v.state === "present" && v.subject.key === slug);
   // Coverage is trusted only while its own attestation is fresh, exactly as
-  // on the repository list: a dead coverage lane must not keep a cached
+  // on the overview: a dead coverage lane must not keep a cached
   // `covered` badging a confident zero (AD-28).
   const coverage = coverageValue
     ? freshness(
@@ -310,6 +251,30 @@ export function buildRepoView(
   const notCovered =
     coverage !== null && !isCovered(coverage) && coverage !== "unknown";
   const known = !notCovered;
+
+  // The one tier computation (AD-34). Nothing on this page derives a tier
+  // from the rows it lists; it reads this result. Coverage is decided first
+  // and handed in, so a repository this page refuses to count alerts for is
+  // not at the same time judged `now` by one of them.
+  const rankPolicy = deps.rankPolicy ?? DEFAULT_RANK_POLICY;
+  const attention = repoAttention(
+    store,
+    repo,
+    now,
+    {
+      policy: deps.policy,
+      kevPolicy: deps.kevPolicy ?? deps.policy,
+      rankPolicy,
+      cutRank: deps.cutRank ?? defaultCutRank(rankPolicy),
+      reviewBudgetDays: deps.reviewBudgetDays ?? DEFAULT_REVIEW_BUDGET_DAYS,
+    },
+    notCovered ? new Set([slug]) : undefined,
+  );
+  // Counted from the same items the tier was judged on, so the sentence
+  // beside the chip cannot disagree with it (AD-32). With no alert items
+  // there is nothing to count, and the lane's confirmation, or its absence,
+  // is the honest answer.
+  const counted = attention.openAlerts > 0;
 
   const alertValues = store.currentByTypeForOwner(
     "dependabot_alert",

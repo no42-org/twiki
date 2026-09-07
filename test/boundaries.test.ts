@@ -268,6 +268,7 @@ const BOUNDARIES: Record<
       "../store/port.js",
       "../collect/kev.js",
       "../collect/update-status.js",
+      "../collect/review-requests.js",
     ],
   },
 };

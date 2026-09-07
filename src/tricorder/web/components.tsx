@@ -6,12 +6,16 @@
 import type { FC, PropsWithChildren } from "hono/jsx";
 import { safeUrl } from "../../core/safe-url.js";
 import type { Tier } from "../../core/tier.js";
+import { TOPICS } from "../../core/topics.js";
+import type { SectionState } from "../attention/attestation.js";
+import type { Board, Chip, Tile } from "../attention/board.js";
 import type { Freshness } from "../attention/freshness.js";
+import { repoPath } from "../attention/links.js";
 import type { Queue } from "../attention/queue.js";
-import type { RepoView, SectionState } from "./repo-view.js";
+import type { RepoView } from "./repo-view.js";
 import type { ReviewView } from "./review-view.js";
 import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
-import type { CollectionHealth, HealthOutcome, RepoRow } from "./view.js";
+import type { CollectionHealth, HealthOutcome } from "./view.js";
 
 // Server-rendered tables. There is no client-side interactivity layer in this
 // build, deliberately: nothing here needs partial updates.
@@ -42,9 +46,6 @@ export const STYLE = `${TOKEN_STYLE}
   .none  { color: var(--ok); }
   .ok    { color: var(--ok); }
   .crit  { color: var(--critical); }
-  .high  { color: var(--high); }
-  .some.crit { font-weight: 700; }
-  .some.high { font-weight: 400; }
   .never { color: var(--muted); font-style: italic; }
   .uncovered { color: var(--warn); font-style: italic; text-decoration: underline dotted; }
   .why { color: var(--muted); font-size: ${TYPE.small.size}; }
@@ -62,6 +63,35 @@ export const STYLE = `${TOKEN_STYLE}
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   nav { margin-bottom: ${SPACE[4]}; font-size: ${TYPE.small.size}; }
   nav a { margin-right: ${SPACE[4]}; }
+  .tiles { display: grid; grid-template-columns: repeat(6, minmax(min-content, 1fr)); gap: ${SPACE[3]}; margin: ${SPACE[4]} 0 ${SPACE[6]}; }
+  .tile { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: ${RADIUS.md}; padding: ${SPACE[3]}; text-decoration: none; color: var(--fg); }
+  .count { display: block; font-size: ${TYPE.count.size}; font-weight: ${TYPE.count.weight}; line-height: ${TYPE.count.lineHeight}; font-variant-numeric: tabular-nums; margin-bottom: ${SPACE[2]}; }
+  .count.critical { color: var(--critical); }
+  .count.unconfirmed { color: var(--muted); font-style: italic; }
+  .now-marker { font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; color: var(--critical); }
+  .label { display: block; font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--link); text-decoration: underline; }
+  .board tbody td, .board tbody th { border-bottom: 0; }
+  .board tbody { border-bottom: 1px solid var(--border); }
+  .board tr.repo td:first-child { padding-left: 9px; }
+  .board tr.why th { padding: 0; width: 0; }
+  .board tr.why td { padding: 0 ${SPACE[3]} ${SPACE[3]} 9px; }
+  tbody.now tr.repo td:first-child { border-left: 3px solid var(--critical); }
+  tbody.soon tr.repo td:first-child { border-left: 3px solid var(--warn); }
+  tbody.now tr.why th { border-left: 3px solid var(--critical); }
+  tbody.soon tr.why th { border-left: 3px solid var(--warn); }
+  .slug { font-weight: 600; }
+  .chip { display: inline-block; min-width: 24px; min-height: 24px; box-sizing: border-box; padding: 3px 6px; border-radius: ${RADIUS.sm}; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; font-variant-numeric: tabular-nums; }
+  .chip.zero { color: var(--muted); }
+  .chip.critical { color: var(--critical); font-weight: 700; }
+  .chip.high { color: var(--high); font-weight: 400; }
+  .chip.uncovered { color: var(--warn); font-style: normal; text-decoration: underline dotted; }
+  .chip.unconfirmed { color: var(--muted); font-style: italic; }
+  .attest { color: var(--muted); font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; font-style: italic; margin: ${SPACE[2]} 0 0; }
+  .legend { color: var(--muted); font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; margin: 0; }
+  .quiet { background: var(--surface); border: 1px solid var(--border); border-radius: ${RADIUS.md}; padding: ${SPACE[3]} ${SPACE[4]}; margin-top: ${SPACE[6]}; }
+  .quiet summary { font-weight: 600; }
+  .quiet p { margin: ${SPACE[2]} 0 0; font-size: ${TYPE.small.size}; line-height: 1.8; }
+  .quiet a { margin-right: ${SPACE[3]}; }
 `;
 
 /**
@@ -132,46 +162,76 @@ export const FreshnessBadge: FC<{ freshness: Freshness; age: string }> = ({
 );
 
 /**
- * The alert count.
+ * One count chip (AD-35).
  *
- * Three visually distinct states, which is the requirement: a real zero reads
- * as good news, a never-collected repository reads as a gap in our knowledge,
- * and neither can be mistaken for the other.
+ * Four states, each a word plus a color, none mistakable for another: a
+ * confirmed zero is muted, a count carries its worst severity in weight, a
+ * topic GitHub is not watching reads `not covered`, and a topic no completed
+ * sweep confirmed reads `unconfirmed`, never `0` (AD-28). Only a count is a
+ * link, and a linked chip is at least 24px square.
  */
-export const AlertCount: FC<{ row: RepoRow }> = ({ row }) => {
-  // Coverage first: a repository nobody is watching has no count, and saying
-  // "not collected" would blame the collector for GitHub's setting (AD-28).
-  if (row.coverage !== null && row.coverage !== "covered") {
-    return (
-      <span class="uncovered" title={row.coverageReason ?? undefined}>
-        not covered
-      </span>
-    );
+const CountChip: FC<{ chip: Chip }> = ({ chip }) => {
+  switch (chip.state) {
+    case "not-covered":
+      return (
+        <span class="chip uncovered" title={chip.reason ?? undefined}>
+          not covered
+        </span>
+      );
+    case "unconfirmed":
+      return (
+        <span class="chip unconfirmed" title={chip.reason ?? undefined}>
+          unconfirmed
+        </span>
+      );
+    case "zero":
+      return <span class="chip zero">0</span>;
+    case "count": {
+      const weight =
+        chip.severity === "critical"
+          ? " critical"
+          : chip.severity === "high"
+            ? " high"
+            : "";
+      const text = chip.severity
+        ? `${chip.count} ${chip.severity}`
+        : `${chip.count}`;
+      return chip.href === null ? (
+        <span class={`chip${weight}`}>{text}</span>
+      ) : (
+        <a class={`chip${weight}`} href={chip.href}>
+          {text}
+        </a>
+      );
+    }
   }
-  if (row.openAlerts === null) {
-    return <span class="never">not collected</span>;
-  }
-  if (row.openAlerts === 0) {
-    // Green only while the zero is current. A stale zero is a number we can no
-    // longer vouch for, and painting it as good news is what the badge column
-    // would then have to argue the reader out of.
-    return (
-      <span class={row.freshness === "fresh" ? "none" : undefined}>0</span>
-    );
-  }
-  const severityClass =
-    row.worstSeverity === "critical"
-      ? "crit"
-      : row.worstSeverity === "high"
-        ? "high"
-        : "";
-  return (
-    <span class={`some ${severityClass}`}>
-      {row.openAlerts}
-      {row.worstSeverity ? ` ${row.worstSeverity}` : ""}
-    </span>
-  );
 };
+
+/**
+ * One topic tile. The count turns critical, with a `· N now` marker, only
+ * when an item of this topic put a repository in `now`. A topic no sweep has
+ * confirmed reads `unconfirmed` in the count's place, says which absence
+ * that is, and is not a link: the filter behind it has nothing to show.
+ */
+const TopicTile: FC<{ tile: Tile }> = ({ tile }) =>
+  tile.count === "unconfirmed" ? (
+    <span class="tile">
+      <span class="count unconfirmed">unconfirmed</span>
+      <span class="label">{tile.label}</span>
+      <span class="attest">{tile.reason}</span>
+    </span>
+  ) : (
+    <a class="tile" href={tile.href}>
+      {tile.nowCount > 0 ? (
+        <span class="count critical">
+          {tile.count} <span class="now-marker">· {tile.nowCount} now</span>
+        </span>
+      ) : (
+        <span class="count">{tile.count}</span>
+      )}
+      <span class="label">{tile.label}</span>
+    </a>
+  );
 
 /**
  * The one page shell.
@@ -202,46 +262,143 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({
   </html>
 );
 
+/**
+ * The overview (AD-32): the attention board, then collection health.
+ *
+ * Every number on it comes from one `Board`, built from one queue, so the
+ * tiles, the rows and the summary cannot disagree. The board table gives
+ * each repository its own `tbody`: the repo row and the rationale row under
+ * a hidden `why` header are one group, and the tier paints the group's left
+ * rule. Quiet repositories fold into one block and every one of them is a
+ * link; a missing repository would be indistinguishable from a healthy one.
+ */
 export const Page: FC<{
-  rows: RepoRow[];
+  board: Board;
   health: CollectionHealth[];
   generatedAt: string;
-}> = ({ rows, health, generatedAt }) => (
+}> = ({ board, health, generatedAt }) => (
   <Layout title="gitricorder">
     <h1>gitricorder</h1>
     <p class="sub">
-      {rows.length} watched {rows.length === 1 ? "repository" : "repositories"}
+      {board.summary.watched} watched{" "}
+      {board.summary.watched === 1 ? "repository" : "repositories"}
+      {" · "}
+      {board.summary.now} {board.summary.now === 1 ? "needs" : "need"} attention
+      now
+      {" · "}
+      {board.summary.soon} soon
+      {" · "}
+      {board.summary.quiet} quiet
+      {board.summary.unconfirmed > 0
+        ? ` · ${board.summary.unconfirmed} unconfirmed`
+        : ""}
       {" · rendered "}
       {generatedAt}
     </p>
 
-    <table>
-      <thead>
-        <tr>
-          <th>Repository</th>
-          <th class="num">Open Dependabot alerts</th>
-          <th>Last confirmed</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.slug}>
-            <td>
-              <a href={`/repo/${row.slug}`}>{row.slug}</a>
-              {row.coverageReason ? (
-                <div class="why">{row.coverageReason}</div>
-              ) : null}
-            </td>
-            <td class="num">
-              <AlertCount row={row} />
-            </td>
-            <td>
-              <FreshnessBadge freshness={row.freshness} age={row.age} />
-            </td>
+    <nav class="tiles" aria-label="topics">
+      {board.tiles.map((tile) => (
+        <TopicTile key={tile.topic} tile={tile} />
+      ))}
+    </nav>
+
+    <h2 id="board">What needs attention</h2>
+    {board.rows.length === 0 ? (
+      // Only when the board can vouch for it: with a repository nobody has
+      // confirmed, or a row nobody could read, "nothing" is not a finding.
+      board.unconfirmed.length === 0 && board.unreadable === 0 ? (
+        <p class="sub">No repository needs attention right now.</p>
+      ) : null
+    ) : (
+      <table class="board">
+        <thead>
+          <tr>
+            <th scope="col" colspan={2}>
+              Repository
+            </th>
+            <th scope="col">Tier</th>
+            {TOPICS.map((t) => (
+              <th key={t.topic} scope="col">
+                {t.label}
+              </th>
+            ))}
+            <th scope="col">Last confirmed</th>
           </tr>
+        </thead>
+        {board.rows.map((row) => (
+          <tbody key={row.slug} class={row.tier}>
+            <tr class="repo">
+              <td class="slug-cell" colspan={2}>
+                <a class="slug" href={repoPath(row.slug)}>
+                  {row.slug}
+                </a>
+              </td>
+              <td class="tier-cell">
+                <TierChip tier={row.tier} />
+              </td>
+              {TOPICS.map((t) => (
+                <td key={t.topic} class="c">
+                  <CountChip chip={row.chips[t.topic]} />
+                </td>
+              ))}
+              <td class="fresh-cell">
+                <FreshnessBadge freshness={row.freshness} age={row.age} />
+              </td>
+            </tr>
+            <tr class="why">
+              <th scope="row">
+                <span class="sr-only">why</span>
+              </th>
+              <td colspan={9}>
+                <span class="why">
+                  {row.reason}
+                  {/* The reason is on the chip's title too, but a title is
+                      never the sole carrier; the sentence says it. */}
+                  {row.chips.security.state === "not-covered"
+                    ? ` · security not covered: ${row.chips.security.reason}`
+                    : ""}
+                </span>
+              </td>
+            </tr>
+          </tbody>
         ))}
-      </tbody>
-    </table>
+      </table>
+    )}
+    <p class="legend">
+      now: act today · soon: act this week · quiet: nothing pressing
+    </p>
+
+    <details class="quiet" open>
+      <summary id="quiet">
+        {board.quiet.length}{" "}
+        {board.quiet.length === 1 ? "repository is" : "repositories are"} quiet
+      </summary>
+      <p>
+        {board.quiet.map((slug, i) => (
+          <>
+            {i > 0 ? " " : ""}
+            <a key={slug} href={repoPath(slug)}>
+              {slug}
+            </a>
+          </>
+        ))}
+      </p>
+    </details>
+    {board.unconfirmed.length > 0 ? (
+      <p class="attest" id="unconfirmed">
+        {board.unconfirmed.length}{" "}
+        {board.unconfirmed.length === 1 ? "repository" : "repositories"} not yet
+        confirmed by any completed sweep:{" "}
+        {board.unconfirmed.map((slug, i) => (
+          <>
+            {i > 0 ? " " : ""}
+            <a key={slug} href={repoPath(slug)}>
+              {slug}
+            </a>
+          </>
+        ))}
+      </p>
+    ) : null}
 
     <h2>Collection health</h2>
     <p class="sub">A dead lane is visible here rather than only in the logs.</p>

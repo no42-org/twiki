@@ -4,9 +4,44 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { KIND_REASONS, kevListedFor } from "../src/core/topics.js";
+import {
+  KIND_REASONS,
+  kevListedFor,
+  TOPICS,
+  topicOf,
+} from "../src/core/topics.js";
 
-// AD-31: one owner for what each kind may say and shout about.
+// AD-31, AD-32: one owner for what each kind may say and shout about, and
+// for the topic vocabulary every surface shows.
+
+describe("TOPICS", () => {
+  it("lists the six topics in vocabulary order, with the queue value of each", () => {
+    expect(TOPICS.map((t) => [t.topic, t.label, t.query])).toEqual([
+      ["security", "Security", "security"],
+      ["ci", "CI", "ci"],
+      ["dependencies", "Dependencies", "dependencies"],
+      ["pulls", "Pull requests", "pulls"],
+      ["issues", "Issues", "issues"],
+      // Not in the queue: review requests have their own page.
+      ["reviews", "Reviews", null],
+    ]);
+  });
+
+  it("gives every queue kind exactly one topic, and the lane-less topics none", () => {
+    expect(TOPICS.map((t) => [t.topic, [...t.kinds]])).toEqual([
+      ["security", ["alert"]],
+      ["ci", []],
+      ["dependencies", ["update_pr"]],
+      ["pulls", []],
+      ["issues", ["issue"]],
+      ["reviews", []],
+    ]);
+    expect(topicOf("alert")).toBe("security");
+    expect(topicOf("update_pr")).toBe("dependencies");
+    expect(topicOf("issue")).toBe("issues");
+    expect(() => topicOf("workflow" as never)).toThrow(/belongs to no topic/);
+  });
+});
 
 describe("kevListedFor", () => {
   it.each([
