@@ -220,7 +220,7 @@ That is the bug this section fixes.
 - **`critical`** means act now. KEV-listed advisory, critical severity, a secret scanning alert, a red default-branch workflow. Also used on the `now` tier chip, the left rule of a `now` repo row and the `now` marker in a topic tile. `critical-tint` is its background wash and is never used without `critical` text beside it.
 - **`high`** means high severity on an alert. Text only, no wash.
 - **`warn`** means stale, partial or soon. Freshness badges past budget, the `soon` tier, uncovered repositories, partial lane runs, a failed-lane attestation line. `warn-tint` is its wash and is used only behind the `soon` tier chip.
-- **`ok`** means fresh or zero. It is the calm color. It is never used to celebrate.
+- **`ok`** means fresh. It is the calm color. It is never used to celebrate.
 
 Color is never the only carrier.
 Every signal color sits next to a word: `2 high`, `failed`, `stale · 3h ago`, `not covered`, `1 now`.
@@ -320,7 +320,7 @@ Visual specs only. Triggers, markup and behavior live in EXPERIENCE.md Component
 - **Repo row.** `{components.repo-row}`. Slug, tier chip, one count chip per topic, freshness badge, then a `muted` `small` rationale line. `now` rows carry `now-left-rule`, `soon` rows `soon-left-rule`, quiet rows no rule. On phones the row becomes a card whose chips wrap as inline content with `phone-gap` between lines. On tablets the six chips collapse into one `signals` cell of wrapped `small` text.
 - **Quiet block.** `{components.quiet-block}`. A `surface` box with a `border`, `rounded.md` corners and `spacing.4` padding. A `body` lead sentence, then slugs as `small` links separated by `spacing.3`, wrapping freely. On phones the lead sentence is a `details` summary.
 - **Queue row.** `{components.queue-row}`. Rank number in `muted` `small` tabular numerals, topic word in `label`, slug in `body` weight 600, item reference as an external link, title in `body`, rationale beneath in `muted` `small`, freshness badge right-aligned. No left rule. Urgency is carried by order and by the words in the rationale.
-- **Filter bar.** `{components.filter-bar}`. One line of `small` links: `all` then the six topics in vocabulary order. The active filter is `fg` with `active-underline`; the rest are `link`. Each link has a 24px minimum hit area. Wraps on phones.
+- **Filter bar.** `{components.filter-bar}`. One line of `small` links: `all`, the five queue topics in vocabulary order, then `reviews`. The active filter is `fg` with `active-underline`; the rest are `link`. Each link has a 24px minimum hit area. Wraps on phones.
 - **Breadcrumb.** `{components.breadcrumb}`. `small` `muted` line above the title: `overview › owner/name`. The first segment is a link, the last is plain text.
 - **Repo page section.** `{components.repo-page-section}`. Section title in `section`, its own freshness badge beside it and `N shown` in `muted` `small`. Followed by a table or an attestation note.
 - **Review row.** `{components.review-row}`. Slug in `body` weight 600, item reference as an external link, title, requested-from names in `small`, waiting age in `small` `muted`, freshness badge, and the existing `not watched` badge styled as a `muted` freshness badge.

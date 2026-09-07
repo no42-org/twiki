@@ -21,7 +21,12 @@ Both spines win over any mock on conflict.
 For the architect and story writers. Everything not listed here is unchanged from the deployment inspected on 2026-09-07.
 
 - The repositories page becomes an overview: six topic tiles, repos ranked into `now`, `soon` and `quiet` tiers, quiet repos collapsed into one block, a tier legend.
-- The queue gains topic and repo filters as query parameters, and three new item kinds: CI failures, plain pull requests, and code scanning and secret scanning alerts.
+- The queue gains topic and repo filters as query parameters.
+- Repositories are ranked into tiers as buckets over the existing rank chain. The CI rule needs the repository's default branch, which is not stored today.
+- CI failures become a queue kind. Workflow runs are already collected and shown on the repo page, so this is a queue and rank-chain change only.
+- Code scanning and secret scanning alerts become queue kinds. Both have subject types but no collector; each needs a lane and a rank-chain term.
+- Plain pull requests become a queue kind. They have no subject type and no collector.
+- Zero counts are `muted`. They are green today.
 - Every GitHub link opens in a new tab with a visible marker and an announced name.
 - The repo page gains a breadcrumb, a page summary, a tier chip, and section titles renamed to the topic vocabulary, with one new section, Pull requests.
 - Document titles, landmarks, skip links, ARIA roles on phone cards, 24px hit areas and a rem type ramp are new on every page.
@@ -58,17 +63,19 @@ Link behavior is owned by Component Patterns (Nav bar, Breadcrumb, External link
 
 ### Attention tiers
 
-Computed per repository from its worst open item, using the existing rank chain (KEV, EPSS band, severity, bump size, stuck):
+A repository's tier is a bucket over the rank of its worst open item, using the existing chain: KEV, then EPSS band, then severity, then bump size, then stuck.
+Tiers are not a second ranking, so the overview and the queue always agree on order.
 
-| Tier | Meaning | Enters when |
+| Tier | Meaning | Bucket over the chain |
 |---|---|---|
-| `now` | Act today | Any item is KEV-listed, of critical severity or a secret scanning alert, or the default-branch workflow is red or stalled |
-| `soon` | Act this week | Any high or medium alert, a stuck dependency-update PR, a review request waiting longer than the review budget, or a failed non-default-branch workflow |
-| `quiet` | Nothing pressing | Only untriaged issues, low alerts, or nothing open |
+| `now` | Act today | The worst item is KEV-listed, or its EPSS is in the top band (0.5 by default), or it is a kind the chain places above that cut: a secret scanning alert, or a failed or stalled workflow run on the default branch |
+| `soon` | Act this week | The worst item carries a known chain signal below that cut: an alert in a lower EPSS band or with KEV unknown, a stuck dependency-update PR, a review request waiting longer than the review budget, or a failed workflow run on another branch |
+| `quiet` | Nothing pressing | Every open item ranks all-n/a (untriaged issues), or nothing is open |
 
-Critical severity alone is enough for `now`.
-A stale KEV catalogue changes the rationale, not the tier.
-`[ASSUMPTION]` The tier boundaries above are a first cut derived from the current rank chain. The review budget is unspecified; suggest 3 days.
+Severity is the third chain term and only breaks ties within an EPSS band, so a critical alert with a low EPSS is `soon`, not `now`.
+A stale KEV catalogue ranks KEV as unknown, so a repository held in `now` by KEV alone drops to `soon`, and the rationale says why.
+`[ASSUMPTION]` If severity should outrank EPSS, that is a change to the chain in `src/core/rank.ts`, not to this table. Decide in #112.
+`[ASSUMPTION]` Secret scanning alerts, code scanning alerts, plain pull requests and workflow runs are not chain inputs today. Each needs a chain term; the bucket above states where the spec wants them to land. The review budget is unspecified; suggest 3 days.
 
 ### Overview ordering
 
@@ -98,11 +105,11 @@ Used identically in tiles, query parameters, repo-page section titles and queue 
 | Dependencies | `dependencies` | Dependency-update pull requests (Dependabot, Renovate) |
 | Pull requests | `pulls` | Open pull requests that are not dependency updates |
 | Issues | `issues` | Untriaged issues |
-| Reviews | `reviews` | Review requests addressed to the maintainer |
+| Reviews | none; links go to `/reviews` | Review requests addressed to the maintainer. Not a queue kind. |
 
 These six words replace the five existing repo page section titles `Security alerts`, `Actions status`, `Dependency-update pull requests`, `Untriaged issues` and `Review requests`.
 Pull requests is new.
-`[ASSUMPTION]` Code scanning, secret scanning, plain pull requests and CI failures are not in the queue store today. The spine treats them as queue kinds; the collectors are an architecture concern.
+Code scanning, secret scanning and plain pull requests need collectors; CI failures need only a queue kind. See What changes from the deployed page.
 
 → Composition reference: `mockups/key-overview.html` (desktop and phone frames of the overview), `mockups/key-queue.html` (queue filtered to dependencies), `mockups/key-repo.html` (repo page, desktop and phone).
 
@@ -134,21 +141,21 @@ Behavioral. Visual specs live in `DESIGN.md` Components under the same names, in
 | Focus ring | Every focusable element | Always visible on keyboard focus. Never the only change of state. |
 | Nav bar | Every page | `<nav aria-label="primary">`. Current page marked `aria-current="page"`; on a repo page no nav item is current and the breadcrumb names the parent. Sticky on phone only, with `scroll-padding-top` set so anchored headings are never hidden under it. |
 | Page summary | Overview, repo page, queue | Overview counts tiers: `20 watched repositories · 2 need attention now · 6 soon · 12 quiet`. Repo page states open alerts and worst severity: `2 open alerts, worst high`. Queue keeps the existing counts and KEV catalogue line. Real text, never `title` only. |
-| Topic tile | Overview top | One link per topic to `/queue?topic=…`; the Reviews tile links to `/reviews`. Count is the number of open items in that topic across all repos. The `now` marker appears when any of those items belongs to a `now` repo, and reads how many: `5 · 1 now`. Tiles wrap into a grid, never a horizontal scroller. |
+| Topic tile | Overview top | One link per topic to `/queue?topic=…`; the Reviews tile links to `/reviews`. Count is the number of open items in that topic across all repos. The `now` marker counts the items in that topic that put a repository in `now`, and appears only when that count is above zero: `5 · 1 now`. Other items in a `now` repository do not count. Tiles wrap into a grid, never a horizontal scroller. |
 | Tier chip | Overview row, repo page header | Text `now`, `soon` or `quiet`, preceded by visually hidden `attention tier:`. The meaning is visible once per page in the legend line under the board. `title` may repeat it but is never the sole carrier. Not interactive. |
-| Freshness badge | Every table and header | Unchanged behavior: derived from verified time and lane cadence. `title` holds the exact age and the visible text holds the rounded age. |
+| Freshness badge | Every table and header | Unchanged behavior: derived from verified time and lane cadence. `title` and the visible text both carry the rounded age from `ageLabel`. |
 | Count chip | Overview row, repo page sections | Reads the worst severity and a count: `2 high`, `1 critical`, `0`, `not covered`, `unconfirmed`. `0` is only shown when a completed sweep attested zero. `unconfirmed` replaces the existing `not collected` word and is never rendered as `0`. `not covered` and `unconfirmed` carry the reason as a visible attestation note on the repo page; `title` is never the sole carrier of the reason. |
 | External link | Anywhere | `target="_blank" rel="noopener noreferrer"`, visible `↗` marked `aria-hidden`, accessible name ends with "opens GitHub in a new tab". |
-| Repo row | Overview | Slug links to the repo page. Each non-zero count chip links to `/queue?repo=owner/name&topic=…`. The rationale line names the single worst item and why, in a cell headed `why` (visually hidden header). Rows never expand inline. Tablet `signals` cell: a wrapped list of the non-zero chips, each prefixed by its topic word, `Security 2 high · Dependencies 1 · Issues 3`; zero and unconfirmed chips move to the rationale line. |
+| Repo row | Overview | Slug links to the repo page. Each non-zero count chip links to `/queue?repo=owner/name&topic=…`, except the Reviews chip, which links to `/reviews`. The rationale line names the single worst item and why, in a cell headed `why` (visually hidden header). Rows never expand inline. Tablet `signals` cell: a wrapped list of the non-zero chips, each prefixed by its topic word, `Security 2 high · Dependencies 1 · Issues 3`; zero and unconfirmed chips move to the rationale line. |
 | Quiet block | Overview | Lead sentence `N repositories are quiet`, then every quiet slug as a link. Collapsed by default under a native `<details>` on phone, open on desktop. |
 | Queue row | Queue | Rank number, topic word, slug link (internal), item reference link (external, new tab), title, rank rationale, freshness. Filter state shown as a sentence above the table: `Security items in riptide-labs/riptide · 2 shown · clear`. |
-| Filter bar | Queue | `<nav aria-label="topic filter">` with `all` plus the six topics in vocabulary order. Current filter marked `aria-current="true"`. Query parameters only; no client script. |
+| Filter bar | Queue | `<nav aria-label="topic filter">` with `all` plus the five queue topics in vocabulary order, then a `reviews` link to `/reviews`. Current filter marked `aria-current="true"`. Query parameters only; no client script. |
 | Breadcrumb | Repo page | `<nav aria-label="breadcrumb">`. Overview link internal, current repo plain text. |
 | Repo page section | Repo page | Fixed order, the six topics in vocabulary order. Each header carries its own freshness badge and `N shown`. Empty sections render an attestation note, never nothing. Columns: Security `Alert · Severity · Package · Last confirmed`; CI `Workflow · Result · Branch · Last confirmed`; Dependencies `PR · Package · Linked alert · Last confirmed`; Pull requests `PR · Title · Opened by · Last confirmed`; Issues `Issue · Opened by · Last confirmed`; Reviews `PR · Requested from · Waiting · Last confirmed`. First column is the external link. |
 | Review row | Reviews | Slug is an internal link only when the repo is watched; `not watched` badge otherwise. Item reference external. Sorted oldest request first, unchanged from today. |
 | Attestation note | Any empty or partial section | Sentence explaining absence: switched off, not collected, not confirmed by a completed sweep, or KEV catalogue unavailable. Takes the `warn` variant when it warns that a count may be low. |
 | Policy note | Queue, repo page foot | Existing paragraph, unchanged. Wrapped in the `contentinfo` landmark. |
-| Collection health table | Overview bottom | One row per lane and installation. Failed and stalled rows appear first. |
+| Collection health table | Overview bottom | Unchanged: one row per lane, installation and scope (`hot` or `full`), in stable lane, installation, scope order. The outcome word carries the signal; rows are not reordered. |
 
 → Composition reference: every row above except Review row and Policy note is illustrated in `mockups/key-overview.html`, `mockups/key-queue.html` or `mockups/key-repo.html`. The Reviews surface is unchanged and has no mock.
 
@@ -163,13 +170,13 @@ Behavioral. Visual specs live in `DESIGN.md` Components under the same names, in
 | Unknown filter value | Queue | `?topic=` or `?repo=` outside the vocabulary or the allowlist renders the no-matches sentence with the clear link, status 200, never 500. |
 | Store rows unreadable | Overview, Queue, Repo page, Reviews | Existing sentence kept and shown above the list: `N stored items could not be read and are not shown. This list is incomplete.` On the overview it also sits under the page summary so tier counts are not read as complete. |
 | Rows without an attesting sweep | Repo page section | Rows are shown with their own stale badges under a `warn` attestation note: `N collected earlier; the latest sweep did not confirm them` (existing sentence). |
-| KEV catalogue stale | Queue, Repo page Security | Existing subhead sentence retained: `KEV catalogue unavailable, so KEV status ranks as unknown`. Tier computation treats KEV as unknown; critical severity still promotes to `now` on its own. |
+| KEV catalogue stale | Queue, Repo page Security | Existing subhead sentence retained: `KEV catalogue unavailable, so KEV status ranks as unknown`. Tier computation treats KEV as unknown; a repository held in `now` by KEV alone drops to `soon`. |
 | Lane failed or stalled | Overview | Topic tile for the affected topic gets a `warn` attestation line: `alerts sweep failed 3h ago; counts may be low`. |
 | Repo not covered for a topic | Overview row, Repo page | Count chip reads `not covered`; repo page section shows the reason as an attestation note. |
 | Unknown repo | `/repo/…` | Existing 404 page. Adds a link back to overview. |
 | Repo outside allowlist with review request | Reviews | Existing `not watched` badge; slug is not a link to a repo page because there is none. |
 | Stale everything | Every page | Freshness badges go `stale`; no banner. Rendered-at line stays honest. |
-| Clock skew | Any badge | Existing behavior: `stale` with the skew explanation in `title` and the visible text `stale · clock skew`. |
+| Clock skew | Any badge | Existing behavior: `stale` with the visible text `stale · clock skew: timestamp is in the future`. |
 
 → Composition reference: `mockups/key-overview.html` shows Lane failed, Repo not covered and Stale everything; `mockups/key-queue.html` second frame shows Filter with no matches; `mockups/key-repo.html` shows Rows without an attesting sweep.
 
@@ -237,7 +244,7 @@ Acting still happens on GitHub, so gitricorder on a phone must get the maintaine
 4. Indigo taps the item reference. GitHub opens in a new tab on the Dependabot alert page.
 5. **Climax:** after reading the advisory Indigo switches back to the gitricorder tab. It is still on the repo page, still scrolled to Security, and the CI section directly below shows the default branch is green. Nothing to rebuild, one PR to merge later. Indigo pockets the phone.
 
-Failure: the KEV catalogue is stale. The tier chip stays `now` because the alert is critical on its own. The Security header carries the existing sentence that KEV ranks as unknown, and the rationale reads `severity critical, KEV status unknown` instead of `in CISA KEV`.
+Failure: the KEV catalogue is stale. KEV ranks as unknown and the alert's EPSS is 0.4%, so nothing known justifies `now`. The tab title and tier chip read `soon`, the Security header carries the existing sentence that KEV ranks as unknown, and the rationale reads `KEV status unknown, EPSS 0.4%, severity critical`.
 
 ### Flow 2: Weekly sweep on the desktop (Indigo, Monday 09:15, laptop, coffee)
 
@@ -248,7 +255,7 @@ Failure: the KEV catalogue is stale. The tier chip stays `now` because the alert
 5. Back in the still-open gitricorder tab, Indigo clicks the Dependencies tile. The queue shows seven update PRs ranked by their linked alerts. Indigo opens the top three in new tabs with three clicks.
 6. **Climax:** four GitHub tabs are open, and the gitricorder tab is exactly where it was, with the Dependencies filter in the URL. Indigo merges the three PRs on GitHub, closes those tabs, and presses reload on gitricorder. The Dependencies tile now reads 4. The sweep took ten minutes.
 
-Failure: the alerts lane failed overnight. The Security tile shows a `warn` attestation line, and the Collection health table lists the failed lane first with its last run time. Indigo trusts the CI and PR numbers and treats the security count as a lower bound.
+Failure: the alerts lane failed overnight. The Security tile shows a `warn` attestation line, and the Collection health table shows the failed lane with its last run time. Indigo trusts the CI and PR numbers and treats the security count as a lower bound.
 
 ### Flow 3: Something that should never wait (Indigo, Wednesday 14:00, tablet)
 

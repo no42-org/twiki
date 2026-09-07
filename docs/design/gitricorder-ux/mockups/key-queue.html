@@ -10,8 +10,8 @@
 <title>queue · dependencies · gitricorder</title>
 <style>
   /*
-   * key-queue.html — Queue surface filtered to /queue?topic=dependencies, desktop.
-   * Illustrates from EXPERIENCE.md 0.2.0:
+   * key-queue.html - Queue surface filtered to /queue?topic=dependencies, desktop.
+   * Illustrates from EXPERIENCE.md 1.0.0:
    *   Information Architecture: Queue row, document title, topic vocabulary (topic= values), navigation rule
    *                             "a queue row links twice" (slug internal, item reference external)
    *   Component Patterns: Nav bar, Page summary, Filter bar, Queue row, External link, Freshness badge,
@@ -22,7 +22,7 @@
    *   Accessibility Floor: primary and topic filter landmarks, contentinfo for the policy note, explicit
    *                        table roles and hidden cell labels so the phone card layout keeps its semantics
    *   Key Flows: Flow 2 steps 5 and 6 (Dependencies filter, three PRs opened in new tabs)
-   * From DESIGN.md 0.2.0: Typography (rem ramp at a 15px documentation root), Components: focus-ring,
+   * From DESIGN.md 1.0.0: Typography (rem ramp at a 15px documentation root), Components: focus-ring,
    *   nav-bar, page-summary, queue-row, filter-bar, external-link, freshness-badge, policy-note;
    *   Do's and Don'ts (external marker, one link color).
    * The second frame is a separate document in production and would carry the title
@@ -141,7 +141,6 @@
   /* ---- Phone: sticky nav, tables become cards (generic) ---- */
   @container screen (max-width: 639px) {
     .nav { position: sticky; top: 0; z-index: 1; }
-    h1, h2 { scroll-margin-top: var(--nav-h); }
     table.cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     table.cards, table.cards tbody, table.cards tr { display: block; }
     table.cards tr { border-bottom: 1px solid var(--border); padding: var(--sp-3) 0; }
@@ -161,7 +160,8 @@
   .queue td.topic { font-size: .867rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
   .queue .title { display: block; }
   .queue .why { display: block; margin-top: var(--sp-1); }
-  .policy-note { font-size: .867rem; line-height: 1.4; color: var(--muted); margin-top: var(--sp-8); }
+  .policy-note { font-size: .867rem; line-height: 1.4; color: var(--muted); max-width: var(--content-max);
+                 margin: var(--sp-8) auto 0; padding: 0 var(--gutter) var(--gutter); }
   .policy-note p { margin: 0; }
 </style>
 </head>
@@ -189,7 +189,7 @@
           <a href="/queue?topic=dependencies" aria-current="true">dependencies</a>
           <a href="/queue?topic=pulls">pulls</a>
           <a href="/queue?topic=issues">issues</a>
-          <a href="/queue?topic=reviews">reviews</a>
+          <a href="/reviews">reviews</a>
         </nav>
         <p class="filter-state" id="list">Dependency items · 7 shown · <a href="/queue">clear</a></p>
         <table class="queue cards" role="table">
@@ -249,8 +249,8 @@
             </tr>
           </tbody>
         </table>
-        <footer class="policy-note"><p>Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</p></footer>
       </main>
+      <footer class="policy-note"><p>Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</p></footer>
   </div>
 </figure>
 
@@ -258,14 +258,14 @@
   <figcaption>desktop · state: filter with no matches · /queue?topic=security</figcaption>
   <div class="chrome"><span class="url">https://twiki.app.labmonkeys.space/queue?topic=security</span></div>
   <div class="screen">
-      <a class="skip" href="#list">skip to list</a>
+      <a class="skip" href="#p-list">skip to list</a>
       <nav class="nav" aria-label="primary"><div class="nav-inner">
         <a href="/">overview</a>
         <a href="/queue" aria-current="page">queue</a>
         <a href="/reviews">reviews</a>
         <span class="rendered">rendered 2026-09-07 13:02 UTC</span>
       </div></nav>
-      <main id="main">
+      <main id="p-main">
         <h1>What to deal with next</h1>
         <p class="sub">0 open alerts · 4 update PRs · 3 pull requests · 25 untriaged issues · 2 review requests · KEV catalogue 2026.09.04 · 18h ago</p>
         <nav class="filters" aria-label="topic filter">
@@ -275,11 +275,11 @@
           <a href="/queue?topic=dependencies">dependencies</a>
           <a href="/queue?topic=pulls">pulls</a>
           <a href="/queue?topic=issues">issues</a>
-          <a href="/queue?topic=reviews">reviews</a>
+          <a href="/reviews">reviews</a>
         </nav>
-        <p class="filter-state" id="list">No security items open. <a href="/queue">Clear filter.</a></p>
-        <footer class="policy-note"><p>Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</p></footer>
+        <p class="filter-state" id="p-list">No security items open. <a href="/queue">Clear filter.</a></p>
       </main>
+      <footer class="policy-note"><p>Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</p></footer>
   </div>
 </figure>
 </body>

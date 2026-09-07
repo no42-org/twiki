@@ -10,8 +10,8 @@
 <title>riptide-labs/riptide · soon · gitricorder</title>
 <style>
   /*
-   * key-repo.html — Repo page /repo/riptide-labs/riptide, desktop and phone frames.
-   * Illustrates from EXPERIENCE.md 0.2.0:
+   * key-repo.html - Repo page /repo/riptide-labs/riptide, desktop and phone frames.
+   * Illustrates from EXPERIENCE.md 1.0.0:
    *   Information Architecture: Repo page row, document title, breadcrumb rule, no current nav item,
    *                             section order Security, CI, Dependencies, Pull requests, Issues, Reviews
    *   Component Patterns: Nav bar, Page summary, Breadcrumb, Tier chip (header), Repo page section
@@ -23,8 +23,8 @@
    *                        visually hidden), "attention tier:" prefix, breadcrumb landmark, contentinfo
    *   Responsive & Platform: phone column (sections stack, tables become cards, breadcrumb stays)
    *   Key Flows: Flow 1 steps 2 to 5 (land on repo page, Security first, CI directly below, tab stays put)
-   * From DESIGN.md 0.2.0: Typography (title for the slug, section headings, italic only on attestation
-   *   notes), Layout & Spacing (scroll-margin-top on section headings), Components: focus-ring, nav-bar,
+   * From DESIGN.md 1.0.0: Typography (title for the slug, section headings, italic only on attestation
+   *   notes), Layout & Spacing (scroll-padding-top under the sticky nav), Components: focus-ring, nav-bar,
    *   page-summary, breadcrumb, repo-page-section, attestation-note, tier-chip, freshness-badge,
    *   external-link, policy-note.
    */
@@ -141,7 +141,6 @@
   /* ---- Phone: sticky nav, tables become cards (generic) ---- */
   @container screen (max-width: 639px) {
     .nav { position: sticky; top: 0; z-index: 1; }
-    h1, h2 { scroll-margin-top: var(--nav-h); }
     table.cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     table.cards, table.cards tbody, table.cards tr { display: block; }
     table.cards tr { border-bottom: 1px solid var(--border); padding: var(--sp-3) 0; }
@@ -152,7 +151,8 @@
   }
   /* ---- Repo page: breadcrumb, header line, six sections, policy note ---- */
   .repo-head { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); align-items: center; margin: 0 0 var(--sp-4); }
-  .policy-note { font-size: .867rem; line-height: 1.4; color: var(--muted); margin-top: var(--sp-8); }
+  .policy-note { font-size: .867rem; line-height: 1.4; color: var(--muted); max-width: var(--content-max);
+                 margin: var(--sp-8) auto 0; padding: 0 var(--gutter) var(--gutter); }
   .policy-note p { margin: 0; }
   td .why { display: block; }
 </style>
@@ -177,10 +177,10 @@
         <div class="repo-head">
           <span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span>
           <span class="small muted">2 open alerts, worst high</span>
-          <span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span>
+          <span class="badge stale" title="3h ago">stale · 3h ago</span>
         </div>
 
-        <h2 id="security">Security <span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span> <span class="shown">2 shown</span></h2>
+        <h2 id="security">Security <span class="badge stale" title="3h ago">stale · 3h ago</span> <span class="shown">2 shown</span></h2>
         <p class="attest warn">alerts sweep for riptide-labs failed 3h ago; these rows are from the last completed sweep</p>
         <table class="cards" role="table">
           <thead role="rowgroup"><tr role="row">
@@ -191,13 +191,13 @@
               <td role="cell"><span class="lbl hid">Alert</span><a class="ext" href="https://github.com/riptide-labs/riptide/security/dependabot/17" target="_blank" rel="noopener noreferrer">riptide#17&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a> · CVE-2025-71329<span class="why">not in CISA KEV, EPSS 0.4%, below 1.0%, severity high, update prepared normally</span></td>
               <td role="cell"><span class="lbl">Severity</span><span class="sev-high">high</span></td>
               <td role="cell"><span class="lbl">Package</span>image-size</td>
-              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
             <tr role="row">
               <td role="cell"><span class="lbl hid">Alert</span><a class="ext" href="https://github.com/riptide-labs/riptide/security/dependabot/18" target="_blank" rel="noopener noreferrer">riptide#18&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a> · CVE-2025-71330<span class="why">not in CISA KEV, EPSS 0.3%, below 1.0%, severity high, update prepared normally</span></td>
               <td role="cell"><span class="lbl">Severity</span><span class="sev-high">high</span></td>
               <td role="cell"><span class="lbl">Package</span>image-size</td>
-              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
           </tbody>
         </table>
@@ -293,8 +293,8 @@
         <h2 id="reviews">Reviews <span class="badge fresh" title="verified 2026-09-07 12:53 UTC">fresh · 9m ago</span> <span class="shown">0 shown</span></h2>
         <p class="attest">no review requests in this repository</p>
 
-        <footer class="policy-note"><p>Every value carries its own freshness, because each lane confirms on its own cadence. A section that no lane has vouched for says so rather than showing an empty table.</p></footer>
       </main>
+      <footer class="policy-note"><p>Every value carries its own freshness, because each lane confirms on its own cadence. A section that no lane has vouched for says so rather than showing an empty table.</p></footer>
   </div>
 </figure>
 
@@ -302,23 +302,23 @@
   <figcaption>phone · 320px · scrolls inside the frame</figcaption>
   <div class="chrome"><span class="url">twiki.app.labmonkeys.space/repo/riptide-labs/riptide</span></div>
   <div class="screen">
-      <a class="skip" href="#security">skip to list</a>
+      <a class="skip" href="#p-security">skip to list</a>
       <nav class="nav" aria-label="primary"><div class="nav-inner">
         <a href="/">overview</a>
         <a href="/queue">queue</a>
         <a href="/reviews">reviews</a>
         <span class="rendered">rendered 2026-09-07 13:02 UTC</span>
       </div></nav>
-      <main id="main">
+      <main id="p-main">
         <nav class="crumb" aria-label="breadcrumb"><a href="/">overview</a> › riptide-labs/riptide</nav>
         <h1>riptide-labs/riptide</h1>
         <div class="repo-head">
           <span class="tier soon" title="Act this week: a high or medium alert, a stuck update PR, a review request past the 3-day budget, or a failed non-default-branch workflow."><span class="sr-only">attention tier: </span>soon</span>
           <span class="small muted">2 open alerts, worst high</span>
-          <span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span>
+          <span class="badge stale" title="3h ago">stale · 3h ago</span>
         </div>
 
-        <h2 id="security">Security <span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span> <span class="shown">2 shown</span></h2>
+        <h2 id="p-security">Security <span class="badge stale" title="3h ago">stale · 3h ago</span> <span class="shown">2 shown</span></h2>
         <p class="attest warn">alerts sweep for riptide-labs failed 3h ago; these rows are from the last completed sweep</p>
         <table class="cards" role="table">
           <thead role="rowgroup"><tr role="row">
@@ -329,18 +329,18 @@
               <td role="cell"><span class="lbl hid">Alert</span><a class="ext" href="https://github.com/riptide-labs/riptide/security/dependabot/17" target="_blank" rel="noopener noreferrer">riptide#17&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a> · CVE-2025-71329<span class="why">not in CISA KEV, EPSS 0.4%, below 1.0%, severity high, update prepared normally</span></td>
               <td role="cell"><span class="lbl">Severity</span><span class="sev-high">high</span></td>
               <td role="cell"><span class="lbl">Package</span>image-size</td>
-              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
             <tr role="row">
               <td role="cell"><span class="lbl hid">Alert</span><a class="ext" href="https://github.com/riptide-labs/riptide/security/dependabot/18" target="_blank" rel="noopener noreferrer">riptide#18&thinsp;<span aria-hidden="true">↗</span><span class="sr-only">, opens GitHub in a new tab</span></a> · CVE-2025-71330<span class="why">not in CISA KEV, EPSS 0.3%, below 1.0%, severity high, update prepared normally</span></td>
               <td role="cell"><span class="lbl">Severity</span><span class="sev-high">high</span></td>
               <td role="cell"><span class="lbl">Package</span>image-size</td>
-              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
           </tbody>
         </table>
 
-        <h2 id="ci">CI <span class="badge fresh" title="verified 2026-09-07 12:54 UTC">fresh · 8m ago</span> <span class="shown">3 shown</span></h2>
+        <h2 id="p-ci">CI <span class="badge fresh" title="verified 2026-09-07 12:54 UTC">fresh · 8m ago</span> <span class="shown">3 shown</span></h2>
         <table class="cards" role="table">
           <thead role="rowgroup"><tr role="row">
             <th scope="col" role="columnheader">Workflow</th><th scope="col" role="columnheader">Result</th><th scope="col" role="columnheader">Branch</th><th scope="col" role="columnheader">Last confirmed</th>
@@ -367,7 +367,7 @@
           </tbody>
         </table>
 
-        <h2 id="dependencies">Dependencies <span class="badge stale" title="update-prs last verified 2026-09-06 05:40 UTC, lane budget 30m">stale · 31h ago</span> <span class="shown">2 shown</span></h2>
+        <h2 id="p-dependencies">Dependencies <span class="badge stale" title="update-prs last verified 2026-09-06 05:40 UTC, lane budget 30m">stale · 31h ago</span> <span class="shown">2 shown</span></h2>
         <p class="attest warn">2 collected earlier; the latest sweep did not confirm them</p>
         <table class="cards" role="table">
           <thead role="rowgroup"><tr role="row">
@@ -389,7 +389,7 @@
           </tbody>
         </table>
 
-        <h2 id="pulls">Pull requests <span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span> <span class="shown">1 shown</span></h2>
+        <h2 id="p-pulls">Pull requests <span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span> <span class="shown">1 shown</span></h2>
         <table class="cards" role="table">
           <thead role="rowgroup"><tr role="row">
             <th scope="col" role="columnheader">PR</th><th scope="col" role="columnheader">Title</th><th scope="col" role="columnheader">Opened by</th><th scope="col" role="columnheader">Last confirmed</th>
@@ -404,7 +404,7 @@
           </tbody>
         </table>
 
-        <h2 id="issues">Issues <span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span> <span class="shown">3 shown</span></h2>
+        <h2 id="p-issues">Issues <span class="badge fresh" title="verified 2026-09-07 12:50 UTC">fresh · 12m ago</span> <span class="shown">3 shown</span></h2>
         <table class="cards" role="table">
           <thead role="rowgroup"><tr role="row">
             <th scope="col" role="columnheader">Issue</th><th scope="col" role="columnheader">Opened by</th><th scope="col" role="columnheader">Last confirmed</th>
@@ -428,11 +428,11 @@
           </tbody>
         </table>
 
-        <h2 id="reviews">Reviews <span class="badge fresh" title="verified 2026-09-07 12:53 UTC">fresh · 9m ago</span> <span class="shown">0 shown</span></h2>
+        <h2 id="p-reviews">Reviews <span class="badge fresh" title="verified 2026-09-07 12:53 UTC">fresh · 9m ago</span> <span class="shown">0 shown</span></h2>
         <p class="attest">no review requests in this repository</p>
 
-        <footer class="policy-note"><p>Every value carries its own freshness, because each lane confirms on its own cadence. A section that no lane has vouched for says so rather than showing an empty table.</p></footer>
       </main>
+      <footer class="policy-note"><p>Every value carries its own freshness, because each lane confirms on its own cadence. A section that no lane has vouched for says so rather than showing an empty table.</p></footer>
   </div>
 </figure>
 </body>

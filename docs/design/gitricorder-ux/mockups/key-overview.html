@@ -10,8 +10,8 @@
 <title>2 now, 6 soon · gitricorder</title>
 <style>
   /*
-   * key-overview.html — Overview surface (/), desktop and phone frames.
-   * Illustrates from EXPERIENCE.md 0.2.0:
+   * key-overview.html - Overview surface (/), desktop and phone frames.
+   * Illustrates from EXPERIENCE.md 1.0.0:
    *   Information Architecture: Overview and Collection health rows, document title, attention tiers,
    *                             the tier legend line under the board
    *   Component Patterns: Nav bar, Page summary, Topic tile, Tier chip, Repo row (rationale under a
@@ -23,7 +23,7 @@
    *   Responsive & Platform: phone row (tiles in two columns and three rows, rows become cards with chips
    *                          wrapped as inline content, quiet block collapsed); desktop row
    *   Key Flows: Flow 2 steps 1 to 3 and its failure case; Flow 3 step 1 (no42-org/dn42-mmdb in the quiet block)
-   * From DESIGN.md 0.2.0: Colors, Typography (rem ramp at a 15px documentation root), Layout & Spacing
+   * From DESIGN.md 1.0.0: Colors, Typography (rem ramp at a 15px documentation root), Layout & Spacing
    *   (72rem column, scroll-padding-top under a sticky nav), Elevation & Depth, Shapes, Components:
    *   focus-ring, nav-bar, page-summary, topic-tile, tier-chip, freshness-badge, count-chip, repo-row,
    *   quiet-block, external-link, collection health table.
@@ -141,7 +141,6 @@
   /* ---- Phone: sticky nav, tables become cards (generic) ---- */
   @container screen (max-width: 639px) {
     .nav { position: sticky; top: 0; z-index: 1; }
-    h1, h2 { scroll-margin-top: var(--nav-h); }
     table.cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     table.cards, table.cards tbody, table.cards tr { display: block; }
     table.cards tr { border-bottom: 1px solid var(--border); padding: var(--sp-3) 0; }
@@ -176,7 +175,7 @@
 
   .quiet { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
            padding: var(--sp-3) var(--sp-4); margin-top: var(--sp-6); }
-  .quiet summary { cursor: default; font-weight: 600; scroll-margin-top: var(--nav-h); }
+  .quiet summary { cursor: default; font-weight: 600; }
   .quiet p { margin: var(--sp-2) 0 0; font-size: .867rem; line-height: 1.8; }
   .quiet a { margin-right: var(--sp-3); }
 
@@ -275,7 +274,7 @@
               <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=riptide-labs/riptide&amp;topic=pulls">1</a></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/riptide&amp;topic=issues">3</a></td>
               <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
-              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.4%, below 1.0%, severity high, update prepared normally</span></td></tr>
           </tbody>
@@ -289,7 +288,7 @@
               <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/udpramp&amp;topic=issues">1</a></td>
               <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
-              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.2%, below 1.0%, severity high, update prepared normally</span></td></tr>
           </tbody>
@@ -302,7 +301,7 @@
               <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=dependencies">1</a></td>
               <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=pulls">1</a></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=issues">5</a></td>
-              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=reviews">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/reviews">1</a></td>
               <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">review request waiting 4d, past the 3-day budget</span></td></tr>
@@ -316,7 +315,7 @@
               <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=dependencies">1</a></td>
               <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=issues">2</a></td>
-              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=reviews">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/reviews">1</a></td>
               <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">review request waiting 5d, past the 3-day budget</span></td></tr>
@@ -345,7 +344,7 @@
               <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/flowgen&amp;topic=issues">1</a></td>
               <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
-              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.1%, below 1.0%, severity medium, update prepared normally</span></td></tr>
           </tbody>
@@ -369,39 +368,39 @@
           </p>
         </details>
         <h2 id="health">Collection health</h2>
-        <p class="sub">A dead lane is visible here rather than only in the logs. Failed, stalled and partial lanes come first.</p>
+        <p class="sub">A dead lane is visible here rather than only in the logs.</p>
         <table class="cards" role="table">
           <thead role="rowgroup"><tr role="row">
             <th scope="col" role="columnheader">Lane</th><th scope="col" role="columnheader">Installation</th><th scope="col" role="columnheader">Scope</th><th scope="col" role="columnheader">Outcome</th><th scope="col" role="columnheader">Last run</th>
           </tr></thead>
           <tbody role="rowgroup">
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>org</td>
-                <td role="cell"><span class="lbl">Outcome</span><span class="out-critical">failed</span> · HTTP 502 from GitHub on page 2 of 3</td>
-                <td role="cell"><span class="lbl">Last run</span><span class="badge stale" title="last completed 2026-09-07 09:58 UTC">stale · 3h ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>org</td>
-                <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">partial</span> · 5 of 6 repositories confirmed</td>
-                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>actions</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>org</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>actions</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">running</span> · 14 of 20 repositories confirmed</td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:54 UTC">fresh · 8m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>org</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:56 UTC">fresh · 6m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>org</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:56 UTC">fresh · 6m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>org</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>full</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-critical">failed</span> · HTTP 502 from GitHub on page 2 of 3</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge stale" title="last completed 2026-09-07 09:58 UTC">stale · 3h ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>issues</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>org</td>
-                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
-                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>issues</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>org</td>
-                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
-                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>reviews</td><td role="cell"><span class="lbl">Installation</span>indigo</td><td role="cell"><span class="lbl">Scope</span>user</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>reviews</td><td role="cell"><span class="lbl">Installation</span>indigo</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:53 UTC">fresh · 9m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>full</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>full</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>hot</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">partial</span> · 5 of 6 repositories confirmed</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
           </tbody>
         </table>
       </main>
@@ -412,16 +411,16 @@
   <figcaption>phone · 320px · scrolls inside the frame</figcaption>
   <div class="chrome"><span class="url">twiki.app.labmonkeys.space</span></div>
   <div class="screen">
-      <a class="skip" href="#board">skip to board</a>
-      <a class="skip" href="#quiet">skip to quiet repositories</a>
-      <a class="skip" href="#health">skip to collection health</a>
+      <a class="skip" href="#p-board">skip to board</a>
+      <a class="skip" href="#p-quiet">skip to quiet repositories</a>
+      <a class="skip" href="#p-health">skip to collection health</a>
       <nav class="nav" aria-label="primary"><div class="nav-inner">
         <a href="/" aria-current="page">overview</a>
         <a href="/queue">queue</a>
         <a href="/reviews">reviews</a>
         <span class="rendered">rendered 2026-09-07 13:02 UTC</span>
       </div></nav>
-      <main id="main">
+      <main id="p-main">
         <h1>gitricorder</h1>
         <p class="sub">20 watched repositories · 2 need attention now · 6 soon · 12 quiet</p>
 
@@ -435,7 +434,7 @@
           <a class="tile" href="/reviews"><span class="count">2</span><span class="label">Reviews</span></a>
         </nav>
 
-        <h2 id="board">What needs attention</h2>
+        <h2 id="p-board">What needs attention</h2>
         <table class="board" role="table">
           <thead role="rowgroup"><tr role="row">
             <th scope="col" role="columnheader" colspan="2">Repository</th><th scope="col" role="columnheader">Tier</th>
@@ -481,7 +480,7 @@
               <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=riptide-labs/riptide&amp;topic=pulls">1</a></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/riptide&amp;topic=issues">3</a></td>
               <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
-              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.4%, below 1.0%, severity high, update prepared normally</span></td></tr>
           </tbody>
@@ -495,7 +494,7 @@
               <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/udpramp&amp;topic=issues">1</a></td>
               <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
-              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.2%, below 1.0%, severity high, update prepared normally</span></td></tr>
           </tbody>
@@ -508,7 +507,7 @@
               <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=dependencies">1</a></td>
               <td class="c" role="cell"><span class="lbl">Pull requests</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=pulls">1</a></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=issues">5</a></td>
-              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/queue?repo=no42-org/twiki&amp;topic=reviews">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/reviews">1</a></td>
               <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">review request waiting 4d, past the 3-day budget</span></td></tr>
@@ -522,7 +521,7 @@
               <td class="c" role="cell"><span class="lbl">Dependencies</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=dependencies">1</a></td>
               <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=issues">2</a></td>
-              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/queue?repo=no42-org/benchkit&amp;topic=reviews">1</a></td>
+              <td class="c" role="cell"><span class="lbl">Reviews</span><a class="chip some" href="/reviews">1</a></td>
               <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="verified 2026-09-07 12:56 UTC">fresh · 6m ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">review request waiting 5d, past the 3-day budget</span></td></tr>
@@ -551,14 +550,14 @@
               <td class="c" role="cell"><span class="lbl">Pull requests</span><span class="chip zero">0</span></td>
               <td class="c" role="cell"><span class="lbl">Issues</span><a class="chip some" href="/queue?repo=riptide-labs/flowgen&amp;topic=issues">1</a></td>
               <td class="c" role="cell"><span class="lbl">Reviews</span><span class="chip zero">0</span></td>
-              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="alerts last verified 2026-09-07 09:58 UTC, lane budget 30m">stale · 3h ago</span></td>
+              <td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span><span class="badge stale" title="3h ago">stale · 3h ago</span></td>
             </tr>
             <tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="why">not in CISA KEV, EPSS 0.1%, below 1.0%, severity medium, update prepared normally</span></td></tr>
           </tbody>
         </table>
         <p class="legend">now: act today · soon: act this week · quiet: nothing pressing</p>
         <details class="quiet">
-          <summary id="quiet">12 repositories are quiet</summary>
+          <summary id="p-quiet">12 repositories are quiet</summary>
           <p>
             <a href="/repo/riptide-labs/riptide-docs">riptide-labs/riptide-docs</a>
             <a href="/repo/riptide-labs/riptide-charts">riptide-labs/riptide-charts</a>
@@ -574,40 +573,40 @@
             <a href="/repo/labmonkeys-space/sigstore-tools">labmonkeys-space/sigstore-tools</a>
           </p>
         </details>
-        <h2 id="health">Collection health</h2>
-        <p class="sub">A dead lane is visible here rather than only in the logs. Failed, stalled and partial lanes come first.</p>
+        <h2 id="p-health">Collection health</h2>
+        <p class="sub">A dead lane is visible here rather than only in the logs.</p>
         <table class="cards" role="table">
           <thead role="rowgroup"><tr role="row">
             <th scope="col" role="columnheader">Lane</th><th scope="col" role="columnheader">Installation</th><th scope="col" role="columnheader">Scope</th><th scope="col" role="columnheader">Outcome</th><th scope="col" role="columnheader">Last run</th>
           </tr></thead>
           <tbody role="rowgroup">
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>org</td>
-                <td role="cell"><span class="lbl">Outcome</span><span class="out-critical">failed</span> · HTTP 502 from GitHub on page 2 of 3</td>
-                <td role="cell"><span class="lbl">Last run</span><span class="badge stale" title="last completed 2026-09-07 09:58 UTC">stale · 3h ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>org</td>
-                <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">partial</span> · 5 of 6 repositories confirmed</td>
-                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>actions</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>org</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>actions</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">running</span> · 14 of 20 repositories confirmed</td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:54 UTC">fresh · 8m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>org</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:56 UTC">fresh · 6m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>org</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:56 UTC">fresh · 6m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>org</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>alerts</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>full</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-critical">failed</span> · HTTP 502 from GitHub on page 2 of 3</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge stale" title="last completed 2026-09-07 09:58 UTC">stale · 3h ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>issues</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>org</td>
-                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
-                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>issues</td><td role="cell"><span class="lbl">Installation</span>all three</td><td role="cell"><span class="lbl">Scope</span>org</td>
-                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
-                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
-            <tr role="row"><td role="cell"><span class="lbl">Lane</span>reviews</td><td role="cell"><span class="lbl">Installation</span>indigo</td><td role="cell"><span class="lbl">Scope</span>user</td>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>reviews</td><td role="cell"><span class="lbl">Installation</span>indigo</td><td role="cell"><span class="lbl">Scope</span>full</td>
                 <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
                 <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:53 UTC">fresh · 9m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>labmonkeys-space</td><td role="cell"><span class="lbl">Scope</span>full</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>no42-org</td><td role="cell"><span class="lbl">Scope</span>full</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-ok">ok</span></td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
+            <tr role="row"><td role="cell"><span class="lbl">Lane</span>update-prs</td><td role="cell"><span class="lbl">Installation</span>riptide-labs</td><td role="cell"><span class="lbl">Scope</span>hot</td>
+                <td role="cell"><span class="lbl">Outcome</span><span class="out-warn">partial</span> · 5 of 6 repositories confirmed</td>
+                <td role="cell"><span class="lbl">Last run</span><span class="badge fresh" title="last completed 2026-09-07 12:50 UTC">fresh · 12m ago</span></td></tr>
           </tbody>
         </table>
       </main>
