@@ -90,6 +90,15 @@ const linked = (
 ): Chip => ({ state: "count", count, severity, href, reason: null });
 const SECURITY = "/queue?repo=no42-org%2Ftwiki&topic=security";
 
+/** The five topics beyond Security, in order, as `signalsRest` lists them. */
+const REST_TOPICS: Topic[] = [
+  "ci",
+  "dependencies",
+  "pulls",
+  "issues",
+  "reviews",
+];
+
 /** The six chips of a row that only the alert lane has confirmed. */
 const alertsOnly = (security: Chip): BoardRow["chips"] => ({
   security,
@@ -464,6 +473,11 @@ describe("buildBoard (AD-32, AD-35)", () => {
           issues: UNSWEPT,
           reviews: linked(1, "/reviews"),
         },
+        signals: [{ topic: "reviews", text: "Reviews 1" }],
+        signalsRest: {
+          zero: ["security"],
+          unconfirmed: ["ci", "dependencies", "pulls", "issues"],
+        },
         freshness: "fresh",
         age: "5m ago",
       },
@@ -506,6 +520,16 @@ describe("buildBoard (AD-32, AD-35)", () => {
             }),
             reviews: linked(1, "/reviews"),
           },
+          // Not covered is a finding about the repository, so it is a
+          // signal; the rest names what no sweep confirmed.
+          signals: [
+            { topic: "security", text: "Security not covered" },
+            { topic: "reviews", text: "Reviews 1" },
+          ],
+          signalsRest: {
+            zero: [],
+            unconfirmed: ["ci", "dependencies", "pulls", "issues"],
+          },
           freshness: "fresh",
           age: "5m ago",
         },
@@ -533,6 +557,8 @@ describe("buildBoard (AD-32, AD-35)", () => {
           reason:
             "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
           chips: alertsOnly(linked(1, SECURITY, "high")),
+          signals: [{ topic: "security", text: "Security 1 high" }],
+          signalsRest: { zero: [], unconfirmed: REST_TOPICS },
           freshness: "fresh",
           age: "5m ago",
         },
@@ -549,6 +575,11 @@ describe("buildBoard (AD-32, AD-35)", () => {
           tier: "soon",
           reason: REASON,
           chips: { ...alertsOnly(UNSWEPT), reviews: linked(1, "/reviews") },
+          signals: [{ topic: "reviews", text: "Reviews 1" }],
+          signalsRest: {
+            zero: [],
+            unconfirmed: ["security", "ci", "dependencies", "pulls", "issues"],
+          },
           freshness: "fresh",
           age: "5m ago",
         },
@@ -565,6 +596,11 @@ describe("buildBoard (AD-32, AD-35)", () => {
           tier: "soon",
           reason: REASON,
           chips: { ...alertsOnly(ZERO), reviews: linked(1, "/reviews") },
+          signals: [{ topic: "reviews", text: "Reviews 1" }],
+          signalsRest: {
+            zero: ["security"],
+            unconfirmed: ["ci", "dependencies", "pulls", "issues"],
+          },
           freshness: "fresh",
           age: "5m ago",
         },
@@ -581,6 +617,8 @@ describe("buildBoard (AD-32, AD-35)", () => {
           reason:
             "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
           chips: alertsOnly(linked(2, SECURITY, "high")),
+          signals: [{ topic: "security", text: "Security 2 high" }],
+          signalsRest: { zero: [], unconfirmed: REST_TOPICS },
           freshness: "fresh",
           age: "5m ago",
         },
@@ -829,6 +867,14 @@ describe("buildBoard (AD-32, AD-35)", () => {
             issues: UNSWEPT,
             reviews: linked(2, "/reviews"),
           },
+          signals: [
+            { topic: "dependencies", text: "Dependencies 1" },
+            { topic: "reviews", text: "Reviews 2" },
+          ],
+          signalsRest: {
+            zero: ["security"],
+            unconfirmed: ["ci", "pulls", "issues"],
+          },
           freshness: "fresh",
           age: "5m ago",
         },
@@ -857,6 +903,14 @@ describe("buildBoard (AD-32, AD-35)", () => {
             pulls: NO_LANE,
             issues: linked(1, "/queue?repo=no42-org%2Ftwiki&topic=issues"),
             reviews: linked(1, "/reviews"),
+          },
+          signals: [
+            { topic: "issues", text: "Issues 1" },
+            { topic: "reviews", text: "Reviews 1" },
+          ],
+          signalsRest: {
+            zero: ["security"],
+            unconfirmed: ["ci", "dependencies", "pulls"],
           },
           // The issue sweep, three minutes newer than the alert sweep.
           freshness: "fresh",
@@ -889,6 +943,11 @@ describe("buildBoard (AD-32, AD-35)", () => {
             issues: linked(1, "/queue?repo=no42-org%2Ftwiki&topic=issues"),
             reviews: UNSWEPT,
           },
+          signals: [{ topic: "issues", text: "Issues 1" }],
+          signalsRest: {
+            zero: [],
+            unconfirmed: ["security", "ci", "dependencies", "pulls", "reviews"],
+          },
           freshness: "fresh",
           age: "5m ago",
         },
@@ -914,6 +973,11 @@ describe("buildBoard (AD-32, AD-35)", () => {
             pulls: NO_LANE,
             issues: absent("last confirmed 5d ago"),
             reviews: linked(1, "/reviews"),
+          },
+          signals: [{ topic: "reviews", text: "Reviews 1" }],
+          signalsRest: {
+            zero: ["security"],
+            unconfirmed: ["ci", "dependencies", "pulls", "issues"],
           },
           freshness: "fresh",
           age: "5m ago",
@@ -1022,6 +1086,8 @@ describe("buildBoard (AD-32, AD-35)", () => {
             reason:
               "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
             chips: alertsOnly(linked(1, SECURITY, "high")),
+            signals: [{ topic: "security", text: "Security 1 high" }],
+            signalsRest: { zero: [], unconfirmed: REST_TOPICS },
             freshness: "fresh",
             age: "5m ago",
           },
@@ -1260,6 +1326,8 @@ describe("buildBoard (AD-32, AD-35)", () => {
             reason:
               "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
             chips: alertsOnly(linked(1, SECURITY, "high")),
+            signals: [{ topic: "security", text: "Security 1 high" }],
+            signalsRest: { zero: [], unconfirmed: REST_TOPICS },
             freshness: "stale",
             age: "3h ago",
           },
