@@ -391,6 +391,63 @@ describe("the ranking chain (AD-20)", () => {
     });
   });
 
+  describe("per-kind wording (AD-31)", () => {
+    it("rewords every fixed state without moving a single rank", () => {
+      const table = {
+        kev: { na: "A", unknown: "B", listed: "C", notListed: "D" },
+        epss: { na: "E", unknown: "F" },
+        severity: { na: "G", unknown: "H" },
+        bump: { na: "I", unknown: "J" },
+        stuck: { na: "K", unknown: "L", stuck: "M", fine: "N" },
+      };
+      const inputs = [
+        item(),
+        item({
+          kev: null,
+          epss: null,
+          severity: null,
+          bump: null,
+          stuck: null,
+        }),
+        item({ kev: true, stuck: true }),
+        item({ kev: false, epss: 0.42, severity: "high", stuck: false }),
+      ];
+      for (const input of inputs) {
+        expect(rank(input, P, table).key).toEqual(rank(input, P).key);
+      }
+      expect(
+        rank(
+          item({
+            kev: null,
+            epss: null,
+            severity: null,
+            bump: null,
+            stuck: null,
+          }),
+          P,
+          table,
+        ).explanation,
+      ).toBe("B, F, H, J, L");
+    });
+
+    it("drops a term worded as empty, leaving no stray comma", () => {
+      const r = rank(
+        item({
+          kev: NOT_APPLICABLE,
+          epss: NOT_APPLICABLE,
+          severity: "high",
+          bump: NOT_APPLICABLE,
+          stuck: NOT_APPLICABLE,
+        }),
+        P,
+        { epss: { na: "" }, bump: { na: "" }, stuck: { na: "" } },
+      );
+      expect(r.explanation).toBe("no CVE to check against KEV, severity high");
+      // The term is still on the chain; only its words are gone.
+      expect(r.terms).toHaveLength(5);
+    });
+  });
+
   describe("it explains itself (CAP-6)", () => {
     it("gives a reason per term, most significant first", () => {
       const r = rank(

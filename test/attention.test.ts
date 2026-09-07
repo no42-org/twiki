@@ -1,0 +1,379 @@
+/*
+ * Copyright 2026 Ronny Trommer <ronny@no42.org>
+ * SPDX-License-Identifier: MIT
+ */
+
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
+import { KEV_SUBJECT } from "../src/core/subject.js";
+import { DEFAULT_NOW_EPSS } from "../src/core/tier.js";
+import { repoAttention } from "../src/tricorder/attention/tiers.js";
+import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
+import { normaliseReviewRequest } from "../src/tricorder/collect/review-requests.js";
+import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
+import { makeAlert, makeReviewRequest } from "./fakes.js";
+
+// AD-29 and AD-34: one tier per repository, the maximum over its open items,
+// raised by an overdue review, computed once for every reader.
+
+const NOW = new Date("2026-08-20T12:00:00.000Z");
+const REPO = { owner: "no42-org", name: "twiki" };
+const DEPS = {
+  policy: { cadenceMs: 15 * 60_000 },
+  kevPolicy: { cadenceMs: 24 * 60 * 60_000 },
+  rankPolicy: DEFAULT_RANK_POLICY,
+  cutRank: epssRank(DEFAULT_NOW_EPSS, DEFAULT_RANK_POLICY.epssBands),
+  reviewBudgetDays: 3,
+};
+
+const daysAgo = (days: number): string =>
+  new Date(NOW.getTime() - days * 24 * 60 * 60_000).toISOString();
+
+describe("repoAttention (AD-29, AD-34)", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const seed = (
+    lane: string,
+    observations: { subject: unknown; payload: unknown }[],
+    at = "2026-08-20T11:55:00.000Z",
+  ) => {
+    const r = store.beginRun({
+      lane,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: at,
+    });
+    store.recordObservations(r, at, observations as never[]);
+    store.finishRun(r, "ok", at);
+  };
+
+  const seedKev = (cveIds: string[]) =>
+    seed("kev", [
+      {
+        subject: KEV_SUBJECT,
+        payload: { version: "2026.08.20", released: daysAgo(0), cveIds },
+      },
+    ]);
+
+  const issue = (key: string, repo = "no42-org/twiki") => ({
+    subject: { type: "issue", key },
+    payload: {
+      repo,
+      number: 5,
+      title: "Crash on startup",
+      author: "someone",
+      htmlUrl: `https://github.com/${repo}/issues/5`,
+      createdAt: daysAgo(1),
+    },
+  });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "attention-"));
+    store = SqliteStore.openForWrite(join(dir, "a.db"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("is quiet with no open items and says so", () => {
+    expect(repoAttention(store, REPO, NOW, DEPS)).toEqual({
+      tier: "quiet",
+      reason: "no open items",
+      openAlerts: 0,
+      worstSeverity: null,
+      items: [],
+    });
+  });
+
+  it("takes the maximum over the repository's items", () => {
+    seedKev(["CVE-2021-44228"]);
+    seed("graphql-issues", [issue("I_1")]);
+    seed("rest-org-dependabot", [
+      normalise(
+        makeAlert({ number: 7, cveId: "CVE-2021-44228", severity: "high" }),
+      ),
+    ]);
+
+    const attention = repoAttention(store, REPO, NOW, DEPS);
+
+    expect(attention.tier).toBe("now");
+    expect(attention.reason).toBe(
+      "alert #7 left-pad: listed in CISA KEV, EPSS 42.0%, severity high, not an update, stuck state unknown",
+    );
+    expect(attention.items.map((i) => i.kind)).toEqual(["alert", "issue"]);
+  });
+
+  it("names the first item in chain order AT the tier, not the first item", () => {
+    // An update PR linked to an alert we cannot read has an unknown KEV
+    // term, which sorts above an alert checked and found absent; only the
+    // alert reaches now. The rationale must name the item that put the
+    // repository there, not the item at the top of the list.
+    seedKev(["CVE-0000-0000"]);
+    seed("rest-org-dependabot", [
+      normalise(
+        makeAlert({
+          number: 2,
+          cveId: "CVE-2026-0002",
+          epssPercentage: 0.5,
+          severity: "low",
+        }),
+      ),
+      {
+        subject: { type: "dependabot_alert", key: "no42-org/twiki#9" },
+        payload: { number: 9, repo: "no42-org/twiki", cveId: 42 },
+      },
+    ]);
+    seed("graphql-update-status", [
+      {
+        subject: { type: "dependabot_update_status", key: "no42-org/twiki#9" },
+        payload: {
+          repo: "no42-org/twiki",
+          alertNumber: 9,
+          update: { pullRequestNumber: 70, error: null },
+        },
+      },
+    ]);
+    seed("graphql-update-prs", [
+      {
+        subject: { type: "dependency_update_pr", key: "PR_70" },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 70,
+          title: "Bump x from 1.0.0 to 1.0.1",
+          author: "dependabot",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/70",
+          createdAt: daysAgo(1),
+          packageName: "x",
+          bump: "patch",
+        },
+      },
+    ]);
+
+    const attention = repoAttention(store, REPO, NOW, DEPS);
+
+    expect(attention.items.map((i) => i.kind)).toEqual(["update_pr", "alert"]);
+    expect(attention.tier).toBe("now");
+    expect(attention.reason).toMatch(/^alert #2 left-pad: /);
+  });
+
+  it("raises a quiet repository to soon on a review older than the budget", () => {
+    seed("graphql-issues", [issue("I_1")]);
+    seed("graphql-review-requests", [
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: { owner: "no42-org", name: "twiki" },
+          number: 12,
+          createdAt: daysAgo(4),
+        }),
+      ),
+    ]);
+
+    const attention = repoAttention(store, REPO, NOW, DEPS);
+
+    expect(attention.tier).toBe("soon");
+    expect(attention.reason).toBe(
+      "pull request #12 open 4d, past the 3d review budget",
+    );
+  });
+
+  it("names the older of two overdue reviews", () => {
+    seed("graphql-review-requests", [
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: { owner: "no42-org", name: "twiki" },
+          number: 5,
+          createdAt: daysAgo(5),
+        }),
+      ),
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: { owner: "no42-org", name: "twiki" },
+          number: 8,
+          createdAt: daysAgo(8),
+        }),
+      ),
+    ]);
+
+    expect(repoAttention(store, REPO, NOW, DEPS).reason).toBe(
+      "pull request #8 open 8d, past the 3d review budget",
+    );
+  });
+
+  it("does not count a review at exactly the budget as overdue", () => {
+    seed("graphql-review-requests", [
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: { owner: "no42-org", name: "twiki" },
+          number: 12,
+          createdAt: daysAgo(3),
+        }),
+      ),
+    ]);
+
+    expect(repoAttention(store, REPO, NOW, DEPS).tier).toBe("quiet");
+  });
+
+  it("raises nothing on a review whose date it cannot read", () => {
+    // A date that does not parse supports no claim about waiting time; and
+    // a row with no date at all is unreadable, so it is not a review here.
+    seed("graphql-review-requests", [
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: { owner: "no42-org", name: "twiki" },
+          number: 12,
+          createdAt: "yesterday",
+        }),
+      ),
+      {
+        subject: { type: "review_request", key: "RR_null" },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 13,
+          title: "No date",
+          author: "someone",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/13",
+          createdAt: null,
+          requestedReviewers: ["indigo423"],
+        },
+      },
+    ]);
+
+    expect(repoAttention(store, REPO, NOW, DEPS)).toMatchObject({
+      tier: "quiet",
+      reason: "no open items",
+    });
+  });
+
+  it("matches the repository whatever casing the rows carry", () => {
+    // Subject keys are folded (AD-22); payload casing comes from GitHub.
+    seedKev(["CVE-2021-44228"]);
+    seed("rest-org-dependabot", [
+      normalise(
+        makeAlert({
+          number: 4,
+          cveId: "CVE-2021-44228",
+          repo: { owner: "No42-Org", name: "TWiki" },
+        }),
+      ),
+    ]);
+    seed("graphql-review-requests", [
+      {
+        subject: { type: "review_request", key: "RR_case" },
+        payload: {
+          repo: "No42-Org/TWiki",
+          number: 12,
+          title: "Mixed case",
+          author: "someone",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/12",
+          createdAt: daysAgo(9),
+          requestedReviewers: ["indigo423"],
+        },
+      },
+    ]);
+
+    const attention = repoAttention(store, REPO, NOW, DEPS);
+
+    expect(attention).toMatchObject({ tier: "now", openAlerts: 1 });
+    expect(attention.reason).toMatch(/^alert #4 left-pad: listed in CISA KEV/);
+    // The review is matched too: with the alert gone it would be what lifts
+    // the repository, so budget it against the same folded slug.
+    expect(
+      repoAttention(store, REPO, NOW, { ...DEPS, reviewBudgetDays: 1 }).tier,
+    ).toBe("now");
+  });
+
+  it("leaves a review inside the budget alone", () => {
+    seed("graphql-review-requests", [
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: { owner: "no42-org", name: "twiki" },
+          number: 12,
+          createdAt: daysAgo(2),
+        }),
+      ),
+    ]);
+
+    expect(repoAttention(store, REPO, NOW, DEPS).tier).toBe("quiet");
+  });
+
+  it("lets an item that already reaches the tier give the reason", () => {
+    // An overdue review raises to soon; an alert already at soon is the
+    // first thing in chain order that attains it, so it is named.
+    seedKev(["CVE-0000-0000"]);
+    seed("rest-org-dependabot", [
+      normalise(
+        makeAlert({
+          number: 3,
+          cveId: "CVE-2026-0003",
+          epssPercentage: 0.02,
+          severity: "high",
+        }),
+      ),
+    ]);
+    seed("graphql-review-requests", [
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: { owner: "no42-org", name: "twiki" },
+          number: 12,
+          createdAt: daysAgo(9),
+        }),
+      ),
+    ]);
+
+    const attention = repoAttention(store, REPO, NOW, DEPS);
+
+    expect(attention.tier).toBe("soon");
+    expect(attention.reason).toMatch(/^alert #3 left-pad: /);
+  });
+
+  it("ignores another repository's items and reviews", () => {
+    seedKev(["CVE-2021-44228"]);
+    seed("rest-org-dependabot", [
+      normalise(
+        makeAlert({
+          number: 9,
+          cveId: "CVE-2021-44228",
+          repo: { owner: "no42-org", name: "other" },
+        }),
+      ),
+    ]);
+    seed("graphql-issues", [issue("I_other", "no42-org/other")]);
+    seed("graphql-review-requests", [
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: { owner: "no42-org", name: "other" },
+          createdAt: daysAgo(9),
+        }),
+      ),
+    ]);
+
+    expect(repoAttention(store, REPO, NOW, DEPS)).toEqual({
+      tier: "quiet",
+      reason: "no open items",
+      openAlerts: 0,
+      worstSeverity: null,
+      items: [],
+    });
+  });
+
+  it("counts open alerts and their worst severity from the same items", () => {
+    seedKev(["CVE-0000-0000"]);
+    seed("rest-org-dependabot", [
+      normalise(makeAlert({ number: 1, severity: "high" })),
+      normalise(makeAlert({ number: 2, severity: "critical" })),
+    ]);
+    seed("graphql-issues", [issue("I_1")]);
+
+    const attention = repoAttention(store, REPO, NOW, DEPS);
+
+    expect(attention.openAlerts).toBe(2);
+    expect(attention.worstSeverity).toBe("critical");
+    expect(attention.items).toHaveLength(3);
+  });
+});

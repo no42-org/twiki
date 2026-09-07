@@ -211,6 +211,48 @@
       }
     },
     {
+      "includes": [
+        "src/tricorder/attention/**/*.ts",
+        "src/tricorder/attention/**/*.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "**/twiki/**",
+                      "**/web/**",
+                      "**/github/**",
+                      "**/enrich/**",
+                      "**/notify/**"
+                    ],
+                    "message": "AD-34: attention reads the store port, core and collect types only. It never imports web, github, notify or enrich; the pages and the notify lane call it, not the other way round."
+                  },
+                  {
+                    "group": [
+                      "./index.js",
+                      "../index.js",
+                      "../../index.js",
+                      "../../../index.js",
+                      "./tricorder.js",
+                      "../tricorder.js",
+                      "../../tricorder.js",
+                      "../../../tricorder.js"
+                    ],
+                    "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "includes": ["src/index.ts"],
       "linter": {
         "rules": {

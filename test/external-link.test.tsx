@@ -8,11 +8,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_RANK_POLICY } from "../src/core/rank.js";
+import { safeUrl } from "../src/core/safe-url.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { ExternalLink } from "../src/tricorder/web/components.js";
-import { safeUrl } from "../src/tricorder/web/safe-url.js";
 import { makeAlert } from "./fakes.js";
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");

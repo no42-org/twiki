@@ -5,10 +5,31 @@
 
 import type { CoverageState } from "../../core/coverage.js";
 import { coverageReason, isCovered } from "../../core/coverage.js";
+import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
+import { safeUrl } from "../../core/safe-url.js";
+import { watchKey } from "../../core/slug.js";
+import {
+  DEFAULT_REVIEW_BUDGET_DAYS,
+  defaultCutRank,
+  type Tier,
+} from "../../core/tier.js";
 import type { RepoRef } from "../../core/types.js";
+import {
+  ageLabel,
+  type Freshness,
+  type FreshnessPolicy,
+  freshness,
+} from "../attention/freshness.js";
+import {
+  readAlert,
+  readIssue,
+  readPr,
+  readReviewRequest,
+  readWorkflowRun,
+} from "../attention/payloads.js";
+import { repoAttention } from "../attention/tiers.js";
 import type { CoverageObservation } from "../collect/coverage.js";
 import type { RepoObservation } from "../collect/dependabot-alerts.js";
-import { watchKey } from "../collect/dependabot-alerts.js";
 import { LANE as ISSUE_LANE } from "../collect/issues.js";
 import {
   REVIEWS_INSTALLATION,
@@ -17,20 +38,6 @@ import {
 import { LANE as UPDATE_PR_LANE } from "../collect/update-prs.js";
 import { LANE as ACTIONS_LANE } from "../collect/workflow-runs.js";
 import type { CurrentValue, StorePort } from "../store/port.js";
-import {
-  ageLabel,
-  type Freshness,
-  type FreshnessPolicy,
-  freshness,
-} from "./freshness.js";
-import {
-  readAlert,
-  readIssue,
-  readPr,
-  readReviewRequest,
-  readWorkflowRun,
-} from "./payloads.js";
-import { safeUrl } from "./safe-url.js";
 
 // The per-repository view (CAP-7): every lane's signals for one repository,
 // each carrying its own freshness.
@@ -116,8 +123,18 @@ export interface RepoView {
    * than that coverage was withdrawn.
    */
   notCovered: boolean;
-  /** The alert-lane confirmation: counts, and whether they are current. */
+  /**
+   * The header line: the tier, its rationale, and the counts.
+   *
+   * Counts come from the queue items when there are any, so the sentence
+   * and the tier chip read the same rows (AD-32); with no items they fall
+   * back to the alert lane's confirmation, and its attestation says whether
+   * they are current.
+   */
   summary: SectionState & {
+    tier: Tier;
+    /** The first item in chain order that attains the tier, and why. */
+    tierReason: string;
     openAlerts: number | null;
     worstSeverity: string | null;
   };
@@ -159,6 +176,14 @@ export interface RepoViewDeps {
   coveragePolicy?: FreshnessPolicy;
   /** The Actions lane's cadence, for judging its attestation. */
   actionsPolicy?: FreshnessPolicy;
+  /** The KEV catalogue's own cadence, for the chain's first term (AD-11). */
+  kevPolicy?: FreshnessPolicy;
+  /** Thresholds only; the chain order is code (AD-20). */
+  rankPolicy?: RankPolicy;
+  /** The `now` cut as a term rank (AD-29). */
+  cutRank?: number;
+  /** Days a review request may wait before the repository is at least soon. */
+  reviewBudgetDays?: number;
 }
 
 /**
@@ -245,6 +270,22 @@ export function buildRepoView(
     .currentByType("repository")
     .find((v) => v.state === "present" && v.subject.key === slug);
   const summaryPayload = confirmation?.payload as RepoObservation | undefined;
+
+  // The one tier computation (AD-34). Nothing on this page derives a tier
+  // from the rows it lists; it reads this result.
+  const rankPolicy = deps.rankPolicy ?? DEFAULT_RANK_POLICY;
+  const attention = repoAttention(store, repo, now, {
+    policy: deps.policy,
+    kevPolicy: deps.kevPolicy ?? deps.policy,
+    rankPolicy,
+    cutRank: deps.cutRank ?? defaultCutRank(rankPolicy),
+    reviewBudgetDays: deps.reviewBudgetDays ?? DEFAULT_REVIEW_BUDGET_DAYS,
+  });
+  // Counted from the same items the tier was judged on, so the sentence
+  // beside the chip cannot disagree with it (AD-32). With no alert items
+  // there is nothing to count, and the lane's confirmation, or its absence,
+  // is the honest answer.
+  const counted = attention.openAlerts > 0;
 
   const coverageValue = store
     .currentByType("repository_coverage")
@@ -418,10 +459,20 @@ export function buildRepoView(
     coverageReason: coverage === null ? null : coverageReason(coverage),
     notCovered,
     summary: {
+      tier: attention.tier,
+      tierReason: attention.reason,
       // Suppressed on positive evidence of non-coverage only: a number beside
       // "not covered" invites the reader to believe it (AD-28).
-      openAlerts: known && summaryPayload ? summaryPayload.openAlerts : null,
-      worstSeverity: known ? (summaryPayload?.worstSeverity ?? null) : null,
+      openAlerts: !known
+        ? null
+        : counted
+          ? attention.openAlerts
+          : (summaryPayload?.openAlerts ?? null),
+      worstSeverity: !known
+        ? null
+        : counted
+          ? attention.worstSeverity
+          : (summaryPayload?.worstSeverity ?? null),
       attested: confirmation !== undefined,
       freshness: freshness(confirmation?.verifiedAt ?? null, now, deps.policy),
       age: ageLabel(confirmation?.verifiedAt ?? null, now),

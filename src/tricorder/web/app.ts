@@ -5,7 +5,10 @@
 
 import { Hono } from "hono";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
+import { DEFAULT_REVIEW_BUDGET_DAYS, defaultCutRank } from "../../core/tier.js";
 import type { RepoRef } from "../../core/types.js";
+import type { FreshnessPolicy } from "../attention/freshness.js";
+import { buildQueue } from "../attention/queue.js";
 import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
 import { LANE as KEV_LANE } from "../collect/kev.js";
 import { LANE as ACTIONS_LANE } from "../collect/workflow-runs.js";
@@ -17,8 +20,6 @@ import {
   ReviewsPage,
   UnknownRepoPage,
 } from "./components.js";
-import type { FreshnessPolicy } from "./freshness.js";
-import { buildQueue } from "./queue.js";
 import { buildRepoView } from "./repo-view.js";
 import { buildReviewView } from "./review-view.js";
 import { buildCollectionHealth, buildRepoRows } from "./view.js";
@@ -34,11 +35,21 @@ export interface AppDeps {
   lanePolicies?: Readonly<Record<string, FreshnessPolicy>>;
   /** Ranking thresholds. Order stays code; only the numbers move (AD-20). */
   rankPolicy?: RankPolicy;
+  /**
+   * The `now` cut as a term rank, `epssRank(cut, bands)` (AD-29). Defaults
+   * to the default cut over the rank policy in use.
+   */
+  cutRank?: number;
+  /** Days a review request may wait before a repository is at least soon. */
+  reviewBudgetDays?: number;
   now: () => Date;
 }
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
+  const rankPolicy = deps.rankPolicy ?? DEFAULT_RANK_POLICY;
+  const cutRank = deps.cutRank ?? defaultCutRank(rankPolicy);
+  const reviewBudgetDays = deps.reviewBudgetDays ?? DEFAULT_REVIEW_BUDGET_DAYS;
 
   app.get("/", (c) => {
     const now = deps.now();
@@ -77,7 +88,7 @@ export function createApp(deps: AppDeps): Hono {
       // unknown with no error anywhere. Unpinnable by mutation while the
       // constant equals the literal; the shared symbol is the protection.
       kevPolicy: deps.lanePolicies?.[KEV_LANE] ?? deps.policy,
-      rankPolicy: deps.rankPolicy ?? DEFAULT_RANK_POLICY,
+      rankPolicy,
     });
     const body = QueuePage({ queue, generatedAt: now.toISOString() });
     c.header("Cache-Control", "no-store");
@@ -107,6 +118,12 @@ export function createApp(deps: AppDeps): Hono {
       policy: deps.policy,
       coveragePolicy: deps.lanePolicies?.[COVERAGE_LANE],
       actionsPolicy: deps.lanePolicies?.[ACTIONS_LANE],
+      // The same policy, cut and KEV cadence the queue ranks with, so the
+      // header's tier and the queue's order come from one chain (AD-29).
+      kevPolicy: deps.lanePolicies?.[KEV_LANE] ?? deps.policy,
+      rankPolicy,
+      cutRank,
+      reviewBudgetDays,
     });
     const body = RepoPage({ view, generatedAt: now.toISOString() });
     return c.html(`<!DOCTYPE html>${body}`);

@@ -6,6 +6,7 @@
 import { safeLog } from "../../core/log.js";
 import { redact } from "../../core/redact.js";
 import { worstSeverity } from "../../core/severity.js";
+import { watchKey } from "../../core/slug.js";
 import { alertSubject, repositorySubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import {
@@ -93,11 +94,6 @@ function repoOfKey(key: string): RepoRef {
   const slug = key.split("#")[0] ?? "";
   const [owner = "", name = ""] = slug.split("/");
   return { owner, name };
-}
-
-/** Case-folded slug, matching how subject keys are derived (AD-22). */
-export function watchKey(repo: RepoRef): string {
-  return `${repo.owner}/${repo.name}`.toLowerCase();
 }
 
 /** Summarise one repository's alerts into its confirmation row. */

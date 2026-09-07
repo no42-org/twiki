@@ -4,11 +4,12 @@
  */
 
 import type { FC, PropsWithChildren } from "hono/jsx";
-import type { Freshness } from "./freshness.js";
-import type { Queue } from "./queue.js";
+import { safeUrl } from "../../core/safe-url.js";
+import type { Tier } from "../../core/tier.js";
+import type { Freshness } from "../attention/freshness.js";
+import type { Queue } from "../attention/queue.js";
 import type { RepoView, SectionState } from "./repo-view.js";
 import type { ReviewView } from "./review-view.js";
-import { safeUrl } from "./safe-url.js";
 import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
 import type { CollectionHealth, HealthOutcome, RepoRow } from "./view.js";
 
@@ -54,6 +55,10 @@ export const STYLE = `${TOKEN_STYLE}
   .why-rank { color: var(--muted); font-size: ${TYPE.small.size}; }
   .kev-hit { color: var(--critical); font-weight: 700; }
   .policy-note { color: var(--muted); font-size: ${TYPE.small.size}; margin-top: ${SPACE[8]}; }
+  .tier { display: inline-block; font-size: ${TYPE.small.size}; font-weight: 600; line-height: ${TYPE.small.lineHeight}; padding: ${SPACE[1]} ${SPACE[2]}; border-radius: ${RADIUS.full}; border: 1px solid transparent; vertical-align: middle; }
+  .tier.now { color: var(--critical); background: var(--critical-tint); }
+  .tier.soon { color: var(--warn); background: var(--warn-tint); }
+  .tier.quiet { color: var(--muted); border-color: var(--border); }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   nav { margin-bottom: ${SPACE[4]}; font-size: ${TYPE.small.size}; }
   nav a { margin-right: ${SPACE[4]}; }
@@ -102,6 +107,20 @@ export const ExternalLink: FC<
     </a>
   );
 };
+
+/**
+ * The attention tier as a pill: always a word plus a color, never a color
+ * alone. `now` and `soon` sit on their tint; `quiet` is ringed, because a
+ * wash on the normal state would train the reader to ignore washes. The
+ * hidden prefix gives a screen reader the noun the sighted reader gets from
+ * position (AD-29).
+ */
+export const TierChip: FC<{ tier: Tier }> = ({ tier }) => (
+  <span class={`tier ${tier}`}>
+    <span class="sr-only">attention tier: </span>
+    {tier}
+  </span>
+);
 
 export const FreshnessBadge: FC<{ freshness: Freshness; age: string }> = ({
   freshness,
@@ -393,29 +412,45 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
   generatedAt,
 }) => (
   <Layout title={`gitricorder · ${view.slug}`}>
-    <h1>{view.slug}</h1>
-    <p class="sub">
-      {view.notCovered ? (
-        <span class="uncovered">
-          not covered{view.coverageReason ? `: ${view.coverageReason}` : ""}
-        </span>
-      ) : (
-        <>
-          <FreshnessBadge
-            freshness={view.summary.freshness}
-            age={view.summary.age}
-          />{" "}
-          {view.summary.openAlerts === null
-            ? "alert count not collected"
-            : `${view.summary.openAlerts} open alerts`}
-          {view.summary.worstSeverity
-            ? `, worst ${view.summary.worstSeverity}`
-            : ""}
-        </>
-      )}
-      {" · rendered "}
-      {generatedAt}
-    </p>
+    <header>
+      <h1>
+        {view.slug} <TierChip tier={view.summary.tier} />
+      </h1>
+      <p class="sub">
+        {view.notCovered ? (
+          <span class="uncovered">
+            not covered{view.coverageReason ? `: ${view.coverageReason}` : ""}
+          </span>
+        ) : (
+          <>
+            <FreshnessBadge
+              freshness={view.summary.freshness}
+              age={view.summary.age}
+            />{" "}
+            {view.summary.openAlerts === null
+              ? "alert count not collected"
+              : view.summary.openAlerts === 0
+                ? "no open alerts"
+                : `${view.summary.openAlerts} open alerts`}
+            {view.summary.worstSeverity
+              ? `, worst ${view.summary.worstSeverity}`
+              : ""}
+          </>
+        )}
+        {view.notCovered ? null : (
+          // Withheld beside "not covered" for the reason the list below is:
+          // the rationale names a row this page has just refused to count,
+          // and each half would contradict the other (AD-28). The tier
+          // itself stands; it is the queue's verdict, not this page's.
+          <>
+            {" · "}
+            <span class="why">{view.summary.tierReason}</span>
+          </>
+        )}
+        {" · rendered "}
+        {generatedAt}
+      </p>
+    </header>
 
     {view.unreadable > 0 || view.unattributable > 0 ? (
       <p class="failed">

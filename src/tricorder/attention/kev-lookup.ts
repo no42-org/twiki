@@ -3,12 +3,12 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { CVE_ID } from "../core/cve.js";
-import { NOT_APPLICABLE, type Signal } from "../core/rank.js";
-import { KEV_SUBJECT } from "../core/subject.js";
-import type { KevObservation } from "./collect/kev.js";
-import type { StorePort } from "./store/port.js";
-import { type FreshnessPolicy, freshness } from "./web/freshness.js";
+import { CVE_ID } from "../../core/cve.js";
+import { NOT_APPLICABLE, type Signal } from "../../core/rank.js";
+import { KEV_SUBJECT } from "../../core/subject.js";
+import type { KevObservation } from "../collect/kev.js";
+import type { StorePort } from "../store/port.js";
+import { type FreshnessPolicy, freshness } from "./freshness.js";
 
 // Turns the stored catalogue into the chain's first term.
 //

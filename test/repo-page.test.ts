@@ -7,8 +7,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_RANK_POLICY } from "../src/core/rank.js";
+import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
+import { KEV_SUBJECT } from "../src/core/subject.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
+import { LANE as KEV_LANE } from "../src/tricorder/collect/kev.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { buildRepoView } from "../src/tricorder/web/repo-view.js";
@@ -282,6 +284,9 @@ describe("the per-repository view (CAP-7)", () => {
     const view = buildRepoView(store, REPO, NOW, DEPS);
 
     expect(view.issues.map((i) => i.number)).toEqual([5]);
+    // The tier reads the same folded slug, or the header would say "no open
+    // items" above a listed issue.
+    expect(view.summary.tierReason).toMatch(/^issue #5: /);
   });
 
   it("does not let an unreadable review request mark this page incomplete", () => {
@@ -451,6 +456,37 @@ describe("the per-repository page", () => {
       now: () => NOW,
     });
 
+  /** One alert beside a KEV catalogue, so its KEV term is checked, not unknown. */
+  const seedKevAndAlert = (
+    alert: Parameters<typeof makeAlert>[0],
+    cveIds = ["CVE-0000-0000"],
+    kevAt = "2026-08-20T11:55:00.000Z",
+  ) => {
+    const kev = store.beginRun({
+      lane: KEV_LANE,
+      installation: "cisa",
+      scope: "full",
+      startedAt: kevAt,
+    });
+    store.recordObservations(kev, kevAt, [
+      {
+        subject: KEV_SUBJECT,
+        payload: { version: "2026.08.20", released: kevAt, cveIds },
+      },
+    ]);
+    store.finishRun(kev, "ok", kevAt);
+    const r = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      normalise(makeAlert(alert)),
+    ]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+  };
+
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "repopagehttp-"));
     store = SqliteStore.openForWrite(join(dir, "p.db"));
@@ -615,6 +651,173 @@ describe("the per-repository page", () => {
     expect(html).toContain("3 open alerts");
     expect(html).not.toContain("not covered");
     expect(html).not.toContain("no count and no list");
+  });
+
+  it("carries the tier chip and the summary sentence in its header", async () => {
+    // The whole header, not one attribute of it: the chip, its hidden
+    // prefix, the sentence and the rationale all come from one computation
+    // over the same rows (AD-29, AD-32), and a test that looked only at the
+    // chip would let the sentence beside it drift.
+    const r = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      normalise(
+        makeAlert({
+          number: 1,
+          cveId: "CVE-2026-0001",
+          epssPercentage: 0.5,
+          severity: "high",
+        }),
+      ),
+      normalise(
+        makeAlert({
+          number: 2,
+          cveId: "CVE-2026-0002",
+          epssPercentage: 0.02,
+          severity: "medium",
+        }),
+      ),
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          openAlerts: 9,
+          worstSeverity: "low",
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const html = await (await app().request("/repo/no42-org/twiki")).text();
+
+    const header = html.slice(
+      html.indexOf("<header>"),
+      html.indexOf("</header>") + "</header>".length,
+    );
+    expect(header).toBe(
+      "<header>" +
+        '<h1>no42-org/twiki <span class="tier now"><span class="sr-only">attention tier: </span>now</span></h1>' +
+        '<p class="sub">' +
+        '<span class="badge fresh" title="5m ago">fresh · 5m ago</span> ' +
+        // Counted from the rows shown, not the confirmation's 9 / low.
+        "2 open alerts, worst high · " +
+        '<span class="why">alert #1 left-pad: KEV status unknown, EPSS 50.0%, severity high, not an update, stuck state unknown</span>' +
+        " · rendered 2026-08-20T12:00:00.000Z" +
+        "</p>" +
+        "</header>",
+    );
+  });
+
+  it("reads no open alerts as words, and an uncollected count as a gap", async () => {
+    // A confirmed zero and a never-collected count are different pictures
+    // (AD-28), and neither may render as the digit 0.
+    const unseen = await (await app().request("/repo/no42-org/twiki")).text();
+    expect(unseen).toContain('<span class="tier quiet">');
+    expect(unseen).toContain("alert count not collected");
+
+    const r = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", openAlerts: 0, worstSeverity: null },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const confirmed = await (
+      await app().request("/repo/no42-org/twiki")
+    ).text();
+    expect(confirmed).toContain("no open alerts");
+    expect(confirmed).not.toContain("0 open alerts");
+  });
+
+  it("ranks the header with the cut it was given", async () => {
+    // Deleting `cutRank` from the route's deps keeps the default 0.1 and
+    // this alert at 0.2 reads now; the top band makes it soon.
+    seedKevAndAlert({ number: 1, epssPercentage: 0.2 });
+
+    const html = await (
+      await createApp({
+        store,
+        watched: [REPO],
+        policy: SWEEP,
+        rankPolicy: DEFAULT_RANK_POLICY,
+        cutRank: epssRank(0.5, DEFAULT_RANK_POLICY.epssBands),
+        now: () => NOW,
+      }).request("/repo/no42-org/twiki")
+    ).text();
+
+    expect(html).toContain('<span class="tier soon">');
+  });
+
+  it("budgets reviews with the days it was given", async () => {
+    // Five days waiting: overdue on the default budget, inside ten.
+    const r = store.beginRun({
+      lane: "graphql-review-requests",
+      installation: "reviews",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "review_request", key: "RR_1" },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 9,
+          title: "Wire the thing",
+          author: "someone-else",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/9",
+          createdAt: "2026-08-15T12:00:00.000Z",
+          requestedReviewers: ["indigo423"],
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const html = await (
+      await createApp({
+        store,
+        watched: [REPO],
+        policy: SWEEP,
+        rankPolicy: DEFAULT_RANK_POLICY,
+        reviewBudgetDays: 10,
+        now: () => NOW,
+      }).request("/repo/no42-org/twiki")
+    ).text();
+
+    expect(html).toContain('<span class="tier quiet">');
+  });
+
+  it("judges the KEV catalogue on the KEV lane's cadence, not the sweep's", async () => {
+    // An hour-old catalogue is stale on the 15-minute sweep policy, which
+    // makes every KEV verdict unknown and this listed alert merely soon.
+    seedKevAndAlert(
+      { number: 1, cveId: "CVE-2021-44228", epssPercentage: 0.001 },
+      ["CVE-2021-44228"],
+      "2026-08-20T11:00:00.000Z",
+    );
+
+    const html = await (
+      await createApp({
+        store,
+        watched: [REPO],
+        policy: SWEEP,
+        lanePolicies: { [KEV_LANE]: { cadenceMs: 24 * 60 * 60_000 } },
+        rankPolicy: DEFAULT_RANK_POLICY,
+        now: () => NOW,
+      }).request("/repo/no42-org/twiki")
+    ).text();
+
+    expect(html).toContain('<span class="tier now">');
   });
 
   it("answers 404 for a repository outside the watched set", async () => {

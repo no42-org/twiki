@@ -10,9 +10,14 @@ import {
   type RankPolicy,
   rank,
 } from "../../core/rank.js";
-import { normaliseSeverity } from "../../core/severity.js";
+import { safeUrl } from "../../core/safe-url.js";
+import { normaliseSeverity, type Severity } from "../../core/severity.js";
+import {
+  KIND_REASONS,
+  kevListedFor,
+  type QueueKind,
+} from "../../core/topics.js";
 import type { UpdateStatusObservation } from "../collect/update-status.js";
-import { kevSignal, loadKevIndex } from "../kev-lookup.js";
 import type { StorePort } from "../store/port.js";
 import {
   ageLabel,
@@ -20,8 +25,8 @@ import {
   type FreshnessPolicy,
   freshness,
 } from "./freshness.js";
+import { kevSignal, loadKevIndex } from "./kev-lookup.js";
 import { readAlert, readIssue, readPr, readStatus } from "./payloads.js";
-import { safeUrl } from "./safe-url.js";
 
 // The ranked queue (CAP-6): one cross-repository list answering "what should I
 // deal with next, and why does it rank there".
@@ -31,7 +36,7 @@ import { safeUrl } from "./safe-url.js";
 // review rounds flagged in a row.
 
 export interface QueueItem {
-  kind: "alert" | "update_pr" | "issue";
+  kind: QueueKind;
   /**
    * The subject key: `owner/name#number` for alerts, the node id for PRs and
    * issues.
@@ -47,8 +52,17 @@ export interface QueueItem {
   htmlUrl: string | null;
   /** CAP-6's "why does it rank there", most significant term first. */
   explanation: string;
-  /** Confirmed listed in CISA KEV. The one state the page shouts about. */
+  /**
+   * Confirmed listed in CISA KEV. The one state the page shouts about, and
+   * only a kind whose KEV term is a catalogue lookup can be in it (AD-31).
+   */
   kevListed: boolean;
+  /**
+   * The severity word a chip may show for this item, or null when the kind
+   * carries none it could vouch for. The chain's severity term is the rank;
+   * this is the display, and the two are set from one value so they agree.
+   */
+  displaySeverity: Severity | null;
   ranking: Ranking;
   freshness: Freshness;
   age: string;
@@ -174,6 +188,7 @@ export function buildQueue(
         stuck,
       },
       deps.rankPolicy,
+      KIND_REASONS.alert,
     );
 
     items.push({
@@ -189,7 +204,8 @@ export function buildQueue(
       // href in the codebase: hono/jsx renders `javascript:` schemes verbatim.
       htmlUrl: safeUrl(alert.htmlUrl),
       explanation: ranking.explanation,
-      kevListed: kev === true,
+      kevListed: kevListedFor("alert") && kev === true,
+      displaySeverity: severity,
       ranking,
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
@@ -252,6 +268,7 @@ export function buildQueue(
     let best: Ranking;
     let advisory: string | null;
     let kevListed: boolean;
+    let displaySeverity: Severity | null;
     if (candidates.length === 0) {
       // Two different absences (AD-20). A status names an alert we could not
       // read: there IS an advisory, we failed to see it, so the security
@@ -267,9 +284,11 @@ export function buildQueue(
           stuck: prStuck,
         },
         deps.rankPolicy,
+        KIND_REASONS.update_pr,
       );
       advisory = null;
       kevListed = false;
+      displaySeverity = null;
     } else {
       const ranked = candidates.map((c) => ({
         c,
@@ -282,6 +301,7 @@ export function buildQueue(
             stuck: prStuck,
           },
           deps.rankPolicy,
+          KIND_REASONS.update_pr,
         ),
       }));
       // The worst-ranking alert wins: a PR fixing two advisories is judged by
@@ -290,7 +310,8 @@ export function buildQueue(
       const winner = ranked[0] as (typeof ranked)[number];
       best = winner.r;
       advisory = winner.c.advisory;
-      kevListed = winner.c.kev === true;
+      kevListed = kevListedFor("update_pr") && winner.c.kev === true;
+      displaySeverity = winner.c.severity;
     }
 
     items.push({
@@ -304,6 +325,7 @@ export function buildQueue(
       htmlUrl: safeUrl(pr.htmlUrl),
       explanation: best.explanation,
       kevListed,
+      displaySeverity,
       ranking: best,
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
@@ -313,8 +335,9 @@ export function buildQueue(
   // Untriaged issues (CAP-2). Every security term is a fact of absence: an
   // issue carries no CVE, no advisory and no update, so all-n/a is the honest
   // ranking and it sinks below every alert we actually measured. The chain's
-  // generated explanation would recite five absences, so the row says the one
-  // thing that is true instead.
+  // default wording would recite five absences, so the issue table words them
+  // as the one thing that is true (AD-31); the explanation is still the
+  // chain's own, not an override written beside it.
   for (const row of store.currentByType("issue")) {
     if (row.state !== "present") continue;
     const issue = readIssue(row.payload);
@@ -332,6 +355,7 @@ export function buildQueue(
         stuck: NOT_APPLICABLE,
       },
       deps.rankPolicy,
+      KIND_REASONS.issue,
     );
 
     items.push({
@@ -343,8 +367,11 @@ export function buildQueue(
       title: issue.title,
       advisory: null,
       htmlUrl: safeUrl(issue.htmlUrl),
-      explanation: "untriaged issue, nobody assigned",
-      kevListed: false,
+      explanation: ranking.explanation,
+      // An issue's KEV term is n/a by construction; kevListedFor says so, and
+      // the page never gets a chance to shout about it.
+      kevListed: kevListedFor("issue"),
+      displaySeverity: null,
       ranking,
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),

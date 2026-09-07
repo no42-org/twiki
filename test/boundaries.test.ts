@@ -248,6 +248,28 @@ const BOUNDARIES: Record<
     forbidden: ["../../twiki/executor.js"],
     allowed: ["../../core/types.js", "../store/port.js", "hono", "hono/jsx"],
   },
+  // attention is the one computation both processes read (AD-34). It may
+  // use core, the store port and collect's types; never the pages it feeds,
+  // nor GitHub, because no tier may cost a call on the request path.
+  "src/tricorder/attention": {
+    forbidden: [
+      "../web/components.js",
+      "../../github/port.js",
+      "../../twiki/executor.js",
+      "../../enrich/kev.js",
+      // src/notify arrives with Epic 4; the rule is testable before it does.
+      "../notify/index.js",
+    ],
+    // collect's types and LANE constants must stay legal, or the rule has
+    // swallowed the one edge the module is built on.
+    allowed: [
+      "../../core/rank.js",
+      "../../core/severity.js",
+      "../store/port.js",
+      "../collect/kev.js",
+      "../collect/update-status.js",
+    ],
+  },
 };
 
 /** An entrypoint wires exactly one side, and nothing wires the other's. */
