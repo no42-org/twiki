@@ -24,6 +24,13 @@ import {
 import type { Queue, QueueItem } from "../attention/queue.js";
 import type { RepoView } from "./repo-view.js";
 import type { ReviewView } from "./review-view.js";
+import {
+  overviewTitle,
+  queueTitle,
+  repoTitle,
+  reviewsTitle,
+  unknownRepoTitle,
+} from "./titles.js";
 import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
 
 // Server-rendered tables. There is no client-side interactivity layer in this
@@ -70,8 +77,14 @@ export const STYLE = `${TOKEN_STYLE}
   .tier.soon { color: var(--warn); background: var(--warn-tint); }
   .tier.quiet { color: var(--muted); border-color: var(--border); }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .skip { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .skip:focus { left: ${SPACE.gutter}; width: auto; height: auto; overflow: visible; clip: auto; padding: ${SPACE[2]} ${SPACE[3]}; background: var(--surface); z-index: 2; }
   nav { margin-bottom: ${SPACE[4]}; font-size: ${TYPE.small.size}; }
   nav a { margin-right: ${SPACE[4]}; }
+  nav.primary { display: flex; flex-wrap: wrap; align-items: center; min-height: ${SPACE.navHeight}; background: var(--surface); border-bottom: 1px solid var(--border); }
+  nav.primary a[aria-current] { color: var(--fg); text-decoration: none; border-bottom: 2px solid var(--link); }
+  .rendered { margin-left: auto; color: var(--muted); }
+  @media (max-width: 639px) { nav.primary { position: sticky; top: 0; z-index: 1; margin: 0 -${SPACE.gutter}; padding: 0 ${SPACE.gutter}; } .rendered { flex-basis: 100%; } html { scroll-padding-top: calc(2 * ${SPACE.navHeight}); } }
   .tiles { display: grid; grid-template-columns: repeat(6, minmax(min-content, 1fr)); gap: ${SPACE[3]}; margin: ${SPACE[4]} 0 ${SPACE[6]}; }
   .tile { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: ${RADIUS.md}; padding: ${SPACE[3]}; text-decoration: none; color: var(--fg); }
   .count { display: block; font-size: ${TYPE.count.size}; font-weight: ${TYPE.count.weight}; line-height: ${TYPE.count.lineHeight}; font-variant-numeric: tabular-nums; margin-bottom: ${SPACE[2]}; }
@@ -299,14 +312,28 @@ const UnreadableNote: FC<{ count: number }> = ({ count }) =>
  * meant a nav link or a meta fix had to land twice and a missed copy shipped
  * divergent pages. The content is the `main` landmark and the page's policy
  * note is a `footer` outside it, so a screen reader finds the caveat as
- * `contentinfo` rather than as content. `id="main"` is the target Story
- * 1.8's skip links will use; nothing links to it yet.
+ * `contentinfo` rather than as content.
+ *
+ * The skip links come first in the body, so they are the first Tab stops.
+ * On the overview each targets a block heading the page already labels;
+ * elsewhere the one link targets the named list region. Never the top of
+ * `main`: a keyboard user passes a 100-row board in one keystroke. The nav
+ * is the `navigation` landmark named "primary", marks the current page, and
+ * carries the rendered-at time as text, once per page. Under 640px it
+ * sticks, the time takes its own row so the bar is always two rows, and
+ * `html { scroll-padding-top }` is set to twice the row height, since
+ * without script nothing can measure the bar (DESIGN.md).
  */
-const Layout: FC<PropsWithChildren<{ title: string; footer?: string }>> = ({
-  title,
-  footer,
-  children,
-}) => (
+const Layout: FC<
+  PropsWithChildren<{
+    title: string;
+    /** Which nav link is this page. A repo page is none of them. */
+    current: "overview" | "queue" | "reviews" | null;
+    generatedAt: string;
+    skips: readonly { href: string; label: string }[];
+    footer?: string;
+  }>
+> = ({ title, current, generatedAt, skips, footer, children }) => (
   <html lang="en">
     <head>
       <meta charset="utf-8" />
@@ -315,10 +342,33 @@ const Layout: FC<PropsWithChildren<{ title: string; footer?: string }>> = ({
       <style>{STYLE}</style>
     </head>
     <body>
-      <nav>
-        <a href={overviewPath()}>repositories</a>
-        <a href={queueClearPath()}>queue</a>
-        <a href={reviewsPath()}>reviews</a>
+      {skips.map((skip) => (
+        <a key={skip.href} class="skip" href={skip.href}>
+          {skip.label}
+        </a>
+      ))}
+      <nav class="primary" aria-label="primary">
+        <a
+          href={overviewPath()}
+          aria-current={current === "overview" ? "page" : undefined}
+        >
+          overview
+        </a>
+        <a
+          href={queueClearPath()}
+          aria-current={current === "queue" ? "page" : undefined}
+        >
+          queue
+        </a>
+        <a
+          href={reviewsPath()}
+          aria-current={current === "reviews" ? "page" : undefined}
+        >
+          reviews
+        </a>
+        <span class="rendered">
+          rendered <time datetime={generatedAt}>{generatedAt}</time>
+        </span>
       </nav>
       <main id="main">{children}</main>
       {footer === undefined ? null : (
@@ -345,6 +395,9 @@ const REPO_POLICY =
 const REVIEWS_POLICY =
   "Review requests are collected wherever they land, not only in watched repositories, because a request is a claim on your attention either way. Rows marked not watched carry nothing else from this dashboard: no alerts, no coverage, no build status.";
 
+/** The one skip link on every page but the overview; `#list` exists on each. */
+const LIST_SKIP = [{ href: "#list", label: "skip to list" }] as const;
+
 /**
  * The overview (AD-32): the attention board, then collection health.
  *
@@ -364,7 +417,21 @@ export const Page: FC<{
   board: Board;
   generatedAt: string;
 }> = ({ board, generatedAt }) => (
-  <Layout title="gitricorder" footer={OVERVIEW_POLICY}>
+  <Layout
+    title={overviewTitle(board.summary, board.collected, board.unreadable)}
+    current="overview"
+    generatedAt={generatedAt}
+    // The quiet block renders only once something has been collected, so
+    // before that the link to it would lead nowhere and is not offered.
+    skips={[
+      { href: "#board", label: "skip to board" },
+      ...(board.collected
+        ? [{ href: "#quiet", label: "skip to quiet repositories" }]
+        : []),
+      { href: "#health", label: "skip to collection health" },
+    ]}
+    footer={OVERVIEW_POLICY}
+  >
     <h1>gitricorder</h1>
     <p class="sub">
       {board.summary.watched} watched{" "}
@@ -385,8 +452,6 @@ export const Page: FC<{
       ) : (
         " · nothing collected yet"
       )}
-      {" · rendered "}
-      {generatedAt}
     </p>
     <UnreadableNote count={board.unreadable} />
 
@@ -643,7 +708,13 @@ export const QueuePage: FC<{
     filter.topic?.topic ?? (filter.unknownTopic === null ? "all" : null);
   const repoRef = filter.repoRef;
   return (
-    <Layout title="gitricorder queue" footer={QUEUE_POLICY}>
+    <Layout
+      title={queueTitle(filter)}
+      current="queue"
+      generatedAt={generatedAt}
+      skips={LIST_SKIP}
+      footer={QUEUE_POLICY}
+    >
       <h1>What to deal with next</h1>
       <p class="sub">
         {filtered.counted.filter((i) => i.kind === "alert").length} open alerts
@@ -657,8 +728,6 @@ export const QueuePage: FC<{
         {queue.kev.usable
           ? `${queue.kev.version ?? "?"} · ${queue.kev.age}`
           : "unavailable, so KEV status ranks as unknown"}
-        {" · rendered "}
-        {generatedAt}
       </p>
 
       <UnreadableNote count={queue.unreadable} />
@@ -684,9 +753,9 @@ export const QueuePage: FC<{
         <a href={reviewsPath()}>reviews</a>
       </nav>
 
-      {/* One landmark on every render, filtered or not, so the skip link
-          of Story 1.8 always has a target. */}
-      <section id="list">
+      {/* One named region on every render, filtered or not, so `skip to
+          list` always lands on something a screen reader announces. */}
+      <section id="list" aria-label="queue">
         {filtered.empty !== null ? (
           <p class="filter-state">
             {filtered.empty} <a href={queueClearPath()}>Clear filter.</a>
@@ -1061,14 +1130,20 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
 /**
  * The per-repository page (CAP-7): every lane's signals for one repository,
  * grouped by topic in the vocabulary's order, each section carrying its own
- * freshness. The breadcrumb is the way back. Nav labelling (`aria-current`,
- * which this page will never carry) is Story 1.8's.
+ * freshness. The breadcrumb is the way back, and no nav link is current:
+ * this page is under the overview, not one of the three.
  */
 export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
   view,
   generatedAt,
 }) => (
-  <Layout title={`gitricorder · ${view.slug}`} footer={REPO_POLICY}>
+  <Layout
+    title={repoTitle(view.slug, view.summary.tier)}
+    current={null}
+    generatedAt={generatedAt}
+    skips={LIST_SKIP}
+    footer={REPO_POLICY}
+  >
     <nav class="crumb" aria-label="breadcrumb">
       <a href={overviewPath()}>overview</a> › {view.slug}
     </nav>
@@ -1107,8 +1182,6 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
             <span class="why">{view.summary.tierReason}</span>
           </>
         )}
-        {" · rendered "}
-        {generatedAt}
       </p>
     </header>
 
@@ -1124,15 +1197,32 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
       </p>
     ) : null}
 
-    {TOPICS.map((t) => (
-      <RepoSection key={t.topic} topic={t.topic} view={view} />
-    ))}
+    <section id="list" aria-label="repository sections">
+      {TOPICS.map((t) => (
+        <RepoSection key={t.topic} topic={t.topic} view={view} />
+      ))}
+    </section>
   </Layout>
 );
 
-/** Shown for a repository that is not in repos.yaml, which is the universe. */
-export const UnknownRepoPage: FC<{ slug: string }> = ({ slug }) => (
-  <Layout title="gitricorder · unknown repository">
+const UNKNOWN_REPO_POLICY =
+  "Only repositories listed in repos.yaml have a page; nothing is discovered.";
+
+/**
+ * Shown for a repository that is not in repos.yaml, which is the universe.
+ * There is no list on it, so nothing to skip to.
+ */
+export const UnknownRepoPage: FC<{ slug: string; generatedAt: string }> = ({
+  slug,
+  generatedAt,
+}) => (
+  <Layout
+    title={unknownRepoTitle()}
+    current={null}
+    generatedAt={generatedAt}
+    skips={[]}
+    footer={UNKNOWN_REPO_POLICY}
+  >
     <h1>{slug}</h1>
     <p class="never">
       This repository is not in the watched set, so nothing has ever been
@@ -1157,7 +1247,13 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
   view,
   generatedAt,
 }) => (
-  <Layout title="gitricorder reviews" footer={REVIEWS_POLICY}>
+  <Layout
+    title={reviewsTitle(view.rows.length, view.attested)}
+    current="reviews"
+    generatedAt={generatedAt}
+    skips={LIST_SKIP}
+    footer={REVIEWS_POLICY}
+  >
     <h1>Waiting on your review</h1>
     <p class="sub">
       {view.attested ? (
@@ -1171,8 +1267,6 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
       ) : (
         <span class="never">not confirmed by any completed sweep</span>
       )}
-      {" · rendered "}
-      {generatedAt}
     </p>
 
     {view.unreadable > 0 ? (
@@ -1183,57 +1277,65 @@ export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
       </p>
     ) : null}
 
-    {view.attested && view.rows.length === 0 ? (
-      <p class="none">Nothing waiting on you.</p>
-    ) : null}
+    <section id="list" aria-label="review requests">
+      {view.rows.length === 0 ? (
+        // An empty list and an unconfirmed one are different facts (AD-28),
+        // and the region says which rather than landing a reader on silence.
+        view.attested ? (
+          <p class="none">Nothing waiting on you.</p>
+        ) : (
+          <p class="attest">not confirmed by any completed sweep</p>
+        )
+      ) : null}
 
-    {view.rows.length > 0 ? (
-      <table>
-        <thead>
-          <tr>
-            <th>Pull request</th>
-            <th>Opened by</th>
-            <th>Requested from</th>
-            <th>Waiting</th>
-            <th>Last confirmed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {view.rows.map((r) => (
-            <tr key={r.key}>
-              <td>
-                <ExternalLink href={r.htmlUrl}>
-                  {r.repo}#{r.number}
-                </ExternalLink>
-                {r.watched ? null : (
-                  // Said on every row rather than once at the top: this
-                  // repository has no coverage, no alert sweep and no
-                  // freshness behind it beyond this one line.
-                  <>
-                    {" "}
-                    <span class="badge unknown">not watched</span>
-                  </>
-                )}
-                <div class="why">{r.title}</div>
-              </td>
-              <td>{r.author}</td>
-              <td>
-                {/* The reviewers themselves, not a count. GraphQL reports a
+      {view.rows.length > 0 ? (
+        <table>
+          <thead>
+            <tr>
+              <th>Pull request</th>
+              <th>Opened by</th>
+              <th>Requested from</th>
+              <th>Waiting</th>
+              <th>Last confirmed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {view.rows.map((r) => (
+              <tr key={r.key}>
+                <td>
+                  <ExternalLink href={r.htmlUrl}>
+                    {r.repo}#{r.number}
+                  </ExternalLink>
+                  {r.watched ? null : (
+                    // Said on every row rather than once at the top: this
+                    // repository has no coverage, no alert sweep and no
+                    // freshness behind it beyond this one line.
+                    <>
+                      {" "}
+                      <span class="badge unknown">not watched</span>
+                    </>
+                  )}
+                  <div class="why">{r.title}</div>
+                </td>
+                <td>{r.author}</td>
+                <td>
+                  {/* The reviewers themselves, not a count. GraphQL reports a
                     TEAM request by its slug, so counting produced "just
                     you" for a pull request nobody had asked the reader for
                     personally. */}
-                {r.requestedReviewers.length === 0
-                  ? "unknown"
-                  : r.requestedReviewers.join(", ")}
-              </td>
-              <td>{r.waiting}</td>
-              <td>
-                <FreshnessBadge freshness={r.freshness} age={r.age} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    ) : null}
+                  {r.requestedReviewers.length === 0
+                    ? "unknown"
+                    : r.requestedReviewers.join(", ")}
+                </td>
+                <td>{r.waiting}</td>
+                <td>
+                  <FreshnessBadge freshness={r.freshness} age={r.age} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </section>
   </Layout>
 );

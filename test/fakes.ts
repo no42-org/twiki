@@ -605,3 +605,24 @@ export class FakeGitHub extends FakeGitHubReadPort implements GitHubPort {
 }
 
 export { REPO };
+
+/**
+ * The whole primary nav as every page renders it (Story 1.8), so a page
+ * test pins it entire rather than one link of it. `current` is the link
+ * carrying `aria-current="page"`; a repo page has none.
+ */
+export const primaryNav = (
+  current: "overview" | "queue" | "reviews" | null,
+  at: string,
+): string => {
+  const link = (href: string, text: string) =>
+    `<a href="${href}"${current === text ? ' aria-current="page"' : ""}>${text}</a>`;
+  return (
+    '<nav class="primary" aria-label="primary">' +
+    link("/", "overview") +
+    link("/queue", "queue") +
+    link("/reviews", "reviews") +
+    `<span class="rendered">rendered <time datetime="${at}">${at}</time></span>` +
+    "</nav>"
+  );
+};

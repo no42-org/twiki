@@ -14,7 +14,7 @@ import { LANE as KEV_LANE } from "../src/tricorder/collect/kev.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { buildRepoView } from "../src/tricorder/web/repo-view.js";
-import { makeAlert } from "./fakes.js";
+import { makeAlert, primaryNav } from "./fakes.js";
 
 const NOW = new Date("2026-08-20T12:00:00.000Z");
 const SWEEP = { cadenceMs: 15 * 60_000 };
@@ -975,7 +975,7 @@ describe("the per-repository page", () => {
     expect(html).toContain(
       '<h2 id="reviews">Reviews <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">0 shown</span></h2>' +
         '<p class="attest">no review requests in this repository</p>' +
-        "</main>",
+        "</section></main>",
     );
   });
 
@@ -1204,7 +1204,6 @@ describe("the per-repository page", () => {
         // Counted from the rows shown, not the confirmation's 9 / low.
         "2 open alerts, worst high · " +
         '<span class="why">alert #1 left-pad: KEV status unknown, EPSS 50.0%, severity high, not an update, stuck state unknown</span>' +
-        " · rendered 2026-08-20T12:00:00.000Z" +
         "</p>" +
         "</header>",
     );
@@ -1325,9 +1324,51 @@ describe("the per-repository page", () => {
     const html = await res.text();
 
     expect(res.status).toBe(404);
+    expect(html).toContain("<title>unknown repository · gitricorder</title>");
     expect(html).toContain("not in the watched set");
     // And a way back, so a mistyped slug is not a dead end.
     expect(html).toContain('<p><a href="/">back to the overview</a></p>');
+    // No list on it, so nothing to skip to; the nav still says the time,
+    // and the page keeps its contentinfo landmark like every other.
+    expect(html).toContain(`<body>${NAV}<main id="main">`);
+    expect(html).toContain(
+      '</main><footer class="policy-note">Only repositories listed in repos.yaml have a page; nothing is discovered.</footer>',
+    );
+  });
+
+  // Story 1.8 (#129): a repo page is under the overview, not one of the
+  // three nav links, so nothing in the nav is current here.
+  const NAV = primaryNav(null, "2026-08-20T12:00:00.000Z");
+
+  it("names the repository and its tier in the title, marks no nav link current, and skips to the list", async () => {
+    seedKevAndAlert({ number: 1, epssPercentage: 0.5 });
+    const html = await (await app().request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain("<title>no42-org/twiki · now · gitricorder</title>");
+    expect(html).toContain(
+      '<body><a class="skip" href="#list">skip to list</a>' +
+        NAV +
+        '<main id="main"><nav class="crumb" aria-label="breadcrumb">',
+    );
+    // Nowhere in the body, not only in the primary nav. The style block
+    // names the attribute in a selector, so the head is excluded.
+    expect(html.slice(html.indexOf("<body>"))).not.toContain("aria-current");
+    // The six sections are the list the skip link lands on.
+    expect(html).toContain(
+      '</header><section id="list" aria-label="repository sections"><h2 id="security">',
+    );
+    expect(html).toContain('</section></main><footer class="policy-note">');
+    // The rendered-at time is in the nav only.
+    expect(html.match(/<time /g)).toHaveLength(1);
+    expect(html).not.toContain("· rendered");
+  });
+
+  it("carries the tier the chip shows, quiet included", async () => {
+    const html = await (await app().request("/repo/no42-org/twiki")).text();
+    expect(html).toContain(
+      "<title>no42-org/twiki · quiet · gitricorder</title>",
+    );
+    expect(html).toContain('<span class="tier quiet">');
   });
 
   it("finds a watched repository whatever casing the reader types", async () => {

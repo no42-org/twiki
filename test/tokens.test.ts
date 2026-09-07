@@ -17,6 +17,7 @@ import {
   DOCUMENTED_MIN,
   LIGHT,
   luminance,
+  SPACE,
   TEXT_PAIRS,
   TOKEN_STYLE,
 } from "../src/tricorder/web/tokens.js";
@@ -239,6 +240,48 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
     expect(rule(".stalled")).toContain("color: var(--critical)");
     // A running lane in amber would train the reader to ignore amber.
     expect(rule(".running")).toContain("color: var(--muted)");
+  });
+
+  it("sticks the primary nav on phones only, with the scroll offset on html and none on headings", () => {
+    // DESIGN.md Layout: the bar sticks under 640px and `html` carries its
+    // height as scroll-padding. Nothing can measure the bar without script,
+    // so the phone bar is made deterministic instead: the rendered-at time
+    // takes a row of its own, every row is at least nav-height tall, and
+    // the offset is twice that. No rule at desktop width, and headings
+    // carry no `scroll-margin-top`, which would add to the offset.
+    const { navHeight, gutter } = SPACE;
+    expect(STYLE).toContain(
+      `@media (max-width: 639px) { nav.primary { position: sticky; top: 0; z-index: 1; margin: 0 -${gutter}; padding: 0 ${gutter}; } .rendered { flex-basis: 100%; } html { scroll-padding-top: calc(2 * ${navHeight}); } }`,
+    );
+    expect(STYLE).not.toMatch(/max-width: 359px/);
+    expect(rule("nav.primary")).not.toContain("position");
+    expect(rule("nav.primary")).not.toContain("line-height");
+    expect(rule("nav.primary")).toContain(`min-height: ${navHeight}`);
+    expect(rule("nav.primary")).toContain("align-items: center");
+    expect(rule("nav.primary")).toContain("flex-wrap: wrap");
+    expect(rule("nav.primary")).toContain("background: var(--surface)");
+    expect(rule("nav.primary")).toContain("display: flex");
+    expect(rule(".rendered")).toContain("margin-left: auto");
+    expect(rule("nav.primary a[aria-current]")).toContain(
+      "border-bottom: 2px solid var(--link)",
+    );
+    expect(STYLE).not.toMatch(/scroll-margin-top/);
+  });
+
+  it("hides a skip link until it is focused, then shows it top-left on the surface", () => {
+    expect(rule(".skip")).toContain("position: absolute");
+    expect(rule(".skip")).toContain("width: 1px");
+    expect(rule(".skip")).toContain("clip: rect(0 0 0 0)");
+    expect(rule(".skip:focus")).toContain("width: auto");
+    expect(rule(".skip:focus")).toContain("clip: auto");
+    expect(rule(".skip:focus")).toContain("background: var(--surface)");
+    // Inset by the gutter, so the focus ring is not clipped at the edge.
+    expect(rule(".skip:focus")).toContain(`left: ${SPACE.gutter}`);
+    // Above the sticky nav's `z-index: 1`, or the bar would cover the link
+    // the moment it appears.
+    expect(rule(".skip:focus")).toContain("z-index: 2");
+    // The focus ring is the global one; nothing here removes it.
+    expect(rule(".skip:focus")).not.toContain("outline");
   });
 
   it("keeps a space between a review link and its not-watched badge", async () => {

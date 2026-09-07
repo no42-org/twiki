@@ -14,7 +14,7 @@ import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
 import type { UpdatePrObservation } from "../src/tricorder/collect/update-prs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
-import { makeAlert } from "./fakes.js";
+import { makeAlert, primaryNav } from "./fakes.js";
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 const SWEEP = { cadenceMs: 15 * 60_000 };
@@ -1019,13 +1019,48 @@ describe("the queue page", () => {
     expect(first, "critical leads under the custom bands").toBeLessThan(second);
   });
 
-  it("links the two pages to each other", async () => {
+  // Story 1.8 (#129): one primary nav on every page, marking the page the
+  // reader is on, with the rendered-at time as text. Asserted whole.
+  const primary = (current: "overview" | "queue") =>
+    primaryNav(current, "2026-08-17T12:00:00.000Z");
+
+  it("links the pages to each other and marks the current one", async () => {
     const queue = await (await app().request("/queue")).text();
     const home = await (await app().request("/")).text();
-    const nav =
-      '<nav><a href="/">repositories</a><a href="/queue">queue</a><a href="/reviews">reviews</a></nav>';
-    expect(queue).toContain(nav);
-    expect(home).toContain(nav);
+    expect(queue).toContain(primary("queue"));
+    expect(home).toContain(primary("overview"));
+  });
+
+  it("leads with one skip link to the list, then the nav, then the landmarks", async () => {
+    const html = await (await app().request("/queue")).text();
+    expect(html).toContain(
+      '<body><a class="skip" href="#list">skip to list</a>' +
+        primary("queue") +
+        '<main id="main">',
+    );
+    // A named region, so the skip link lands on something announced.
+    expect(html).toContain('<section id="list" aria-label="queue">');
+    expect(html).toContain('</main><footer class="policy-note">');
+    // The rendered-at time is in the nav only.
+    expect(html.match(/<time /g)).toHaveLength(1);
+    expect(html).not.toContain("· rendered");
+  });
+
+  it.each([
+    ["/queue", "queue · gitricorder"],
+    ["/queue?topic=dependencies", "queue · dependencies · gitricorder"],
+    ["/queue?repo=no42-org%2Ftwiki", "queue · no42-org/twiki · gitricorder"],
+    [
+      "/queue?topic=dependencies&repo=no42-org%2Ftwiki",
+      "queue · dependencies · no42-org/twiki · gitricorder",
+    ],
+    // An unknown value renders the no-matches state, so the title names no
+    // filter, not even the half it understood.
+    ["/queue?topic=foo", "queue · gitricorder"],
+    ["/queue?topic=foo&repo=no42-org%2Ftwiki", "queue · gitricorder"],
+  ])("%s carries the title %s", async (path, title) => {
+    const html = await (await app().request(path)).text();
+    expect(html).toContain(`<title>${title}</title>`);
   });
 
   // Story 1.5 (AD-39): the filter lives in the URL. The bar, the sentence
@@ -1156,7 +1191,7 @@ describe("the queue page", () => {
     // The list landmark is there with nothing in it but the sentence, so a
     // skip link still has somewhere to go.
     expect(html).toContain(
-      '<section id="list"><p class="filter-state">No foo items open. <a href="/queue">Clear filter.</a></p></section>',
+      '<section id="list" aria-label="queue"><p class="filter-state">No foo items open. <a href="/queue">Clear filter.</a></p></section>',
     );
     expect(html).not.toContain("<table>");
     expect(html).not.toContain("Nothing needs attention");
@@ -1258,7 +1293,7 @@ describe("the queue page", () => {
 
     expect(html).toContain("0 open alerts · 0 update PRs · 0 untriaged issues");
     expect(html).toContain(
-      '<section id="list"><p class="none">Nothing needs attention in watched repositories.</p></section><h2>no longer watched</h2>',
+      '<section id="list" aria-label="queue"><p class="none">Nothing needs attention in watched repositories.</p></section><h2>no longer watched</h2>',
     );
     expect(html).not.toContain("Nothing needs attention.</p>");
   });
@@ -1323,7 +1358,7 @@ describe("the queue page", () => {
     const html = await (await app().request("/queue")).text();
     expect(html).toContain(bar("all"));
     expect(html).toContain(
-      '<section id="list"><p class="none">Nothing needs attention.</p></section>',
+      '<section id="list" aria-label="queue"><p class="none">Nothing needs attention.</p></section>',
     );
     expect(html).not.toContain('class="filter-state"');
   });

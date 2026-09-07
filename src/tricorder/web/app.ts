@@ -125,7 +125,10 @@ export function createApp(deps: AppDeps): Hono {
     );
     c.header("Cache-Control", "no-store");
     if (!repo) {
-      const body = UnknownRepoPage({ slug: `${owner}/${name}` });
+      const body = UnknownRepoPage({
+        slug: `${owner}/${name}`,
+        generatedAt: now.toISOString(),
+      });
       return c.html(`<!DOCTYPE html>${body}`, 404);
     }
     const view = buildRepoView(deps.store, repo, now, {
