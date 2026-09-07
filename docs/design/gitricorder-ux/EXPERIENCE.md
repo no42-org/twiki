@@ -1,6 +1,6 @@
 ---
 name: gitricorder
-version: 1.0.0
+version: 1.1.0
 status: final
 sources:
   - live deployment https://twiki.app.labmonkeys.space/ (inspected 2026-09-07)
@@ -22,7 +22,8 @@ For the architect and story writers. Everything not listed here is unchanged fro
 
 - The repositories page becomes an overview: six topic tiles, repos ranked into `now`, `soon` and `quiet` tiers, quiet repos collapsed into one block, a tier legend.
 - The queue gains topic and repo filters as query parameters.
-- Repositories are ranked into tiers as buckets over the existing rank chain. The CI rule needs the repository's default branch, which is not stored today.
+- Repositories are ranked into tiers as buckets over the existing rank chain. The CI rule reads the repository's default branch from `repos.yaml`.
+- gitricorder sends one Matrix message per item that enters `now`, linking to the repo page. twiki's digest links to the repo page as well.
 - CI failures become a queue kind. Workflow runs are already collected and shown on the repo page, so this is a queue and rank-chain change only.
 - Code scanning and secret scanning alerts become queue kinds. Both have subject types but no collector; each needs a lane and a rank-chain term.
 - Plain pull requests become a queue kind. They have no subject type and no collector.
@@ -68,14 +69,14 @@ Tiers are not a second ranking, so the overview and the queue always agree on or
 
 | Tier | Meaning | Bucket over the chain |
 |---|---|---|
-| `now` | Act today | The worst item is KEV-listed, or its EPSS is in the top band (0.5 by default), or it is a kind the chain places above that cut: a secret scanning alert, or a failed or stalled workflow run on the default branch |
-| `soon` | Act this week | The worst item carries a known chain signal below that cut: an alert in a lower EPSS band or with KEV unknown, a stuck dependency-update PR, a review request waiting longer than the review budget, or a failed workflow run on another branch |
-| `quiet` | Nothing pressing | Every open item ranks all-n/a (untriaged issues), or nothing is open |
+| `now` | Act today | Any open item is KEV-listed, or its EPSS is at or above the configured cut (10% by default), or it is a kind the chain places above that cut: a secret scanning alert, or a failed or hung workflow run on the default branch |
+| `soon` | Act this week | Any open item carries a known or unknown chain signal below that cut: an alert in a lower EPSS band or with KEV unknown, a stuck dependency-update PR, a pull request whose own checks failed or hung, or a review request on a pull request older than the review budget (3 days by default, measured from the pull request's creation) |
+| `quiet` | Nothing pressing | Every open item ranks all-n/a (untriaged issues, pull requests whose checks are not observed), or nothing is open. A failed workflow run on a branch other than the default never affects a tier; it shows on the repo page only. |
 
 Severity is the third chain term and only breaks ties within an EPSS band, so a critical alert with a low EPSS is `soon`, not `now`.
 A stale KEV catalogue ranks KEV as unknown, so a repository held in `now` by KEV alone drops to `soon`, and the rationale says why.
-`[ASSUMPTION]` If severity should outrank EPSS, that is a change to the chain in `src/core/rank.ts`, not to this table. Decide in #112.
-`[ASSUMPTION]` Secret scanning alerts, code scanning alerts, plain pull requests and workflow runs are not chain inputs today. Each needs a chain term; the bucket above states where the spec wants them to land. The review budget is unspecified; suggest 3 days.
+A repository's tier is the highest tier over its open items, so one `now` item is enough. Severity does not outrank EPSS; decided in #112 on live EPSS data, see `ARCHITECTURE-SPINE.md` AD-29.
+Secret scanning alerts, code scanning alerts, plain pull requests and workflow runs are not chain inputs today. `ARCHITECTURE-SPINE.md` AD-30 and AD-31 fix where each lands.
 
 ### Overview ordering
 
@@ -101,7 +102,7 @@ Used identically in tiles, query parameters, repo-page section titles and queue 
 | Topic | `topic=` | Contains |
 |---|---|---|
 | Security | `security` | Dependabot alerts, code scanning alerts, secret scanning alerts |
-| CI | `ci` | Failed or stalled workflow runs on the default branch |
+| CI | `ci` | Failed or hung workflow runs on the default branch |
 | Dependencies | `dependencies` | Dependency-update pull requests (Dependabot, Renovate) |
 | Pull requests | `pulls` | Open pull requests that are not dependency updates |
 | Issues | `issues` | Untriaged issues |
@@ -172,7 +173,7 @@ Behavioral. Visual specs live in `DESIGN.md` Components under the same names, in
 | Rows without an attesting sweep | Repo page section | Rows are shown with their own stale badges under a `warn` attestation note: `N collected earlier; the latest sweep did not confirm them` (existing sentence). |
 | KEV catalogue stale | Queue, Repo page Security | Existing subhead sentence retained: `KEV catalogue unavailable, so KEV status ranks as unknown`. Tier computation treats KEV as unknown; a repository held in `now` by KEV alone drops to `soon`. |
 | Lane failed or stalled | Overview | Topic tile for the affected topic gets a `warn` attestation line: `alerts sweep failed 3h ago; counts may be low`. |
-| Repo not covered for a topic | Overview row, Repo page | Count chip reads `not covered`; repo page section shows the reason as an attestation note. |
+| Repo not covered for a topic | Overview row, Repo page | Only the Security topic can be `not covered` (Dependabot, code scanning or secret scanning switched off). Count chip reads `not covered`; repo page section shows the reason as an attestation note. CI, Pull requests and Issues read `unconfirmed` or a count. |
 | Unknown repo | `/repo/…` | Existing 404 page. Adds a link back to overview. |
 | Repo outside allowlist with review request | Reviews | Existing `not watched` badge; slug is not a link to a repo page because there is none. |
 | Stale everything | Every page | Freshness badges go `stale`; no banner. Rendered-at line stays honest. |
@@ -244,7 +245,7 @@ Acting still happens on GitHub, so gitricorder on a phone must get the maintaine
 4. Indigo taps the item reference. GitHub opens in a new tab on the Dependabot alert page.
 5. **Climax:** after reading the advisory Indigo switches back to the gitricorder tab. It is still on the repo page, still scrolled to Security, and the CI section directly below shows the default branch is green. Nothing to rebuild, one PR to merge later. Indigo pockets the phone.
 
-Failure: the KEV catalogue is stale. KEV ranks as unknown and the alert's EPSS is 0.4%, so nothing known justifies `now`. The tab title and tier chip read `soon`, the Security header carries the existing sentence that KEV ranks as unknown, and the rationale reads `KEV status unknown, EPSS 0.4%, severity critical`.
+Failure: the KEV catalogue went stale after the message was sent. The message came from an earlier sweep when the repository was `now`. On this sweep KEV ranks as unknown and the alert's EPSS is 0.4%, so nothing known justifies `now`. The tab title and tier chip read `soon`, the Security header carries the existing sentence that KEV ranks as unknown, and the rationale reads `KEV status unknown, EPSS 0.4%, severity critical`.
 
 ### Flow 2: Weekly sweep on the desktop (Indigo, Monday 09:15, laptop, coffee)
 
