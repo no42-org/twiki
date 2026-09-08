@@ -3,8 +3,14 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { isDefaultBranchRef } from "../../core/branch.js";
 import { safeLog } from "../../core/log.js";
 import { redact } from "../../core/redact.js";
+import {
+  isBrokenVerdict,
+  type RunVerdict,
+  runVerdict,
+} from "../../core/run-verdict.js";
 import { actionsSubject, nodeSubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import {
@@ -39,6 +45,45 @@ export interface WorkflowRunObservation {
 }
 
 /**
+ * The workflow-run shape check, shared by this lane and by every page that
+ * reads the rows it writes (re-exported from `attention/payloads.ts`, where
+ * the other payload guards live).
+ *
+ * It lives HERE, beside the type it guards and the lane that writes it,
+ * because the lane reads stored rows through it and a collect lane may not
+ * import the attention directory: attention is the read side and depends on
+ * collect, never the other way round (AD-34).
+ *
+ * `conclusion` is legitimately null while a run is still going, which is a
+ * state the page shows rather than a defect. `workflowId` and `createdAt` are
+ * checked because the retention depends on both: the workflow id is half the
+ * bucket a row is superseded within, and the timestamp is what `runVerdict`
+ * reads to tell a hung run from a fresh one, and what the confirm pass
+ * compares against the page's window. A row that answered `undefined` for
+ * either would be filed into a bucket of its own and never superseded.
+ *
+ * The two nullable fields are checked inline rather than through the
+ * `stringOrNull` helper in `attention/payloads.ts`, for the same layering
+ * reason: importing it here is the edge this move exists to remove.
+ */
+export function readWorkflowRun(
+  payload: unknown,
+): WorkflowRunObservation | null {
+  const r = payload as WorkflowRunObservation | null | undefined;
+  if (!r || typeof r !== "object") return null;
+  if (typeof r.repo !== "string") return null;
+  if (typeof r.workflowId !== "number") return null;
+  if (typeof r.workflowName !== "string") return null;
+  if (typeof r.runNumber !== "number") return null;
+  if (typeof r.status !== "string") return null;
+  if (r.conclusion !== null && typeof r.conclusion !== "string") return null;
+  if (r.headBranch !== null && typeof r.headBranch !== "string") return null;
+  if (typeof r.htmlUrl !== "string") return null;
+  if (typeof r.createdAt !== "string") return null;
+  return r;
+}
+
+/**
  * Per-repository confirmation: this repository was swept, and this is what
  * it had. Written for every repository the sweep actually reached.
  *
@@ -51,9 +96,11 @@ export interface WorkflowRunObservation {
 export interface ActionsRepoObservation {
   repo: string;
   /**
-   * Workflows seen, or NULL when the sweep reached this repository but
-   * could not vouch for what it found - the read threw, or its payloads did
-   * not map.
+   * Workflows RETAINED for this repository - counted once per workflow, not
+   * once per row, because a workflow with a default-branch run and a
+   * pull-request run keeps two rows and is still one workflow. NULL when the
+   * sweep reached this repository but could not vouch for what it found -
+   * the read threw, or its payloads did not map.
    *
    * Null rather than zero, and written rather than omitted, because the two
    * halves solve different problems. Zero would be a confident zero stated
@@ -65,6 +112,15 @@ export interface ActionsRepoObservation {
    * exists to prevent, moved from a fixed prefix to a failing one.
    */
   workflows: number | null;
+  /**
+   * Retained DEFAULT-BRANCH rows whose verdict is `failed` or `hung`. Null
+   * beside a null `workflows`, for the same reason.
+   *
+   * A failure on any other branch is deliberately not counted: this number
+   * exists to say whether main is broken, and folding a failing feature
+   * branch into it would make a healthy repository read red. Nothing renders
+   * it yet; Story 2.3 decides where a failing count belongs.
+   */
   failing: number | null;
 }
 
@@ -72,6 +128,24 @@ export interface ActionsDeps {
   github: GitHubReadPort;
   store: StorePort;
   watchedIn: (installation: string) => readonly RepoRef[];
+  /**
+   * The configured default branch of a repository, which in production is
+   * `resolveDefaultBranch` bound to the loaded config (AD-33). Taken as a
+   * function rather than as the config so the lane keeps depending on
+   * nothing it could write through, exactly as doctor does.
+   *
+   * Required, with no default. A default of `main` would make dropping the
+   * binding at the wiring site compile and pass, and then file every
+   * `master` repository's runs into the wrong bucket - silently, because
+   * both buckets look plausible from the outside.
+   */
+  defaultBranchOf: (repo: RepoRef) => string;
+  /**
+   * How long a run may sit unfinished before it counts as hung. Bound at the
+   * wiring site to twice this lane's cadence, so one missed sweep is not yet
+   * evidence of a hang.
+   */
+  hungAfterMs: number;
   now: () => string;
   log: (msg: string) => void;
 }
@@ -108,23 +182,120 @@ export interface ActionsResult {
 }
 
 /**
- * The newest run per workflow, from one newest-first page.
+ * The retention key: a repository's rows are replaced only within their own
+ * bucket, and a bucket is one workflow on one side of the default-branch
+ * line.
+ *
+ * Not the subject key. Rows stay keyed by node id (AD-22); this is what the
+ * lane compares to decide which stored row a freshly observed one REPLACES.
+ *
+ * The repository is NOT in the key, and the caller is what makes that safe:
+ * `storedByRepo` groups rows by repository slug first, so every comparison
+ * happens inside one repository's list and two repositories that share a
+ * workflow id are never compared. A caller that compared these keys across
+ * repositories would supersede rows in one repository from runs observed in
+ * another - so if you need that, put the slug in the key rather than
+ * assuming this one already carries it.
+ */
+export function retentionKey(
+  workflowId: number,
+  onDefaultBranch: boolean,
+): string {
+  return `${workflowId}:${onDefaultBranch ? "default" : "other"}`;
+}
+
+/** A run the lane means to keep, with the bucket it belongs to. */
+export interface RetainedRun {
+  run: RawWorkflowRun;
+  onDefaultBranch: boolean;
+}
+
+/**
+ * The newest run per workflow PER BUCKET, from one newest-first page: the
+ * newest run on the configured default branch, and the newest on anything
+ * else.
+ *
+ * Two rows rather than one because a single row per workflow makes a busy
+ * repository forget that main is broken. Any pull-request run is newer than
+ * the failed push that broke main within minutes, so a repository with an
+ * active branch superseded its own red main and the store held a green
+ * feature-branch run instead. Splitting the page the lane ALREADY fetches
+ * costs no second call.
  *
  * The page is a 100-run window, so a workflow whose last run predates the
  * window simply does not appear; that is a fact about the window, not about
  * the workflow, and nothing downstream may treat its absence as "gone".
  */
-export function latestPerWorkflow(
+export function latestPerBucket(
   runs: readonly RawWorkflowRun[],
-): RawWorkflowRun[] {
-  const seen = new Set<number>();
-  const latest: RawWorkflowRun[] = [];
+  defaultBranch: string,
+): RetainedRun[] {
+  const seen = new Set<string>();
+  const latest: RetainedRun[] = [];
   for (const run of runs) {
-    if (seen.has(run.workflowId)) continue;
-    seen.add(run.workflowId);
-    latest.push(run);
+    // Through isDefaultBranchRef, never a bare === : the lane and the rank
+    // chain must decide "is this a build of main" the same way (AD-33).
+    const onDefaultBranch = isDefaultBranchRef(run.headBranch, defaultBranch);
+    const key = retentionKey(run.workflowId, onDefaultBranch);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    latest.push({ run, onDefaultBranch });
   }
   return latest;
+}
+
+/** A row the sweep ends up holding for one repository, judged. */
+interface RetainedRow {
+  workflowId: number;
+  onDefaultBranch: boolean;
+  verdict: RunVerdict;
+}
+
+/**
+ * Distinct workflows among the rows retained, not the row count: two buckets
+ * of one workflow are one workflow, and reporting two would put a count on
+ * the page that nothing on it explains.
+ */
+function countWorkflows(rows: readonly RetainedRow[]): number {
+  return new Set(rows.map((r) => r.workflowId)).size;
+}
+
+/**
+ * The creation time of the oldest run on a page, or null when the page holds
+ * no run this build could read a time from.
+ *
+ * Computed rather than taken from the last element: GitHub answers
+ * newest-first and this lane leans on that for selection, but the confirm
+ * pass below decides whether a stored row may be badged fresh, and leaning on
+ * an ordering GitHub only documents would make that a guess.
+ */
+function oldestCreatedAt(runs: readonly RawWorkflowRun[]): number | null {
+  let oldest: number | null = null;
+  for (const run of runs) {
+    const at = Date.parse(run.createdAt);
+    if (Number.isNaN(at)) continue;
+    if (oldest === null || at < oldest) oldest = at;
+  }
+  return oldest;
+}
+
+/**
+ * Whether a stored row falls inside the window a page is evidence about.
+ *
+ * False for an empty page and for a row whose own timestamp will not parse:
+ * both are "we cannot tell", and the caller answers that by leaving the row
+ * to age rather than by vouching for it.
+ */
+function coveredBy(createdAt: string, windowFrom: number | null): boolean {
+  if (windowFrom === null) return false;
+  const at = Date.parse(createdAt);
+  return !Number.isNaN(at) && at >= windowFrom;
+}
+
+/** Retained default-branch rows whose verdict says the build is broken. */
+function countFailing(rows: readonly RetainedRow[]): number {
+  return rows.filter((r) => r.onDefaultBranch && isBrokenVerdict(r.verdict))
+    .length;
 }
 
 export function normaliseRun(run: RawWorkflowRun): ObservationInput {
@@ -150,9 +321,16 @@ export function normaliseRun(run: RawWorkflowRun): ObservationInput {
  *
  * Tombstoning is by SUPERSESSION, not window absence (AD-23): a stored run
  * leaves current state only when a newer run of the same workflow in the
- * same repository was actually observed. A workflow absent from the 100-run
- * window is a fact about the window, and treating it as "gone" would
- * tombstone every dormant workflow's last known state.
+ * same repository ON THE SAME SIDE OF THE DEFAULT-BRANCH LINE was actually
+ * observed. A workflow absent from the 100-run window is a fact about the
+ * window, and treating it as "gone" would tombstone every dormant workflow's
+ * last known state.
+ *
+ * Two rows per workflow, not one, and the bucket is half the reason: keyed by
+ * workflow alone, a repository with an open pull request superseded its own
+ * failed default-branch run within minutes and the store forgot main was
+ * broken. Both rows come out of the one page this lane already fetches; there
+ * is no second call and no branch query parameter.
  */
 export interface SweepBound {
   /**
@@ -184,32 +362,37 @@ export async function collectWorkflowRuns(
   const log = safeLog(deps.log);
 
   try {
+    // Captured rather than read twice: this is the sweep's own clock, and it
+    // is what every verdict below is judged against, so one sweep cannot
+    // call the same run fresh for one repository and hung for the next.
+    const startedAt = deps.now();
     run = deps.store.beginRun({
       lane: LANE,
       installation,
       scope,
-      startedAt: deps.now(),
+      startedAt,
     });
+    const sweptAt = new Date(startedAt);
 
     // Stored present runs for this installation, grouped by repo slug, read
     // once. Node keys carry no owner, so the payload answers (AD-23).
+    //
+    // Through the same guard the pages read these rows with, so a row the
+    // lane retains cannot be one the page later refuses: `readWorkflowRun`
+    // validates the head branch this bucketing depends on and the timestamp
+    // the verdict depends on.
     const storedByRepo = new Map<
       string,
-      { key: string; workflowId: number }[]
+      { key: string; payload: WorkflowRunObservation }[]
     >();
-    const storedFailing = new Map<string, number>();
     for (const c of deps.store.currentByType("workflow_run")) {
       if (c.state !== "present") continue;
-      const p = c.payload as WorkflowRunObservation | undefined;
-      if (typeof p?.repo !== "string" || typeof p.workflowId !== "number") {
-        continue;
-      }
-      const list = storedByRepo.get(p.repo) ?? [];
-      list.push({ key: c.subject.key, workflowId: p.workflowId });
-      storedByRepo.set(p.repo, list);
-      if (p.conclusion === "failure") {
-        storedFailing.set(p.repo, (storedFailing.get(p.repo) ?? 0) + 1);
-      }
+      const p = readWorkflowRun(c.payload);
+      if (p === null) continue;
+      const slug = p.repo.toLowerCase();
+      const list = storedByRepo.get(slug) ?? [];
+      list.push({ key: c.subject.key, payload: p });
+      storedByRepo.set(slug, list);
     }
 
     const observations: ObservationInput[] = [];
@@ -280,6 +463,28 @@ export async function collectWorkflowRuns(
       const slug = `${repo.owner}/${repo.name}`.toLowerCase();
       const url = workflowRunsUrl(repo);
       try {
+        // Inside the try, because the resolver is the caller's: a throw here
+        // must degrade this one repository like a failed read, not end the
+        // sweep for the ones behind it.
+        //
+        // Declared, never stored (AD-10): the lane reads what repos.yaml
+        // says this repository calls its default branch and writes it
+        // nowhere.
+        const defaultBranch = deps.defaultBranchOf(repo);
+        // The stored rows, sorted into their buckets and judged. An old
+        // store reclassifies here and nowhere else: every row already
+        // carries the head branch this reads, so one sweep is enough and no
+        // row is lost for having been written before the buckets existed.
+        const stored = (storedByRepo.get(slug) ?? []).map((s) => ({
+          key: s.key,
+          workflowId: s.payload.workflowId,
+          createdAt: s.payload.createdAt,
+          onDefaultBranch: isDefaultBranchRef(
+            s.payload.headBranch,
+            defaultBranch,
+          ),
+          verdict: runVerdict(s.payload, sweptAt, deps.hungAfterMs),
+        }));
         const page = await deps.github.listRepoWorkflowRuns(
           repo,
           deps.store.loadValidator(installation, url),
@@ -290,7 +495,6 @@ export async function collectWorkflowRuns(
           // stored latest runs are still the latest. Confirm, free.
           notModified++;
           reached++;
-          const stored = storedByRepo.get(slug) ?? [];
           for (const s of stored) {
             confirmed.push({ type: "workflow_run", key: s.key });
           }
@@ -302,8 +506,8 @@ export async function collectWorkflowRuns(
             subject: actionsSubject(repo),
             payload: {
               repo: slug,
-              workflows: stored.length,
-              failing: storedFailing.get(slug) ?? 0,
+              workflows: countWorkflows(stored),
+              failing: countFailing(stored),
             } satisfies ActionsRepoObservation,
           });
           if (page.validator) {
@@ -314,19 +518,62 @@ export async function collectWorkflowRuns(
 
         fetched++;
         unreadable += page.unreadable;
-        const latest = latestPerWorkflow(page.runs);
-        observations.push(...latest.map(normaliseRun));
+        const latest = latestPerBucket(page.runs, defaultBranch);
+        observations.push(...latest.map((l) => normaliseRun(l.run)));
 
-        // Supersession: a stored run of a workflow we just observed a
-        // DIFFERENT latest run for has been replaced. Same-key rows are
-        // updates, not replacements, and stay.
-        const latestKeys = new Set(latest.map((r) => r.nodeId));
-        const observedWorkflows = new Set(latest.map((r) => r.workflowId));
+        // Supersession, per bucket: a stored run is replaced only by a
+        // DIFFERENT run of the same workflow on the same side of the
+        // default-branch line. Same-key rows are updates, not replacements,
+        // and stay. Keyed by workflow alone - as it was - a pull-request run
+        // displaced the default-branch row it has nothing to say about.
+        const latestKeys = new Set(latest.map((l) => l.run.nodeId));
+        const observedBuckets = new Set(
+          latest.map((l) => retentionKey(l.run.workflowId, l.onDefaultBranch)),
+        );
+
+        // The window this page is evidence about: everything from the oldest
+        // run on it forward. Null for an empty page, which is evidence about
+        // nothing at all.
+        const windowFrom = oldestCreatedAt(page.runs);
+
+        // What this repository holds after the sweep AND this sweep can
+        // vouch for: the rows just observed, plus the carried rows the page
+        // was actually able to see the absence of.
+        const retained: RetainedRow[] = latest.map((l) => ({
+          workflowId: l.run.workflowId,
+          onDefaultBranch: l.onDefaultBranch,
+          verdict: runVerdict(l.run, sweptAt, deps.hungAfterMs),
+        }));
+
+        // Both the tombstones and the touch are gated on a COMPLETE page: an
+        // unreadable payload might have been the newer run of a bucket, so
+        // neither superseding nor vouching for what is left is honest. A
+        // partial page changes nothing.
         if (page.unreadable === 0) {
-          for (const s of storedByRepo.get(slug) ?? []) {
-            if (observedWorkflows.has(s.workflowId) && !latestKeys.has(s.key)) {
+          for (const s of stored) {
+            // Rewritten by the observation above, which advances its own
+            // freshness. Touching it again would be harmless and confusing.
+            if (latestKeys.has(s.key)) continue;
+            if (
+              observedBuckets.has(retentionKey(s.workflowId, s.onDefaultBranch))
+            ) {
               gone.push({ type: "workflow_run", key: s.key });
+              continue;
             }
+            // Its bucket had no run on this page. That is proof the row is
+            // still the latest in its bucket ONLY where the page can see -
+            // from the oldest run on it forward. A row older than that sits
+            // outside the window, and with more than a hundred newer runs a
+            // newer default-branch run can sit outside it too: touching
+            // freshness there would badge a red main as current long after
+            // somebody fixed it, on a page that never saw the fix.
+            //
+            // So a row the window cannot cover is left entirely alone. It
+            // stays present, it ages into stale, and the page says so - the
+            // honest reading of "we did not look far enough back".
+            if (!coveredBy(s.createdAt, windowFrom)) continue;
+            confirmed.push({ type: "workflow_run", key: s.key });
+            retained.push(s);
           }
         }
 
@@ -341,9 +588,8 @@ export async function collectWorkflowRuns(
             page.unreadable === 0
               ? {
                   repo: slug,
-                  workflows: latest.length,
-                  failing: latest.filter((r) => r.conclusion === "failure")
-                    .length,
+                  workflows: countWorkflows(retained),
+                  failing: countFailing(retained),
                 }
               : { repo: slug, workflows: null, failing: null },
         });

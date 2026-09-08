@@ -6,6 +6,7 @@
 /* biome-ignore-all lint/a11y/noRedundantRoles: the table roles are implied by the elements at desktop width only; the phone cards restyle them to `display: block`, and a browser then drops the implied role. Stating it survives that (EXPERIENCE.md Accessibility Floor). */
 
 import type { Child, FC, PropsWithChildren } from "hono/jsx";
+import { isBrokenVerdict } from "../../core/run-verdict.js";
 import { safeUrl } from "../../core/safe-url.js";
 import { foldSlug } from "../../core/slug.js";
 import type { Tier } from "../../core/tier.js";
@@ -1101,7 +1102,10 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
             </thead>
             <tbody role="rowgroup">
               {view.runs.map((r) => (
-                <tr key={`run-${r.workflowName}-${r.runNumber}`} role="row">
+                // Keyed by the run's node id: two workflows may share a
+                // display name and a re-run shares its run number, so the
+                // pair collides exactly where the sort used to tie.
+                <tr key={`run-${r.key}`} role="row">
                   <Td label="Workflow">
                     <ExternalLink href={r.htmlUrl}>
                       {r.workflowName}
@@ -1109,7 +1113,13 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
                     <span class="why">#{r.runNumber}</span>
                   </Td>
                   <Td
-                    class={r.conclusion === "failure" ? "crit" : undefined}
+                    // From the verdict, not from `conclusion === "failure"`:
+                    // a `timed_out` or `startup_failure` run is a broken
+                    // build and so is one that never finished, and the lane
+                    // already counts all three. Reading the raw word here
+                    // let the page render in normal weight what the lane had
+                    // counted as failing, on the same rows of the same page.
+                    class={isBrokenVerdict(r.verdict) ? "crit" : undefined}
                     label="Result"
                     show
                   >

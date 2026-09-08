@@ -9,10 +9,12 @@ const HEADS_PREFIX = "refs/heads/";
 /**
  * Whether a ref names the repository's default branch.
  *
- * Nothing calls this yet outside its test. It is in core, and it is here now,
- * so that the actions lane and the rank chain that will decide "is this a
- * build of main" both decide it the same way (AD-33) rather than each growing
- * its own comparison.
+ * The one comparison, so that everything deciding "is this a build of main"
+ * decides it the same way (AD-33) rather than each growing its own. Three
+ * callers today: the actions lane sorts a fetched page into its two buckets
+ * with it, sorts its stored rows into the same buckets with it, and the
+ * per-repository view orders its run list with it. Story 2.3's rank chain is
+ * the next.
  *
  * GitHub reports a branch in more than one shape - `main` on a workflow run's
  * `head_branch`, `refs/heads/main` on a ref - so the one prefix is stripped

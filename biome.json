@@ -212,6 +212,46 @@
     },
     {
       "includes": [
+        "src/tricorder/collect/**/*.ts",
+        "src/tricorder/collect/**/*.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/twiki/**"],
+                    "message": "AD-5: this directory may not import a feature directory. Move shared code down into a leaf."
+                  },
+                  {
+                    "group": [
+                      "./index.js",
+                      "../index.js",
+                      "../../index.js",
+                      "../../../index.js",
+                      "./tricorder.js",
+                      "../tricorder.js",
+                      "../../tricorder.js",
+                      "../../../tricorder.js"
+                    ],
+                    "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
+                  },
+                  {
+                    "group": ["**/attention/**", "**/web/**"],
+                    "message": "AD-34: attention and web are the READ side and depend on collect. A collect lane that imports them inverts the direction; move the shared code down into the lane, or into core."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": [
         "src/tricorder/attention/**/*.ts",
         "src/tricorder/attention/**/*.tsx"
       ],

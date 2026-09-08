@@ -3,9 +3,15 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { isDefaultBranchRef } from "../../core/branch.js";
 import type { CoverageState } from "../../core/coverage.js";
 import { coverageReason, isCovered } from "../../core/coverage.js";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
+import {
+  DEFAULT_HUNG_AFTER_MS,
+  type RunVerdict,
+  runVerdict,
+} from "../../core/run-verdict.js";
 import { safeUrl } from "../../core/safe-url.js";
 import { watchKey } from "../../core/slug.js";
 import {
@@ -13,7 +19,7 @@ import {
   defaultCutRank,
   type Tier,
 } from "../../core/tier.js";
-import type { RepoRef } from "../../core/types.js";
+import { DEFAULT_POLICY, type RepoRef } from "../../core/types.js";
 import {
   laneAttestation,
   type SectionState,
@@ -90,10 +96,25 @@ export interface RepoIssueRow {
 }
 
 export interface RepoRunRow {
+  /**
+   * The row's subject key, the run's GraphQL node id (AD-22). Carried so the
+   * sort has a final tiebreak and the renderer a unique React key: two
+   * workflows may share a display name, and re-runs of one workflow share a
+   * run number, so neither of those is unique on its own.
+   */
+  key: string;
   workflowName: string;
   runNumber: number;
   status: string;
   conclusion: string | null;
+  /**
+   * What the run means, from the one function that decides it, so the page
+   * and the lane's `failing` counter cannot disagree about the same row. The
+   * cell reads this rather than `conclusion`: a `timed_out` or
+   * `startup_failure` run is a broken build, and so is one that never
+   * finished, and none of the three says `failure`.
+   */
+  verdict: RunVerdict;
   headBranch: string | null;
   htmlUrl: string | null;
   freshness: Freshness;
@@ -114,6 +135,34 @@ export interface RepoReviewRow {
   waiting: string;
   freshness: Freshness;
   age: string;
+}
+
+/**
+ * The run list's order, as a named total comparator.
+ *
+ * Named and exported so it can be asserted directly. Its last term is
+ * unobservable through `buildRepoView` alone - `currentByType` already
+ * returns rows in subject-key order and `Array.sort` is stable, so the rows
+ * come out right whether or not the term is there - and a comparator
+ * documented as total must not depend on an invariant of the store to be so.
+ *
+ * Workflow name first, then the default-branch row, because a failure on main
+ * is the one a reader came for; then the run number, newest first; then the
+ * subject key, which is what makes it total. Two workflows may share a
+ * display name (GitHub allows it) and a re-run shares its run number, so
+ * neither is unique on its own.
+ */
+export function compareRunRows(
+  a: RepoRunRow,
+  b: RepoRunRow,
+  onDefaultBranch: (row: RepoRunRow) => boolean,
+): number {
+  return (
+    a.workflowName.localeCompare(b.workflowName) ||
+    Number(onDefaultBranch(b)) - Number(onDefaultBranch(a)) ||
+    b.runNumber - a.runNumber ||
+    a.key.localeCompare(b.key)
+  );
 }
 
 export interface RepoView {
@@ -195,6 +244,26 @@ export interface RepoViewDeps {
   cutRank?: number;
   /** Days a review request may wait before the repository is at least soon. */
   reviewBudgetDays?: number;
+  /**
+   * How long a run may sit unfinished before this page calls it hung.
+   *
+   * Explicit rather than derived from a freshness policy, because the only
+   * policy this page reliably has is the ALERT lane's fifteen minutes, and a
+   * page that called a forty-minute run hung while the lane did not would be
+   * the disagreement the verdict exists to prevent. The wiring passes twice
+   * the Actions cadence, the same expression the lane's wiring uses.
+   */
+  hungAfterMs?: number;
+  /**
+   * What this repository calls its default branch, in production
+   * `resolveDefaultBranch` bound to the loaded config (AD-33). Only the run
+   * list reads it, and only to order rows: a wrong value here shuffles two
+   * rows, it does not change a verdict.
+   *
+   * Defaults to the same `main` an undeclared repository resolves to, so an
+   * unbound caller sorts by the commonest case rather than by nothing.
+   */
+  defaultBranch?: string;
 }
 
 /** Rows of one node-keyed type belonging to this repository. */
@@ -465,19 +534,28 @@ export function buildRepoView(
     slug,
     readWorkflowRun,
   );
+  const defaultBranch = deps.defaultBranch ?? DEFAULT_POLICY.defaultBranch;
+  const onDefaultBranch = (row: { headBranch: string | null }): boolean =>
+    isDefaultBranchRef(row.headBranch, defaultBranch);
   unattributable += runResult.unattributable;
+  const hungAfterMs = deps.hungAfterMs ?? DEFAULT_HUNG_AFTER_MS;
   const runs = runResult.rows
     .map(({ value, payload }) => ({
+      key: value.subject.key,
       workflowName: payload.workflowName,
       runNumber: payload.runNumber,
       status: payload.status,
       conclusion: payload.conclusion,
+      verdict: runVerdict(payload, now, hungAfterMs),
       headBranch: payload.headBranch,
       htmlUrl: safeUrl(payload.htmlUrl),
       freshness: freshness(value.verifiedAt, now, deps.policy),
       age: ageLabel(value.verifiedAt, now),
     }))
-    .sort((a, b) => a.workflowName.localeCompare(b.workflowName));
+    // Total by its own terms; see compareRunRows. A sort on the workflow name
+    // alone tied between the two rows the lane now retains per workflow, and
+    // left their order to whatever the store happened to return.
+    .sort((a, b) => compareRunRows(a, b, onDefaultBranch));
 
   return {
     slug,
