@@ -11,6 +11,13 @@
  * landed in the lane's catch AFTER finishRun had committed `ok`, so the lane
  * returned `failed` for a run whose row said ok, and a TRICORDER_ONCE cron
  * exit went non-zero on a collection that delivered everything.
+ *
+ * This is why every lane wraps its own logger even though `withLaneRun` wraps
+ * one for its own failure line. The two are not redundant, and deleting the
+ * lane's as duplication reopens the bug above: the wrapper's catch is where
+ * such a throw LANDS, so from there it is indistinguishable from a genuine
+ * failure. Only wrapping the call that throws keeps a committed run from
+ * being rewritten as failed.
  */
 export function safeLog(log: (msg: string) => void): (msg: string) => void {
   return (msg) => {

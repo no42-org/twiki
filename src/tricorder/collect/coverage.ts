@@ -5,12 +5,12 @@
 
 import type { CoverageState } from "../../core/coverage.js";
 import { safeLog } from "../../core/log.js";
-import { redact } from "../../core/redact.js";
 import { coverageSubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import { repoSlug } from "../../core/types.js";
 import type { GitHubReadPort } from "../../github/port.js";
-import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
+import type { ObservationInput, RunScope } from "../store/port.js";
+import { type LaneRunDeps, withLaneRun } from "./lifecycle.js";
 
 // The coverage lane (AD-28).
 //
@@ -32,12 +32,9 @@ export interface CoverageObservation {
   state: CoverageState;
 }
 
-export interface CoverageDeps {
+export interface CoverageDeps extends LaneRunDeps {
   github: GitHubReadPort;
-  store: StorePort;
   watchedIn: (installation: string) => readonly RepoRef[];
-  now: () => string;
-  log: (msg: string) => void;
 }
 
 export interface CoverageResult {
@@ -82,97 +79,73 @@ export async function collectCoverage(
   installation: string,
   scope: RunScope = "full",
 ): Promise<CoverageResult> {
-  let run: ReturnType<StorePort["beginRun"]> | null = null;
-  // A logger that throws after finishRun committed would land in the catch and
-  // rewrite a successful run as failed (AD-16). Same fix as the KEV lane.
   const log = safeLog(deps.log);
 
-  try {
-    run = deps.store.beginRun({
-      lane: LANE,
-      installation,
-      scope,
-      startedAt: deps.now(),
-    });
-
-    const watched = deps.watchedIn(installation);
-    // One call per 100 repositories, for the two states the listing carries.
-    const metaBySlug = new Map<
-      string,
-      { archived: boolean; disabled: boolean }
-    >();
-    for (const m of await deps.github.listOrgRepos(installation)) {
-      metaBySlug.set(repoSlug(m.repo).toLowerCase(), m);
-    }
-
-    const observations: ObservationInput[] = [];
-    let covered = 0;
-    let notCovered = 0;
-    let unknown = 0;
-
-    for (const repo of watched) {
-      const slug = repoSlug(repo).toLowerCase();
-      const meta = metaBySlug.get(slug);
-      // The probe is the only thing that can tell us the feature is off, so it
-      // is worth its call. Skipped when the cheap facts already settle it.
-      const probe =
-        meta?.archived || meta?.disabled
-          ? "unknown"
-          : await deps.github.probeDependabotAccess(repo);
-      const state = decideCoverage(meta, probe);
-
-      if (state === "covered") covered++;
-      else notCovered++;
-
-      if (state === "unknown") {
-        unknown++;
-        // Do not overwrite what we already knew with what we failed to learn.
-        // A rate-limited probe returns an unrecognised 403, and persisting that
-        // over a good `covered` would blank a correct alert count until the
-        // next successful run. The alert lane already refuses to write a
-        // confirmation it cannot back; this is the same rule.
-        if (deps.store.current(coverageSubject(repo)) !== null) continue;
+  return withLaneRun<CoverageResult>(
+    deps,
+    { lane: LANE, installation, scope, reach: "per-installation" },
+    { installation, outcome: "failed", covered: 0, notCovered: 0, unknown: 0 },
+    async (run) => {
+      const watched = deps.watchedIn(installation);
+      // One call per 100 repositories, for the two states the listing carries.
+      const metaBySlug = new Map<
+        string,
+        { archived: boolean; disabled: boolean }
+      >();
+      for (const m of await deps.github.listOrgRepos(installation)) {
+        metaBySlug.set(repoSlug(m.repo).toLowerCase(), m);
       }
 
-      const payload: CoverageObservation = { repo: slug, state };
-      observations.push({ subject: coverageSubject(repo), payload });
-    }
+      const observations: ObservationInput[] = [];
+      let covered = 0;
+      let notCovered = 0;
+      let unknown = 0;
 
-    deps.store.recordObservations(run, deps.now(), observations);
+      for (const repo of watched) {
+        const slug = repoSlug(repo).toLowerCase();
+        const meta = metaBySlug.get(slug);
+        // The probe is the only thing that can tell us the feature is off, so it
+        // is worth its call. Skipped when the cheap facts already settle it.
+        const probe =
+          meta?.archived || meta?.disabled
+            ? "unknown"
+            : await deps.github.probeDependabotAccess(repo);
+        const state = decideCoverage(meta, probe);
 
-    // An unrecognised probe answer means we do not know this repository's
-    // coverage, and a lane that reports `ok` while holding unknowns would let
-    // the page treat them as settled.
-    const outcome = unknown > 0 ? "partial" : "ok";
-    const detail =
-      unknown > 0
-        ? `${unknown} repositories returned an unrecognised answer`
-        : undefined;
-    deps.store.finishRun(run, outcome, deps.now(), detail);
+        if (state === "covered") covered++;
+        else notCovered++;
 
-    log(
-      `${LANE} ${installation}: ${covered} covered, ${notCovered} not covered` +
-        (unknown > 0 ? `, ${unknown} unknown` : ""),
-    );
-    return { installation, outcome, covered, notCovered, unknown };
-  } catch (err) {
-    // Redacted before it reaches either the log or collection_run.detail: a
-    // GitHub auth failure can quote the credential it rejected (AD-16).
-    const detail = redact(err instanceof Error ? err.message : String(err));
-    if (run) {
-      try {
-        deps.store.finishRun(run, "failed", deps.now(), detail);
-      } catch {
-        // The store is what failed. Nothing further to record.
+        if (state === "unknown") {
+          unknown++;
+          // Do not overwrite what we already knew with what we failed to learn.
+          // A rate-limited probe returns an unrecognised 403, and persisting that
+          // over a good `covered` would blank a correct alert count until the
+          // next successful run. The alert lane already refuses to write a
+          // confirmation it cannot back; this is the same rule.
+          if (deps.store.current(coverageSubject(repo)) !== null) continue;
+        }
+
+        const payload: CoverageObservation = { repo: slug, state };
+        observations.push({ subject: coverageSubject(repo), payload });
       }
-    }
-    log(`${LANE} ${installation}: failed, ${detail}`);
-    return {
-      installation,
-      outcome: "failed",
-      covered: 0,
-      notCovered: 0,
-      unknown: 0,
-    };
-  }
+
+      deps.store.recordObservations(run, deps.now(), observations);
+
+      // An unrecognised probe answer means we do not know this repository's
+      // coverage, and a lane that reports `ok` while holding unknowns would let
+      // the page treat them as settled.
+      const outcome = unknown > 0 ? "partial" : "ok";
+      const detail =
+        unknown > 0
+          ? `${unknown} repositories returned an unrecognised answer`
+          : undefined;
+      deps.store.finishRun(run, outcome, deps.now(), detail);
+
+      log(
+        `${LANE} ${installation}: ${covered} covered, ${notCovered} not covered` +
+          (unknown > 0 ? `, ${unknown} unknown` : ""),
+      );
+      return { installation, outcome, covered, notCovered, unknown };
+    },
+  );
 }

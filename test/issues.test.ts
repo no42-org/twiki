@@ -172,6 +172,12 @@ describe("the untriaged-issue lane (CAP-2)", () => {
     const r = await collectIssues(deps(), "no42-org", "full");
     expect(r.outcome).toBe("failed");
     expect(store.latestRuns(1)[0]?.outcome).toBe("failed");
+    // The mirror of the two global lanes: an installation-scoped lane names
+    // its installation, or the line cannot say which of thirteen orgs failed
+    // (AD-16).
+    expect(logs).toEqual([
+      "graphql-issues no42-org: failed, GraphQL upstream 502",
+    ]);
   });
 
   it("a throwing logger cannot fail the lane", async () => {

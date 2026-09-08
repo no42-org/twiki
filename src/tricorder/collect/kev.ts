@@ -4,10 +4,10 @@
  */
 
 import { safeLog } from "../../core/log.js";
-import { redact } from "../../core/redact.js";
 import { KEV_KEY, KEV_SUBJECT } from "../../core/subject.js";
 import type { EnrichmentPort } from "../../enrich/port.js";
-import type { RunScope, StorePort } from "../store/port.js";
+import type { RunScope } from "../store/port.js";
+import { type LaneRunDeps, withLaneRun } from "./lifecycle.js";
 
 // The KEV lane (AD-15). Daily, one public JSON, no GitHub involved.
 
@@ -34,11 +34,8 @@ export interface KevObservation {
   cveIds: readonly string[];
 }
 
-export interface KevDeps {
+export interface KevDeps extends LaneRunDeps {
   enrichment: EnrichmentPort;
-  store: StorePort;
-  now: () => string;
-  log: (msg: string) => void;
 }
 
 export interface KevResult {
@@ -73,126 +70,115 @@ export async function collectKev(
   deps: KevDeps,
   scope: RunScope = "full",
 ): Promise<KevResult> {
-  let run: ReturnType<StorePort["beginRun"]> | null = null;
-  // The logger cannot throw, so nothing after finishRun can reach the catch
-  // and rewrite a committed run as failed. This replaces a `finished` flag
-  // that guarded the same hazard less directly.
   const log = safeLog(deps.log);
 
-  try {
-    run = deps.store.beginRun({
+  return withLaneRun<KevResult>(
+    deps,
+    {
       lane: LANE,
       installation: KEV_INSTALLATION,
       scope,
-      startedAt: deps.now(),
-    });
-
-    // Conditional only while a stored catalogue exists to keep (AD-25). A 304
-    // confirms "what you have is current", which is only useful if we still
-    // have it: with no present subject the validator is a leftover, and
-    // honouring it would finish ok holding nothing.
-    const url = deps.enrichment.endpoint();
-    const prior = deps.store.current(KEV_SUBJECT);
-    const cached =
-      prior?.state === "present"
-        ? deps.store.loadValidator(KEV_INSTALLATION, url)
-        : null;
-
-    const outcome = await deps.enrichment.fetchKev(
-      cached ? { etag: cached.etag, lastModified: cached.lastModified } : null,
-    );
-
-    if (outcome.kind === "not_modified") {
-      // CISA's own statement that the stored catalogue is still current: the
-      // one condition under which advancing its verified_at is honest. This
-      // is NOT the freshness top-up that froze the catalogue before; that one
-      // touched on degraded fetches, this one only on a 304.
-      deps.store.touchVerified([KEV_SUBJECT], deps.now());
-      deps.store.saveValidator(
-        KEV_INSTALLATION,
-        url,
-        { ...outcome.validator, tokenGen: KEV_TOKEN_GEN },
-        deps.now(),
-      );
-      deps.store.finishRun(run, "ok", deps.now(), "not modified (304)");
-      log(`${LANE}: not modified, catalogue confirmed current`);
-      const kept = (prior?.payload as KevObservation | undefined)?.cveIds;
-      return {
-        outcome: "ok",
-        listed: Array.isArray(kept) ? kept.length : 0,
-        unreadable: 0,
-      };
-    }
-
-    const { catalogue } = outcome;
-    const { unreadable } = catalogue;
-
-    if (unreadable > 0) {
-      // Not stored, and deliberately not touched either. The prior keeps its
-      // own verified_at and ages out on schedule; topping it up is what made
-      // the freeze invisible last time. The stored validator is also left
-      // alone: it still matches the last body we vouched for, and the feed
-      // has demonstrably changed since, so the next conditional fetch gets a
-      // 200 and a chance at a clean read.
-      deps.store.finishRun(
-        run,
-        "partial",
-        deps.now(),
-        `${unreadable} entries unreadable; stored nothing`,
-      );
-      log(`${LANE}: ${unreadable} unreadable, stored nothing`);
-      return { outcome: "partial", listed: 0, unreadable };
-    }
-
-    deps.store.recordObservations(run, deps.now(), [
-      {
-        subject: KEV_SUBJECT,
-        payload: {
-          version: catalogue.version,
-          released: catalogue.released,
-          cveIds: catalogue.cveIds,
-        } satisfies KevObservation,
-      },
-    ]);
-    // Saved with the catalogue it validates, in the same sweep: a validator
-    // for a body we refused to store would confirm 304s about nothing. An
-    // all-null validator is never saved: it cannot make a request
-    // conditional, and a stored one would count as "cached" while sending no
-    // header, the state in which a broken proxy's 304 freezes the catalogue.
-    // When the 200 carried no usable validator, any STORED one goes too: it
-    // describes the previous body, and if the feed later reverts to exactly
-    // that body, a 304 against it would confirm the newer catalogue as
-    // current when the origin is serving the older one.
-    if (outcome.validator.etag || outcome.validator.lastModified) {
-      deps.store.saveValidator(
-        KEV_INSTALLATION,
-        url,
-        { ...outcome.validator, tokenGen: KEV_TOKEN_GEN },
-        deps.now(),
-      );
-    } else {
-      deps.store.deleteValidator(KEV_INSTALLATION, url);
-    }
-    deps.store.finishRun(run, "ok", deps.now());
-
-    log(
-      `${LANE}: ${catalogue.cveIds.length} listed CVEs, catalogue ${catalogue.version}`,
-    );
-    return { outcome: "ok", listed: catalogue.cveIds.length, unreadable: 0 };
-  } catch (err) {
-    const detail = redact(err instanceof Error ? err.message : String(err));
-    // The logger cannot throw, so nothing lands here after finishRun("ok"):
-    // this can only be a fetch, parse or store failure on an unfinished run.
-    if (run) {
-      try {
-        deps.store.finishRun(run, "failed", deps.now(), detail);
-      } catch {
-        // The store is what failed. Nothing further to record.
-      }
-    }
+      reach: "global",
+    },
     // A failed fetch must leave every lookup UNKNOWN, never "not listed"
-    // (AD-20). Writing nothing is what achieves that.
-    log(`${LANE}: failed, ${detail}`);
-    return { outcome: "failed", listed: 0, unreadable: 0 };
-  }
+    // (AD-20). Writing nothing is what achieves that, so the zeroed result
+    // is the whole of this lane's failure behaviour.
+    { outcome: "failed", listed: 0, unreadable: 0 },
+    async (run) => {
+      // Conditional only while a stored catalogue exists to keep (AD-25). A 304
+      // confirms "what you have is current", which is only useful if we still
+      // have it: with no present subject the validator is a leftover, and
+      // honouring it would finish ok holding nothing.
+      const url = deps.enrichment.endpoint();
+      const prior = deps.store.current(KEV_SUBJECT);
+      const cached =
+        prior?.state === "present"
+          ? deps.store.loadValidator(KEV_INSTALLATION, url)
+          : null;
+
+      const outcome = await deps.enrichment.fetchKev(
+        cached
+          ? { etag: cached.etag, lastModified: cached.lastModified }
+          : null,
+      );
+
+      if (outcome.kind === "not_modified") {
+        // CISA's own statement that the stored catalogue is still current: the
+        // one condition under which advancing its verified_at is honest. This
+        // is NOT the freshness top-up that froze the catalogue before; that one
+        // touched on degraded fetches, this one only on a 304.
+        deps.store.touchVerified([KEV_SUBJECT], deps.now());
+        deps.store.saveValidator(
+          KEV_INSTALLATION,
+          url,
+          { ...outcome.validator, tokenGen: KEV_TOKEN_GEN },
+          deps.now(),
+        );
+        deps.store.finishRun(run, "ok", deps.now(), "not modified (304)");
+        log(`${LANE}: not modified, catalogue confirmed current`);
+        const kept = (prior?.payload as KevObservation | undefined)?.cveIds;
+        return {
+          outcome: "ok",
+          listed: Array.isArray(kept) ? kept.length : 0,
+          unreadable: 0,
+        };
+      }
+
+      const { catalogue } = outcome;
+      const { unreadable } = catalogue;
+
+      if (unreadable > 0) {
+        // Not stored, and deliberately not touched either. The prior keeps its
+        // own verified_at and ages out on schedule; topping it up is what made
+        // the freeze invisible last time. The stored validator is also left
+        // alone: it still matches the last body we vouched for, and the feed
+        // has demonstrably changed since, so the next conditional fetch gets a
+        // 200 and a chance at a clean read.
+        deps.store.finishRun(
+          run,
+          "partial",
+          deps.now(),
+          `${unreadable} entries unreadable; stored nothing`,
+        );
+        log(`${LANE}: ${unreadable} unreadable, stored nothing`);
+        return { outcome: "partial", listed: 0, unreadable };
+      }
+
+      deps.store.recordObservations(run, deps.now(), [
+        {
+          subject: KEV_SUBJECT,
+          payload: {
+            version: catalogue.version,
+            released: catalogue.released,
+            cveIds: catalogue.cveIds,
+          } satisfies KevObservation,
+        },
+      ]);
+      // Saved with the catalogue it validates, in the same sweep: a validator
+      // for a body we refused to store would confirm 304s about nothing. An
+      // all-null validator is never saved: it cannot make a request
+      // conditional, and a stored one would count as "cached" while sending no
+      // header, the state in which a broken proxy's 304 freezes the catalogue.
+      // When the 200 carried no usable validator, any STORED one goes too: it
+      // describes the previous body, and if the feed later reverts to exactly
+      // that body, a 304 against it would confirm the newer catalogue as
+      // current when the origin is serving the older one.
+      if (outcome.validator.etag || outcome.validator.lastModified) {
+        deps.store.saveValidator(
+          KEV_INSTALLATION,
+          url,
+          { ...outcome.validator, tokenGen: KEV_TOKEN_GEN },
+          deps.now(),
+        );
+      } else {
+        deps.store.deleteValidator(KEV_INSTALLATION, url);
+      }
+      deps.store.finishRun(run, "ok", deps.now());
+
+      log(
+        `${LANE}: ${catalogue.cveIds.length} listed CVEs, catalogue ${catalogue.version}`,
+      );
+      return { outcome: "ok", listed: catalogue.cveIds.length, unreadable: 0 };
+    },
+  );
 }
