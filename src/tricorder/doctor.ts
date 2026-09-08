@@ -64,6 +64,24 @@ export interface InstallationReport {
   unreachable: string[];
 }
 
+/**
+ * A repository whose declared default branch is not the one GitHub reports.
+ *
+ * Reported whether or not the repository declared the field, because an
+ * undeclared `main` is exactly the assumption that goes stale: a repository
+ * renamed to `master` after it was added never had a line to get wrong.
+ */
+export interface BranchMismatch {
+  /** Position in repos.yaml, so the finding points at the entry to edit. */
+  index: number;
+  /** Case-folded slug, as every other repository in this report is. */
+  slug: string;
+  /** What the config resolved to, declared or inherited. */
+  configured: string;
+  /** What GitHub reports. Read, never written back. */
+  actual: string;
+}
+
 export interface DoctorReport {
   app: { slug: string | null; name: string | null };
   /** What GitHub reported, so a name mismatch is visible rather than baffling. */
@@ -77,6 +95,8 @@ export interface DoctorReport {
   orphaned: string[];
   /** Installations whose account GitHub did not name. */
   unnamed: number[];
+  /** Watched repositories whose configured default branch GitHub disagrees with. */
+  branchMismatches: BranchMismatch[];
   ok: boolean;
 }
 
@@ -88,6 +108,17 @@ function accountOf(repo: RepoRef): string {
 export async function diagnose(
   app: GitHubAppPort,
   watched: readonly RepoRef[],
+  /**
+   * The configured default branch of a repository, which in production is
+   * `resolveDefaultBranch` bound to the loaded config. Taken as a function
+   * rather than as the config so this command keeps depending on nothing it
+   * could write through.
+   *
+   * Required, with no default. A default of `main` would make dropping the
+   * binding at the one call site compile and pass, and report every
+   * correctly declared repository on `master` as a mismatch.
+   */
+  defaultBranchOf: (repo: RepoRef) => string,
 ): Promise<DoctorReport> {
   const identity = await app.identity();
   const permissions = identity.permissions;
@@ -98,15 +129,18 @@ export async function diagnose(
   const missing = permissions === null ? [] : missingReads(permissions);
   const installations = await app.listInstallations();
 
-  const wantedBy = new Map<string, RepoRef[]>();
-  for (const repo of watched) {
+  // Each repository keeps its position in repos.yaml, so a finding can name
+  // `repos[i]` the way the config parser names a field to go and fix.
+  const wantedBy = new Map<string, { repo: RepoRef; index: number }[]>();
+  watched.forEach((repo, index) => {
     const key = accountOf(repo);
-    wantedBy.set(key, [...(wantedBy.get(key) ?? []), repo]);
-  }
+    wantedBy.set(key, [...(wantedBy.get(key) ?? []), { repo, index }]);
+  });
 
   const seen = new Set<string>();
   const reports: InstallationReport[] = [];
   const unnamed: number[] = [];
+  const branchMismatches: BranchMismatch[] = [];
 
   for (const inst of installations) {
     if (inst.account === null) {
@@ -133,16 +167,30 @@ export async function diagnose(
     // Case-folded, because repos.yaml is hand-written and GitHub supplies its
     // own casing. Comparing raw would report a reachable repository as missing
     // (AD-22).
-    const visible = new Set(repos.map((r) => repoSlug(r).toLowerCase()));
+    const visible = new Map(
+      repos.map((r) => [repoSlug(r).toLowerCase(), r.defaultBranch] as const),
+    );
     const wanted = wantedHere;
 
     const reachable: string[] = [];
     const unreachable: string[] = [];
-    for (const repo of wanted) {
+    for (const { repo, index } of wanted) {
       const slug = repoSlug(repo).toLowerCase();
       if (visible.has(slug)) {
         reachable.push(slug);
         seen.add(slug);
+        // Reachability is decided by the key alone: an entry whose branch
+        // GitHub did not report is still a repository this installation can
+        // see, and reporting it unreachable would be a worse answer than
+        // skipping one comparison.
+        //
+        // The slug folds; the branch name does not, because git refs are
+        // case-sensitive and `Main` really is a different branch.
+        const actual = visible.get(slug);
+        const configured = defaultBranchOf(repo);
+        if (actual && configured !== actual) {
+          branchMismatches.push({ index, slug, configured, actual });
+        }
       } else {
         unreachable.push(slug);
       }
@@ -170,12 +218,14 @@ export async function diagnose(
     installations: reports,
     orphaned,
     unnamed,
+    branchMismatches: branchMismatches.sort((a, b) => a.index - b.index),
     ok:
       permissions !== null &&
       writable.length === 0 &&
       missing.length === 0 &&
       orphaned.length === 0 &&
-      unnamed.length === 0,
+      unnamed.length === 0 &&
+      branchMismatches.length === 0,
   };
 }
 
@@ -247,6 +297,20 @@ export function formatReport(r: DoctorReport): string {
       "nothing must never render as a healthy zero (AD-28).",
     );
     for (const slug of r.orphaned) lines.push(`  ${slug}`);
+  }
+
+  if (r.branchMismatches.length > 0) {
+    lines.push("");
+    lines.push(
+      `${r.branchMismatches.length} watched repositories are on a different default branch than repos.yaml says.`,
+      "Until that is fixed, a failed build on the real default branch reads as a",
+      "build on just another branch, so a red main renders as quiet.",
+    );
+    for (const m of r.branchMismatches) {
+      lines.push(
+        `  ${m.slug}: repos[${m.index}].defaultBranch is ${m.configured}, GitHub says ${m.actual}`,
+      );
+    }
   }
 
   lines.push("");

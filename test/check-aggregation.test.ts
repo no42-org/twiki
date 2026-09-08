@@ -12,6 +12,7 @@ import type {
   PullRequest,
   RepoPolicy,
 } from "../src/core/types.js";
+import { DEFAULT_POLICY } from "../src/core/types.js";
 import { createGitHubFromEnv } from "../src/github/octokit-adapter.js";
 import { settledBlockers } from "../src/twiki/executor.js";
 import { canRebase, isSettled, mergeBlock } from "../src/twiki/gates.js";
@@ -222,7 +223,11 @@ describe("every status decides the same way at every gate", () => {
   // a new value silently inherits whichever branch happens to catch it. That
   // is how absence came to mean "permitted" in canRebase while meaning
   // "blocked" everywhere else. This table is the only thing that notices.
-  const policy: RepoPolicy = { autoMergeMinor: true, mergeOnly: false };
+  const policy: RepoPolicy = {
+    ...DEFAULT_POLICY,
+    autoMergeMinor: true,
+    mergeOnly: false,
+  };
   const pr = (checks: PullRequest["checks"]): PullRequest => ({
     repo: REPO,
     number: 1,
@@ -282,7 +287,11 @@ describe("every status decides the same way at every gate", () => {
 });
 
 describe("the operator is told what is absent, not what is failing", () => {
-  const policy: RepoPolicy = { autoMergeMinor: true, mergeOnly: false };
+  const policy: RepoPolicy = {
+    ...DEFAULT_POLICY,
+    autoMergeMinor: true,
+    mergeOnly: false,
+  };
   const facts = (mainChecks: CheckStatus) => ({
     repo: REPO,
     mainChecks,

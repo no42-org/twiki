@@ -416,11 +416,27 @@ export interface InstallationRef {
   accountKind: AccountKind;
 }
 
+/**
+ * A repository an installation can see, as the listing already reports it.
+ *
+ * `RepoRef` plus the branch GitHub calls default. Widening the existing
+ * listing rather than adding a method is deliberate: `doctor` compares the
+ * declared default branch against GitHub without making a second call, and
+ * this port must keep exposing exactly the three reads it exposes, which is
+ * what proves the read-only App cannot write (AD-21).
+ *
+ * `RepoRef` itself stays a bare key, because it is used everywhere as one.
+ */
+export interface InstallationRepo extends RepoRef {
+  /** What GitHub reports as the repository's default branch. */
+  defaultBranch: string;
+}
+
 export interface GitHubAppPort {
   identity(): Promise<AppIdentity>;
   listInstallations(): Promise<InstallationRef[]>;
   /** Every repository this installation can actually see. */
-  listInstallationRepos(installationId: number): Promise<RepoRef[]>;
+  listInstallationRepos(installationId: number): Promise<InstallationRepo[]>;
 }
 
 /** An open dependency-update pull request, as the search returned it. */

@@ -28,10 +28,17 @@ const READ_ONLY: Record<string, string> = {
   issues: "read",
 };
 
+/**
+ * A repository the listing reports, with its branch stated only where the
+ * case cares. Every other case predates the branch check and must not be
+ * rewritten around it.
+ */
+type Visible = RepoRef & { defaultBranch?: string };
+
 function fakeApp(over: {
   permissions?: Record<string, string> | null;
   installations?: InstallationRef[];
-  repos?: Record<number, RepoRef[]>;
+  repos?: Record<number, Visible[]>;
 }): GitHubAppPort {
   const identity: AppIdentity = {
     slug: "gitricorder",
@@ -41,9 +48,17 @@ function fakeApp(over: {
   return {
     identity: async () => identity,
     listInstallations: async () => over.installations ?? [],
-    listInstallationRepos: async (id) => over.repos?.[id] ?? [],
+    listInstallationRepos: async (id) =>
+      (over.repos?.[id] ?? []).map((r) => ({ defaultBranch: "main", ...r })),
   };
 }
+
+/**
+ * What every case that is not about the branch check declares. Stated rather
+ * than defaulted: `diagnose` takes the resolver as a required argument, so
+ * deleting the binding in `tricorder.ts` cannot compile.
+ */
+const declaresMain = () => "main";
 
 const inst = (
   id: number,
@@ -78,13 +93,21 @@ describe("App permissions (AD-21)", () => {
     // The one uncertain path. An absent permissions object is "we could not
     // tell", and reporting that as read-only would have this command certify
     // exactly the App it exists to reject.
-    const report = await diagnose(fakeApp({ permissions: null }), []);
+    const report = await diagnose(
+      fakeApp({ permissions: null }),
+      [],
+      declaresMain,
+    );
     expect(report.ok).toBe(false);
     expect(formatReport(report)).toContain("reported no permissions");
   });
 
   it("does not read an empty permission set as proof of read-only", async () => {
-    const report = await diagnose(fakeApp({ permissions: {} }), []);
+    const report = await diagnose(
+      fakeApp({ permissions: {} }),
+      [],
+      declaresMain,
+    );
     expect(report.ok).toBe(false);
   });
 });
@@ -112,6 +135,7 @@ describe("required read permissions", () => {
     const report = await diagnose(
       fakeApp({ permissions: { metadata: "read" } }),
       [],
+      declaresMain,
     );
     expect(report.ok).toBe(false);
     const text = formatReport(report);
@@ -125,6 +149,7 @@ describe("required read permissions", () => {
     const report = await diagnose(
       fakeApp({ permissions: { metadata: "read", renamed_alerts: "read" } }),
       [],
+      declaresMain,
     );
     expect(formatReport(report)).toContain("renamed_alerts");
   });
@@ -135,6 +160,7 @@ describe("required read permissions", () => {
     const report = await diagnose(
       fakeApp({ permissions: { ...READ_ONLY, contents: "write" } }),
       [],
+      declaresMain,
     );
     expect(report.ok).toBe(false);
     expect(report.writable).toEqual(["contents=write"]);
@@ -154,6 +180,7 @@ describe("reachability of the watched set", () => {
         repos: { 1: [twiki, other] },
       }),
       [twiki],
+      declaresMain,
     );
     expect(report.ok).toBe(true);
     expect(report.installations[0]?.reachable).toEqual(["no42-org/twiki"]);
@@ -164,6 +191,7 @@ describe("reachability of the watched set", () => {
     const report = await diagnose(
       fakeApp({ installations: [inst(1, "no42-org")], repos: { 1: [other] } }),
       [twiki, other],
+      declaresMain,
     );
     expect(report.installations[0]?.unreachable).toEqual(["no42-org/twiki"]);
     expect(report.ok).toBe(false);
@@ -175,6 +203,7 @@ describe("reachability of the watched set", () => {
     const report = await diagnose(
       fakeApp({ installations: [inst(1, "no42-org")], repos: { 1: [twiki] } }),
       [twiki, elsewhere],
+      declaresMain,
     );
     expect(report.orphaned).toEqual(["other-org/thing"]);
     expect(report.ok).toBe(false);
@@ -192,6 +221,7 @@ describe("reachability of the watched set", () => {
         repos: { 1: [{ owner: "No42-Org", name: "TWiki" }] },
       }),
       [{ owner: "no42-org", name: "twiki" }],
+      declaresMain,
     );
     expect(report.orphaned).toEqual([]);
     expect(report.installations[0]?.reachable).toEqual(["no42-org/twiki"]);
@@ -204,6 +234,7 @@ describe("reachability of the watched set", () => {
         repos: { 1: [{ owner: "no42-org", name: "twiki" }] },
       }),
       [{ owner: "No42-Org", name: "TWiki" }],
+      declaresMain,
     );
     expect(reversed.orphaned).toEqual([]);
     expect(reversed.installations[0]?.reachable).toEqual(["no42-org/twiki"]);
@@ -216,6 +247,7 @@ describe("reachability of the watched set", () => {
         repos: { 1: [{ owner: "other-org", name: "twiki" }] },
       }),
       [twiki],
+      declaresMain,
     );
     expect(report.orphaned).toEqual(["no42-org/twiki"]);
   });
@@ -224,6 +256,7 @@ describe("reachability of the watched set", () => {
     const clean = await diagnose(
       fakeApp({ installations: [inst(1, "no42-org")], repos: { 1: [twiki] } }),
       [twiki],
+      declaresMain,
     );
     expect(formatReport(clean)).toContain("OK");
     expect(formatReport(clean)).not.toContain("NOT OK");
@@ -251,6 +284,7 @@ describe("reachability of the watched set", () => {
         repos: { 1: [twiki] },
       }),
       [twiki],
+      declaresMain,
     );
     expect(report.orphaned).toEqual([]);
     expect(report.unnamed).toEqual([7]);
@@ -274,7 +308,7 @@ describe("reachability of the watched set", () => {
       },
     };
 
-    await diagnose(counted, [twiki]);
+    await diagnose(counted, [twiki], declaresMain);
     expect(asked).toEqual([1]);
   });
 
@@ -283,6 +317,186 @@ describe("reachability of the watched set", () => {
     // changes, this fails to compile rather than quietly gaining the ability.
     const app = fakeApp({});
     expect(Object.keys(app).sort()).toEqual([
+      "identity",
+      "listInstallationRepos",
+      "listInstallations",
+    ]);
+  });
+});
+
+describe("the declared default branch against what GitHub reports", () => {
+  const twiki = { owner: "no42-org", name: "twiki" };
+  const legacy = { owner: "no42-org", name: "legacy" };
+  /** Neither side is `main`, so agreement cannot come from a shared default. */
+  const onMaster = { ...legacy, defaultBranch: "master" };
+
+  it("says nothing when the configured branch is the one GitHub reports", async () => {
+    const report = await diagnose(
+      fakeApp({
+        installations: [inst(1, "no42-org")],
+        repos: { 1: [onMaster] },
+      }),
+      [legacy],
+      () => "master",
+    );
+    expect(report.branchMismatches).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(formatReport(report)).not.toContain("default branch");
+  });
+
+  it("names the repository, the configured branch and GitHub's", async () => {
+    const report = await diagnose(
+      fakeApp({
+        installations: [inst(1, "no42-org")],
+        repos: { 1: [onMaster] },
+      }),
+      [twiki, legacy],
+      // Declared, and declared wrongly: `main` here is the config's answer,
+      // not the default nothing chose.
+      () => "main",
+    );
+    expect(report.branchMismatches).toEqual([
+      {
+        index: 1,
+        slug: "no42-org/legacy",
+        configured: "main",
+        actual: "master",
+      },
+    ]);
+    expect(report.ok).toBe(false);
+
+    const lines = formatReport(report).split("\n");
+    const named = lines.filter((l) => l.includes("no42-org/legacy"));
+    expect(named).toEqual([
+      "  no42-org/legacy: repos[1].defaultBranch is main, GitHub says master",
+    ]);
+  });
+
+  it("reports a mismatch against a branch the repository never declared", async () => {
+    // `declaresMain` is what `resolveDefaultBranch` answers for a repository
+    // that declared nothing - proven in default-branch.test.ts, not assumed
+    // here. Doctor cannot tell declared from inherited and must not: that
+    // inherited `main` is exactly the assumption that goes stale when a
+    // repository is renamed.
+    const report = await diagnose(
+      fakeApp({
+        installations: [inst(1, "no42-org")],
+        repos: { 1: [onMaster] },
+      }),
+      [legacy],
+      declaresMain,
+    );
+    expect(
+      report.branchMismatches.map((m) => [m.configured, m.actual]),
+    ).toEqual([["main", "master"]]);
+    expect(report.ok).toBe(false);
+  });
+
+  it("matches on the folded slug and compares the branch name exactly", async () => {
+    // The slug folds because repos.yaml and GitHub each carry their own
+    // casing (AD-22). The branch name does not, because git refs are
+    // case-sensitive and `Main` really is a different branch.
+    const report = await diagnose(
+      fakeApp({
+        installations: [inst(1, "No42-Org")],
+        repos: {
+          1: [{ owner: "No42-Org", name: "TWiki", defaultBranch: "Main" }],
+        },
+      }),
+      [twiki],
+      () => "main",
+    );
+    expect(report.installations[0]?.reachable).toEqual(["no42-org/twiki"]);
+    expect(report.branchMismatches.map((m) => m.actual)).toEqual(["Main"]);
+  });
+
+  it("does not stack a branch finding on a repository it cannot see", async () => {
+    // The unreachable and orphaned findings already name it, and GitHub
+    // reported no branch for it at all. Complaining about a branch here
+    // would blame a line in repos.yaml that is not the problem.
+    const unreachable = await diagnose(
+      fakeApp({ installations: [inst(1, "no42-org")], repos: { 1: [] } }),
+      [legacy],
+      () => "master",
+    );
+    expect(unreachable.installations[0]?.unreachable).toEqual([
+      "no42-org/legacy",
+    ]);
+    expect(unreachable.branchMismatches).toEqual([]);
+
+    const orphaned = await diagnose(
+      fakeApp({ installations: [], repos: {} }),
+      [legacy],
+      () => "master",
+    );
+    expect(orphaned.orphaned).toEqual(["no42-org/legacy"]);
+    expect(orphaned.branchMismatches).toEqual([]);
+  });
+
+  it("stays reachable when GitHub reported no branch for it", async () => {
+    // Reachability is the key, not the branch. An entry whose branch did not
+    // come through is still a repository this installation can see, and
+    // calling it unreachable and orphaned would be a worse answer than
+    // skipping one comparison.
+    const report = await diagnose(
+      fakeApp({
+        installations: [inst(1, "no42-org")],
+        repos: { 1: [{ ...legacy, defaultBranch: "" }] },
+      }),
+      [legacy],
+      declaresMain,
+    );
+    expect(report.installations[0]?.reachable).toEqual(["no42-org/legacy"]);
+    expect(report.orphaned).toEqual([]);
+    expect(report.branchMismatches).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports mismatches in the order repos.yaml declares them", async () => {
+    // Findings arrive in installation order, which is GitHub's, not the
+    // operator's. Two installations swept in the reverse of the declared
+    // order is the only shape that can tell the sort from no sort at all.
+    const elsewhere = { owner: "other-org", name: "thing" };
+    const report = await diagnose(
+      fakeApp({
+        installations: [inst(2, "other-org"), inst(1, "no42-org")],
+        repos: {
+          1: [{ ...legacy, defaultBranch: "master" }],
+          2: [{ ...elsewhere, defaultBranch: "trunk" }],
+        },
+      }),
+      [legacy, elsewhere],
+      declaresMain,
+    );
+    expect(report.branchMismatches.map((m) => [m.index, m.slug])).toEqual([
+      [0, "no42-org/legacy"],
+      [1, "other-org/thing"],
+    ]);
+  });
+
+  it("adds no GitHub call and no write method to do it", async () => {
+    // The check rides the installation listing doctor already pages: one
+    // call, for the one account something is watched on. A second call, or a
+    // fourth port method, would be a different command than the one whose
+    // write-freedom is provable by its port's key set.
+    const asked: number[] = [];
+    const app = fakeApp({
+      installations: [inst(1, "no42-org"), inst(2, "unrelated-org")],
+      repos: { 1: [onMaster] },
+    });
+    const counted: GitHubAppPort = {
+      ...app,
+      listInstallationRepos: async (id) => {
+        asked.push(id);
+        return app.listInstallationRepos(id);
+      },
+    };
+
+    const report = await diagnose(counted, [legacy], () => "main");
+
+    expect(asked).toEqual([1]);
+    expect(report.branchMismatches).toHaveLength(1);
+    expect(Object.keys(counted).sort()).toEqual([
       "identity",
       "listInstallationRepos",
       "listInstallations",

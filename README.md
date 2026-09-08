@@ -47,8 +47,13 @@ architecture makes that safe structurally, not by instruction:
 
 ## Configure
 
-Copy `repos.example.yaml` to `repos.yaml` and list your repos (see that file for
-per-repo `autoMergeMinor` / `mergeOnly` overrides).
+Copy `repos.example.yaml` to `repos.yaml` and list your repos (see that file for per-repo `autoMergeMinor`, `mergeOnly` and `defaultBranch` overrides).
+
+`defaultBranch` is what the repository calls its default branch.
+Absent means `main`, so only a repository on something else needs the line.
+Write the branch name, not a ref: `master`, never `refs/heads/master`.
+The declaration is what the read side will sort workflow runs by, and against the wrong name a failed build on the real default branch would read as a build on just another branch.
+`tricorder doctor` compares the declaration against what GitHub reports and names any disagreement.
 
 ### Environment
 
@@ -169,7 +174,12 @@ it and run `tricorder doctor`:
 
 `doctor` exits non-zero and says why if the App holds any write permission, if
 it is **missing** any read above, if a watched repository is not visible to its
-installation, or if a watched repository has no installation at all.
+installation, if a watched repository has no installation at all, or if a
+watched repository's `defaultBranch` is not the branch GitHub reports.
+
+The branch mismatch is reported whether or not the repository declared the field.
+An undeclared `main` is exactly the assumption that goes stale when a repository is renamed.
+The branch rides the installation listing `doctor` already pages, so the check costs no extra request and still writes nothing.
 
 The missing-read check matters as much as the write check: an App scoped to
 metadata alone holds no write permission, passes every other test, and then

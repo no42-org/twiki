@@ -66,7 +66,12 @@ repos:
     autoMergeMinor: false   # patch only; minor waits for a human
   - repo: your-org/legacy
     mergeOnly: true         # never cut releases here
+  - repo: your-org/venerable
+    defaultBranch: master   # branch name, not a ref; absent means "main"
 ```
+
+gitricorder's setup check reads this same file.
+`tricorder doctor` names any repository whose `defaultBranch` is not the branch GitHub reports.
 
 ## 2. Shared setup
 

@@ -4,7 +4,11 @@
  */
 
 import { pathToFileURL } from "node:url";
-import { type Config, loadConfig } from "./core/config.js";
+import {
+  type Config,
+  loadConfig,
+  resolveDefaultBranch,
+} from "./core/config.js";
 import {
   assertRankPolicy,
   DEFAULT_RANK_POLICY,
@@ -804,7 +808,13 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    const report = await diagnose(createTricorderAppFromEnv(env), config.repos);
+    const report = await diagnose(
+      createTricorderAppFromEnv(env),
+      config.repos,
+      // Bound here so doctor never holds the config itself, and so the two
+      // keying rules in config.ts stay behind their accessor.
+      (repo) => resolveDefaultBranch(config, repo),
+    );
     console.log(formatReport(report));
     // Non-zero on a bad setup, so this is usable as a gate rather than
     // something whose output somebody has to remember to read. exitCode rather

@@ -23,6 +23,15 @@ repos:
   - repo: no42-org/legacy-tool
     mergeOnly: true
 
+  # The branch name, not a ref: "master", never "refs/heads/master". Absent
+  # means "main", so name it only when the repository calls it something else.
+  # gitricorder will rank a failed build on the default branch above
+  # everything, and against the wrong branch name that failure would read as a
+  # build on just another branch. `tricorder doctor` compares what is declared
+  # here against what GitHub reports and names any disagreement.
+  - repo: no42-org/venerable-thing
+    defaultBranch: master
+
 # Dependency-update bot actors for gitricorder's update-PR lane, as GitHub
 # search qualifiers. Configuration and only configuration: no bot login exists
 # in the source, so an empty or absent list disables the lane, loudly.

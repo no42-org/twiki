@@ -3,11 +3,15 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Octokit } from "@octokit/rest";
 import { describe, expect, it } from "vitest";
-import { OctokitGitHub } from "../src/github/octokit-adapter.js";
+import {
+  createTricorderAppFromEnv,
+  OctokitGitHub,
+} from "../src/github/octokit-adapter.js";
 
 // The contract between the fakes and the real adapter.
 //
@@ -366,5 +370,81 @@ describe("repository metadata maps field for field", () => {
 
     expect(metas[0]?.archived).toBe(true);
     expect(metas[0]?.disabled).toBe(true);
+  });
+});
+
+describe("the installation listing maps field for field", () => {
+  interface Listed {
+    name: string;
+    owner: { login: string };
+    default_branch: string;
+  }
+
+  /** A throwaway key: never a real credential, generated fresh per run. */
+  const TEST_KEY = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+
+  /**
+   * The App port against a fetch that answers with one recorded envelope.
+   *
+   * The listing builds its own per-installation client, so it cannot be
+   * handed a stub Octokit the way the read port can. Going through fetch is
+   * the closer contract anyway: octokit's real pagination unwraps the real
+   * envelope, and the mapper sees what GitHub sent.
+   */
+  const appPortServing = (envelope: unknown) => {
+    const fetchImpl = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/access_tokens")) {
+        return new Response(
+          JSON.stringify({
+            token: "ghs_app",
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            permissions: {},
+            repository_selection: "all",
+          }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        );
+      }
+      const res = new Response(JSON.stringify(envelope), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+      // A hand-built Response has an empty url, and octokit's paginate calls
+      // new URL(response.url) on envelope endpoints.
+      Object.defineProperty(res, "url", { value: u });
+      return res;
+    };
+    return createTricorderAppFromEnv(
+      {
+        TRICORDER_GITHUB_APP_ID: "1",
+        TRICORDER_GITHUB_APP_PRIVATE_KEY: TEST_KEY,
+      } as NodeJS.ProcessEnv,
+      fetchImpl as typeof fetch,
+    );
+  };
+
+  it("carries each entry's default_branch, main and master alike", async () => {
+    // The payload is a real page with entries removed: three public
+    // repositories kept verbatim, one of them genuinely on `master`. The
+    // branch names come from GitHub, not from the documentation, which is
+    // the whole point of asserting against the fixture rather than a
+    // literal - a mapper that hard-coded "main" would pass a one-entry
+    // fixture and be wrong about every repository that was ever renamed.
+    const raw = derived<{ repositories: Listed[] }>(
+      "installation-repos.derived.json",
+    );
+    expect(raw.repositories.map((r) => r.default_branch)).toContain("master");
+
+    const repos = await appPortServing(raw).listInstallationRepos(7);
+
+    expect(repos).toEqual(
+      raw.repositories.map((r) => ({
+        owner: r.owner.login,
+        name: r.name,
+        defaultBranch: r.default_branch,
+      })),
+    );
   });
 });
