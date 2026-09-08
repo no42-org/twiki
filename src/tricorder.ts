@@ -572,6 +572,12 @@ export function buildWebDeps(input: {
     lanePolicies: {
       [KEV_LANE]: { cadenceMs: KEV_CADENCE_MS },
       [COVERAGE_LANE]: { cadenceMs: COVERAGE_CADENCE_MS },
+      // The Actions lane runs hourly, and was missing here: judged on the
+      // fifteen-minute alert cadence its section read stale within minutes
+      // of a successful sweep, and now that the CI chip, tile and item all
+      // hang off the same confirmation, the wrong cadence would take them
+      // with it.
+      [ACTIONS_LANE]: { cadenceMs: ACTIONS_CADENCE_MS },
     },
     rankPolicy: attention.rankPolicy,
     cutRank: attention.cutRank,

@@ -142,9 +142,15 @@ export function runVerdict(
 /**
  * Whether a verdict is one the CI signal treats as a broken build.
  *
- * Named once so the lane's counter and (in Story 2.3) the `broken` term
- * cannot disagree about whether a hung run counts.
+ * Named once so the lane's counter, the `broken` rank term and the run
+ * list's painting cannot disagree about whether a hung run counts.
+ *
+ * A type predicate, so a caller that has to say WHICH of the two - the
+ * queue's rationale reads the word itself, and "hung" is not "failed" to a
+ * maintainer - narrows here rather than re-deriving it beside this call.
  */
-export function isBrokenVerdict(verdict: RunVerdict): boolean {
+export function isBrokenVerdict(
+  verdict: RunVerdict,
+): verdict is "failed" | "hung" {
   return verdict === "failed" || verdict === "hung";
 }

@@ -10,7 +10,10 @@ import type { RepoRef } from "../src/core/types.js";
 import type { GitHubReadPort } from "../src/github/port.js";
 import { LANE as COVERAGE_LANE } from "../src/tricorder/collect/coverage.js";
 import { LANE as KEV_LANE } from "../src/tricorder/collect/kev.js";
-import type { ActionsDeps } from "../src/tricorder/collect/workflow-runs.js";
+import {
+  LANE as ACTIONS_LANE,
+  type ActionsDeps,
+} from "../src/tricorder/collect/workflow-runs.js";
 import type { StorePort } from "../src/tricorder/store/port.js";
 import type { AppDeps } from "../src/tricorder/web/app.js";
 import {
@@ -83,6 +86,10 @@ describe("the web role's wiring", () => {
       lanePolicies: {
         [KEV_LANE]: { cadenceMs: KEV_CADENCE_MS },
         [COVERAGE_LANE]: { cadenceMs: COVERAGE_CADENCE_MS },
+        // The hourly lane, missing here until Story 2.3: judged on the
+        // fifteen-minute alert cadence its whole CI section read stale
+        // within minutes of a successful sweep.
+        [ACTIONS_LANE]: { cadenceMs: ACTIONS_CADENCE_MS },
       },
       rankPolicy: DEFAULT_RANK_POLICY,
       // The two the operator configures and no issue ever named. Values that

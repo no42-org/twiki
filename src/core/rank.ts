@@ -8,11 +8,18 @@ import type { BumpLevel } from "./types.js";
 
 // The urgency chain (AD-20).
 //
-// KEV status, then EPSS, then severity, then bump type. That order is CODE.
-// Only the EPSS thresholds are configuration, joined by the tier cut as the
-// second and last configuration value (AD-29, AD-30): the cut names one of
-// the bands and never adds a term. No configuration path can reorder the
-// terms.
+// A broken default branch, then KEV status, then EPSS, then severity, then
+// bump type, then whether the update is stuck. That order is CODE, and this
+// sentence names every term: an incomplete list here is how a reader learns
+// the chain has four terms when it has six. Only the EPSS thresholds are
+// configuration, joined by the tier cut as the second and last configuration
+// value (AD-29, AD-30): the cut names one of the bands and never adds a
+// term. No configuration path can reorder the terms.
+//
+// `broken` leads because nothing ships from a repository whose main is red,
+// whatever else is open on it. It is also the term that proves adding one
+// moves nothing: every other kind passes `n/a`, which is LEAST_KNOWN, so
+// every existing key merely gains a leading zero.
 //
 // Nothing here multiplies one signal by another. Comparison is lexicographic
 // over the terms, most significant first, so a lower term can only ever break
@@ -75,6 +82,22 @@ export type Signal<T> = T | typeof NOT_APPLICABLE | null;
  */
 export interface RankInput {
   /**
+   * Is this repository's default branch broken right now?
+   *
+   * `true` only for a `ci_failure` item, whose evidence is a retained
+   * default-branch run under a fresh Actions confirmation. Every other kind
+   * passes `n/a`: they are not statements about a build at all, and `n/a`
+   * ranks at the least-urgent end, so adding this term moved no existing
+   * item.
+   *
+   * Deliberately narrower than the chain's usual unknown rule: a workflow
+   * whose default-branch run nobody has confirmed produces no item, so the
+   * gap is carried by the CI chip reading `unconfirmed` rather than by a
+   * `null` here. An unknown build ranking above a measured-green one would
+   * float every unswept repository over every real finding.
+   */
+  readonly broken: Signal<boolean>;
+  /**
    * Is the CVE in the CISA KEV catalogue? `n/a` when the item has no CVE to
    * look up, `null` when the catalogue could not be fetched.
    */
@@ -131,7 +154,7 @@ export const DEFAULT_RANK_POLICY: RankPolicy = { epssBands: [0.5, 0.1, 0.01] };
 
 /** One term's contribution, kept so the UI can say why an item ranks here. */
 export interface RankTerm {
-  readonly name: "kev" | "epss" | "severity" | "bump" | "stuck";
+  readonly name: "broken" | "kev" | "epss" | "severity" | "bump" | "stuck";
   readonly rank: number;
   readonly reason: string;
 }
@@ -167,6 +190,10 @@ export interface TermReasons {
  * nothing special reads exactly as it always has.
  */
 export interface ReasonTable {
+  readonly broken?: TermReasons & {
+    readonly broken?: string;
+    readonly fine?: string;
+  };
   readonly kev?: TermReasons & {
     readonly listed?: string;
     readonly notListed?: string;
@@ -247,6 +274,39 @@ export function epssRank(
 }
 
 const percent = (epss: number) => `${(epss * 100).toFixed(1)}%`;
+
+/**
+ * The leading term, and the only one whose `n/a` says nothing by default.
+ *
+ * Every other term's absence is a fact worth printing on the kinds that have
+ * it - "no CVE to score" tells a reader the lookup happened. This one's is
+ * not: an alert is not a build, and a sentence saying so would prefix every
+ * existing explanation in the estate with a phrase about workflows. An empty
+ * reason drops the term from the explanation while keeping it on the chain,
+ * which is exactly what "adding a term moves nothing" has to mean in words
+ * as well as in ranks.
+ *
+ * The `broken` wording is supplied per item rather than per kind: the
+ * sentence carries the deciding run's own verdict word and age, so a hung
+ * run says hung where a failed one says failed.
+ */
+function brokenTerm(
+  broken: Signal<boolean>,
+  words: ReasonTable["broken"],
+): RankTerm {
+  return {
+    name: "broken",
+    rank: scaleRank(broken, [false, true]),
+    reason:
+      broken === NOT_APPLICABLE
+        ? (words?.na ?? "")
+        : broken === null
+          ? (words?.unknown ?? "build state unknown")
+          : broken
+            ? (words?.broken ?? "default branch build is broken")
+            : (words?.fine ?? "default branch build is green"),
+  };
+}
 
 function kevTerm(kev: Signal<boolean>, words: ReasonTable["kev"]): RankTerm {
   return {
@@ -360,6 +420,7 @@ export function rank(
   // This array IS the chain order, and it is the only place that order is
   // expressed. Nothing reads it from configuration.
   const terms: RankTerm[] = [
+    brokenTerm(input.broken, reasons.broken),
     kevTerm(input.kev, reasons.kev),
     epssTerm(input.epss, policy.epssBands, reasons.epss),
     severityTerm(input.severity, reasons.severity),

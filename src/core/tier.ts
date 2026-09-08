@@ -68,7 +68,8 @@ export function defaultCutRank(policy: RankPolicy): number {
 /**
  * Bucket one ranked item.
  *
- * `now` when the KEV term is listed or the EPSS term ranks at or above the
+ * `now` when the default branch is broken, the KEV term is listed or the
+ * EPSS term ranks at or above the
  * cut band; `soon` when any term ranks above least-known, which includes
  * unknown, because a signal we failed to collect must not read as quiet
  * (AD-20); `quiet` when every term sits at least-known.
@@ -86,6 +87,16 @@ export function tier(ranking: Ranking, cutRank: number): Tier {
   const rankOf = (name: string): number =>
     ranking.terms.find((t) => t.name === name)?.rank ?? UNKNOWN;
 
+  // A red default branch, on the same reasoning as KEV below: its scale is
+  // [false, true] too, so `true` is the only rank above UNKNOWN and nothing
+  // else can satisfy this.
+  //
+  // A line of its own, and the easy thing to miss when a term is added to
+  // the head of the chain. Leading the chain decides ORDER, not tier: the
+  // term would satisfy `anyAboveLeast` below and stop at `soon`, so a
+  // repository whose main is broken would sort first inside the wrong
+  // bucket.
+  if (rankOf("broken") > UNKNOWN) return "now";
   // A listed KEV entry is the only KEV rank above UNKNOWN: the scale is
   // [false, true], so false is LEAST_KNOWN and true is the first known rank.
   if (rankOf("kev") > UNKNOWN) return "now";

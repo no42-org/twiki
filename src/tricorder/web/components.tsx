@@ -464,11 +464,17 @@ const Layout: FC<
  * the note names the same local policy the queue does: a reader must not
  * take `now` for a standard's verdict any more than a rank.
  */
-const OVERVIEW_POLICY =
-  "Tiers are buckets over the ordering of the queue, which is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.";
+/**
+ * The chain in the reader's words, and all six terms of it: a note that
+ * lists five invites exactly the belief the ranking module's own comment
+ * warns about, that the chain is shorter than it is.
+ */
+const CHAIN_IN_WORDS =
+  "a broken default branch, then CISA KEV listing, then EPSS, then severity, then update size, then whether GitHub could prepare the update";
 
-const QUEUE_POLICY =
-  "Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.";
+const OVERVIEW_POLICY = `Tiers are buckets over the ordering of the queue, which is a local policy: ${CHAIN_IN_WORDS}. It is not SSVC and not any published standard.`;
+
+const QUEUE_POLICY = `Ordering is a local policy: ${CHAIN_IN_WORDS}. It is not SSVC and not any published standard.`;
 
 const REPO_POLICY =
   "Every value carries its own freshness, because each lane confirms on its own cadence. A section that no lane has vouched for says so rather than showing an empty table.";
@@ -777,6 +783,12 @@ const QueueRow: FC<{ item: QueueItem; rank: number; linked: boolean }> = ({
           <span class="badge">PR</span>
         ) : item.kind === "issue" ? (
           <span class="badge">issue</span>
+        ) : item.kind === "ci_failure" ? (
+          // A run number looks exactly like an issue or pull request number,
+          // and the rationale beside it calls the thing a workflow run: the
+          // badge is what stops the reader taking `#9` for a pull request
+          // and following it expecting one.
+          <span class="badge">run</span>
         ) : null}{" "}
         <ExternalLink href={item.htmlUrl}>
           {item.repo}#{item.number}
@@ -845,6 +857,12 @@ export const QueuePage: FC<{
       <h1>What to deal with next</h1>
       <p class="sub">
         {filtered.counted.filter((i) => i.kind === "alert").length} open alerts
+        {" · "}
+        {/* One count per queue kind. A kind listed in the table and missing
+            here reads as three zeros above the row a reader came for, which
+            is what this line did to the first red main it ever showed. */}
+        {filtered.counted.filter((i) => i.kind === "ci_failure").length} broken
+        builds
         {" · "}
         {filtered.counted.filter((i) => i.kind === "update_pr").length} update
         PRs

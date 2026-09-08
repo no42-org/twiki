@@ -42,6 +42,7 @@ const spec = (topic: string) => {
 const item = (kind: QueueKind, repo: string, number: number): QueueItem => {
   const ranking = rank(
     {
+      broken: NOT_APPLICABLE,
       kev: NOT_APPLICABLE,
       epss: NOT_APPLICABLE,
       severity: NOT_APPLICABLE,
@@ -206,6 +207,15 @@ describe("applyQueueFilter", () => {
         WATCHED,
       ),
     ).toEqual(nothing(counted, "No foo items open."));
+    // Whatever the reader typed, in the case a sentence wants it. The
+    // acronym rule belongs to the topic table, not to the query string.
+    expect(
+      applyQueueFilter(
+        queueOf(all),
+        parseQueueFilter("FOO", undefined, WATCHED),
+        WATCHED,
+      ),
+    ).toEqual(nothing(counted, "No foo items open."));
     expect(
       applyQueueFilter(
         queueOf(all),
@@ -253,10 +263,40 @@ describe("applyQueueFilter", () => {
     expect(
       applyQueueFilter(
         queueOf(all),
+        parseQueueFilter("pulls", undefined, WATCHED),
+        WATCHED,
+      ),
+    ).toEqual(nothing(counted, "Pull request items are not collected yet."));
+  });
+
+  it("CI has a kind now, so an empty CI filter reads as no items open", () => {
+    // The sentence moved with the kind. `not collected yet` was true of CI
+    // while nothing could ever produce a CI item; it would now be false of a
+    // swept estate whose builds are all green. Whether anything CONFIRMED
+    // that is the chip's and the tile's question, not this filter's: the
+    // queue is a list of items, and it has none here.
+    expect(
+      applyQueueFilter(
+        queueOf(all),
         parseQueueFilter("ci", undefined, WATCHED),
         WATCHED,
       ),
-    ).toEqual(nothing(counted, "CI items are not collected yet."));
+    ).toEqual(nothing(counted, "No CI items open."));
+
+    const broken = item("ci_failure", "no42-org/twiki", 7);
+    expect(
+      applyQueueFilter(
+        queueOf([...all, broken]),
+        parseQueueFilter("ci", undefined, WATCHED),
+        WATCHED,
+      ),
+    ).toEqual({
+      shown: [broken],
+      delisted: [],
+      counted: [...counted, broken],
+      sentence: "CI items · 1 shown",
+      empty: null,
+    });
   });
 
   it("repo filter on a de-listed repository with open items: says why, not zero", () => {

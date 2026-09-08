@@ -31,26 +31,32 @@ describe("TOPICS", () => {
   it("gives every queue kind exactly one topic, and the lane-less topics none", () => {
     expect(TOPICS.map((t) => [t.topic, [...t.kinds]])).toEqual([
       ["security", ["alert"]],
-      ["ci", []],
+      ["ci", ["ci_failure"]],
       ["dependencies", ["update_pr"]],
+      // Pull requests has no lane until Epic 3; Reviews never joins the queue.
       ["pulls", []],
       ["issues", ["issue"]],
       ["reviews", []],
     ]);
     expect(topicOf("alert")).toBe("security");
+    expect(topicOf("ci_failure")).toBe("ci");
     expect(topicOf("update_pr")).toBe("dependencies");
     expect(topicOf("issue")).toBe("issues");
     expect(() => topicOf("workflow" as never)).toThrow(/belongs to no topic/);
   });
 
-  it("names each topic's singular noun for the filter sentence", () => {
-    expect(TOPICS.map((t) => [t.topic, t.noun])).toEqual([
-      ["security", "Security"],
-      ["ci", "CI"],
-      ["dependencies", "Dependency"],
-      ["pulls", "Pull request"],
-      ["issues", "Issue"],
-      ["reviews", "Review"],
+  it("names each topic's singular noun for the filter sentence, in both positions", () => {
+    // Two forms per topic, because the second is not derivable from the
+    // first: `CI` is an acronym and keeps its case mid-sentence where
+    // `Pull request` loses it, and a rule about letters got that wrong in
+    // both directions.
+    expect(TOPICS.map((t) => [t.topic, t.noun, t.sentenceNoun])).toEqual([
+      ["security", "Security", "security"],
+      ["ci", "CI", "CI"],
+      ["dependencies", "Dependency", "dependency"],
+      ["pulls", "Pull request", "pull request"],
+      ["issues", "Issue", "issue"],
+      ["reviews", "Review", "review"],
     ]);
   });
 
@@ -68,19 +74,33 @@ describe("kevListedFor", () => {
     ["alert", true],
     ["update_pr", true],
     ["issue", false],
+    // A build is not an advisory: its KEV term is n/a by construction, so
+    // the page never gets a chance to shout about it.
+    ["ci_failure", false],
   ] as const)("%s: %s", (kind, expected) => {
     expect(kevListedFor(kind)).toBe(expected);
   });
 });
 
 describe("KIND_REASONS", () => {
-  it("has a table for every kind, and only the issue rewords the chain", () => {
+  it("has a table for every kind; only the issue and the CI failure reword the chain", () => {
     expect(Object.keys(KIND_REASONS).sort()).toEqual([
       "alert",
+      "ci_failure",
       "issue",
       "update_pr",
     ]);
     expect(KIND_REASONS.alert).toEqual({});
     expect(KIND_REASONS.update_pr).toEqual({});
+    // The five security terms are silenced, and `broken` is deliberately
+    // absent: its wording is supplied per item, because the sentence carries
+    // the deciding run's own verdict word and age.
+    expect(KIND_REASONS.ci_failure).toEqual({
+      kev: { na: "" },
+      epss: { na: "" },
+      severity: { na: "" },
+      bump: { na: "" },
+      stuck: { na: "" },
+    });
   });
 });
