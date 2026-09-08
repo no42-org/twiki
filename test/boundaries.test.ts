@@ -236,8 +236,16 @@ const BOUNDARIES: Record<
       "@hono/node-server/dist/index.js",
     ],
   },
+  // A lane collects; it never reads the read side. attention and web depend
+  // on collect's types and LANE constants (AD-34), so a lane importing either
+  // inverts the direction - and a type-only import does it without a runtime
+  // cycle, which is how the first version of this got past review.
   "src/tricorder/collect": {
-    forbidden: ["../../twiki/executor.js"],
+    forbidden: [
+      "../../twiki/executor.js",
+      "../attention/payloads.js",
+      "../web/repo-view.js",
+    ],
     allowed: ["../../core/types.js", "../store/port.js"],
   },
   "src/tricorder/store": {

@@ -97,6 +97,7 @@ describe("the page", () => {
 
   const app = () =>
     createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [REPO, NEVER],
       policy: POLICY,
@@ -263,6 +264,7 @@ describe("issues found in review", () => {
 
   it("emits a doctype so browsers do not fall into quirks mode", async () => {
     const res = await createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [REPO],
       policy: POLICY,
@@ -282,6 +284,7 @@ describe("bind address (AD-12)", () => {
     const logs: string[] = [];
     const server = startServer(
       createApp({
+        defaultBranchOf: () => "main",
         store: {} as never,
         watched: [],
         policy: POLICY,
@@ -300,6 +303,7 @@ describe("bind address (AD-12)", () => {
       const logs: string[] = [];
       const server = startServer(
         createApp({
+          defaultBranchOf: () => "main",
           store: {} as never,
           watched: [],
           policy: POLICY,
@@ -316,6 +320,7 @@ describe("bind address (AD-12)", () => {
     const logs: string[] = [];
     const server = startServer(
       createApp({
+        defaultBranchOf: () => "main",
         store: {} as never,
         watched: [],
         policy: POLICY,
@@ -463,6 +468,7 @@ describe("issues found in review (round 2)", () => {
       complete();
       return (
         await createApp({
+          defaultBranchOf: () => "main",
           store,
           watched: [REPO, OTHER, NEVER],
           policy: POLICY,
@@ -808,6 +814,7 @@ describe("issues found in review (round 2)", () => {
       // no count on this page.
       const html = await (
         await createApp({
+          defaultBranchOf: () => "main",
           store,
           watched: [REPO, { owner: "riptide-labs", name: "riptide" }],
           policy: POLICY,
@@ -916,6 +923,7 @@ describe("issues found in review (round 2)", () => {
       // Not through render(), which would complete the run as ok.
       const html = await (
         await createApp({
+          defaultBranchOf: () => "main",
           store,
           watched: [REPO],
           policy: POLICY,
@@ -964,6 +972,7 @@ describe("issues found in review (round 2)", () => {
       // The shared run is still in flight; nothing has completed.
       const html = await (
         await createApp({
+          defaultBranchOf: () => "main",
           store,
           watched: [REPO, OTHER, NEVER],
           policy: POLICY,
@@ -1005,6 +1014,7 @@ describe("issues found in review (round 2)", () => {
       // Not through render(), which would complete the shared run as ok.
       const html = await (
         await createApp({
+          defaultBranchOf: () => "main",
           store,
           watched: [REPO],
           policy: POLICY,
@@ -1155,6 +1165,7 @@ describe("issues found in review (round 2)", () => {
 
     it("refuses to be cached, so a stale copy cannot claim to be fresh", async () => {
       const res = await createApp({
+        defaultBranchOf: () => "main",
         store,
         watched: [REPO],
         policy: POLICY,
@@ -1170,6 +1181,7 @@ describe("issues found in review (round 2)", () => {
       const logs: string[] = [];
       const server = startServer(
         createApp({
+          defaultBranchOf: () => "main",
           store: {} as never,
           watched: [],
           policy: POLICY,
@@ -1217,6 +1229,7 @@ describe("issues found in review (round 2)", () => {
 
     const app = () =>
       createApp({
+        defaultBranchOf: () => "main",
         store,
         watched: [REPO, NEVER],
         policy: POLICY,
@@ -1345,6 +1358,7 @@ describe("issues found in review (round 2)", () => {
 
       const html = await (
         await createApp({
+          defaultBranchOf: () => "main",
           store,
           watched: [REPO],
           policy: POLICY,
@@ -1388,6 +1402,7 @@ describe("issues found in review (round 2)", () => {
 
       const html = await (
         await createApp({
+          defaultBranchOf: () => "main",
           store,
           watched: [REPO],
           policy: POLICY,
@@ -1433,6 +1448,7 @@ describe("issues found in review (round 2)", () => {
 
       const html = await (
         await createApp({
+          defaultBranchOf: () => "main",
           store,
           watched: [REPO],
           policy: POLICY,
@@ -1460,6 +1476,7 @@ describe("issues found in review (round 2)", () => {
 
       const html = await (
         await createApp({
+          defaultBranchOf: () => "main",
           store,
           watched: [REPO],
           policy: POLICY,

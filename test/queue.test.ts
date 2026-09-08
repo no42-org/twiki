@@ -834,6 +834,7 @@ describe("the queue page", () => {
 
   const app = () =>
     createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [{ owner: "no42-org", name: "twiki" }],
       policy: SWEEP,
@@ -1001,6 +1002,7 @@ describe("the queue page", () => {
     ]);
 
     const custom = createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [{ owner: "no42-org", name: "twiki" }],
       policy: SWEEP,
@@ -1151,6 +1153,7 @@ describe("the queue page", () => {
       updatePr("Riptide-Labs/riptide", 4),
     ]);
     const mixed = createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [
         { owner: "no42-org", name: "twiki" },
@@ -1242,6 +1245,7 @@ describe("the queue page", () => {
       updatePr("no42-org/gone", 4),
     ]);
     const two = createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [
         { owner: "no42-org", name: "twiki" },

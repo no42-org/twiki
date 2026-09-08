@@ -8,7 +8,6 @@ import type { IssueObservation } from "../collect/issues.js";
 import type { ReviewRequestObservation } from "../collect/review-requests.js";
 import type { UpdatePrObservation } from "../collect/update-prs.js";
 import type { UpdateStatusObservation } from "../collect/update-status.js";
-import type { WorkflowRunObservation } from "../collect/workflow-runs.js";
 
 // Payload shape checks, shared by every page that reads stored observations.
 //
@@ -115,23 +114,16 @@ export function readStatus(payload: unknown): UpdateStatusObservation | null {
 }
 
 /**
- * The workflow-run shape check. `conclusion` is legitimately null while a run
- * is still going, which is a state the page shows rather than a defect.
+ * The workflow-run shape check, re-exported rather than defined here.
+ *
+ * It lives with the lane that writes the rows, in `collect/workflow-runs.ts`,
+ * because the lane's own retention now reads stored rows through it and a
+ * collect lane may not import this directory: attention is the read side and
+ * depends on collect, never the other way round (AD-34). Re-exported so the
+ * pages still find every payload guard in one place, and so there is one
+ * implementation rather than a page copy and a lane copy drifting apart.
  */
-export function readWorkflowRun(
-  payload: unknown,
-): WorkflowRunObservation | null {
-  const r = payload as WorkflowRunObservation | null | undefined;
-  if (!r || typeof r !== "object") return null;
-  if (typeof r.repo !== "string") return null;
-  if (typeof r.workflowName !== "string") return null;
-  if (typeof r.runNumber !== "number") return null;
-  if (typeof r.status !== "string") return null;
-  if (!stringOrNull(r.conclusion)) return null;
-  if (!stringOrNull(r.headBranch)) return null;
-  if (typeof r.htmlUrl !== "string") return null;
-  return r;
-}
+export { readWorkflowRun } from "../collect/workflow-runs.js";
 
 /**
  * The review-request shape check, same posture as the rest: counted, not

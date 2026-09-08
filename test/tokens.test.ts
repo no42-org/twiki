@@ -99,6 +99,7 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
 
   const render = async (path: string): Promise<string> => {
     const app = createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [{ owner: "no42-org", name: "twiki" }],
       policy: { cadenceMs: 15 * 60_000 },

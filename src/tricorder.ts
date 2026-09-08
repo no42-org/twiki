@@ -576,6 +576,12 @@ async function main(): Promise<void> {
       rankPolicy,
       cutRank,
       reviewBudgetDays,
+      // Bound here, exactly as the collect role and doctor bind it, so the
+      // two keying rules in config.ts stay behind their accessor.
+      defaultBranchOf: (repo) => resolveDefaultBranch(config, repo),
+      // The same expression the lane's wiring uses, so a run the page paints
+      // as broken is one the lane counted as failing.
+      hungAfterMs: ACTIONS_CADENCE_MS * 2,
       now: () => new Date(),
     });
 
@@ -695,16 +701,32 @@ async function main(): Promise<void> {
         ? {
             installations: actionsInstallations,
             run: (installation) =>
-              collectWorkflowRuns(laneDeps, installation, "full", {
-                // An equal share of the cycle's bound, so the lane's total
-                // wall-clock stays inside it however many installations
-                // there are.
-                deadlineAt: actionsDeadline(
-                  Date.now(),
-                  actionsInstallations.length,
-                ),
-                budgetFloor: ACTIONS_BUDGET_FLOOR,
-              }),
+              collectWorkflowRuns(
+                {
+                  ...laneDeps,
+                  // Bound here so the lane never holds the config itself,
+                  // and so the two keying rules in config.ts stay behind
+                  // their accessor - the same binding doctor makes.
+                  defaultBranchOf: (repo) => resolveDefaultBranch(config, repo),
+                  // Twice this lane's own cadence, derived rather than
+                  // configured: one sweep may be missed before a run that
+                  // never finished is called hung, and a threshold shorter
+                  // than the cadence would call every in-flight run hung.
+                  hungAfterMs: ACTIONS_CADENCE_MS * 2,
+                },
+                installation,
+                "full",
+                {
+                  // An equal share of the cycle's bound, so the lane's total
+                  // wall-clock stays inside it however many installations
+                  // there are.
+                  deadlineAt: actionsDeadline(
+                    Date.now(),
+                    actionsInstallations.length,
+                  ),
+                  budgetFloor: ACTIONS_BUDGET_FLOOR,
+                },
+              ),
           }
         : null,
     });

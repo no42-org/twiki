@@ -11,7 +11,7 @@ import { workflowRunsUrl } from "../src/github/port.js";
 import {
   collectWorkflowRuns,
   LANE,
-  latestPerWorkflow,
+  latestPerBucket,
 } from "../src/tricorder/collect/workflow-runs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { FakeGitHubReadPort, makeWorkflowRun } from "./fakes.js";
@@ -24,21 +24,81 @@ const VALIDATOR = {
   tokenGen: "2026-08-18T20:00:00Z",
 };
 
-describe("latest run per workflow", () => {
+describe("latest run per workflow and bucket", () => {
   it("keeps the first (newest) run of each workflow, in page order", () => {
     // GitHub answers newest first; the selection leans on that rather than
     // re-sorting, so the fixture is deliberately newest-first.
-    const latest = latestPerWorkflow([
-      makeWorkflowRun({ runNumber: 9, workflowId: 100 }),
-      makeWorkflowRun({
-        runNumber: 8,
-        workflowId: 200,
-        workflowName: "Release",
-      }),
-      makeWorkflowRun({ runNumber: 7, workflowId: 100 }),
-      makeWorkflowRun({ runNumber: 6, workflowId: 200 }),
+    const latest = latestPerBucket(
+      [
+        makeWorkflowRun({ runNumber: 9, workflowId: 100 }),
+        makeWorkflowRun({
+          runNumber: 8,
+          workflowId: 200,
+          workflowName: "Release",
+        }),
+        makeWorkflowRun({ runNumber: 7, workflowId: 100 }),
+        makeWorkflowRun({ runNumber: 6, workflowId: 200 }),
+      ],
+      "main",
+    );
+    expect(latest.map((l) => l.run.runNumber)).toEqual([9, 8]);
+  });
+
+  it("keeps one run per workflow PER SIDE of the default-branch line", () => {
+    // The whole point of the split. One workflow, four runs: the newest on
+    // main and the newest anywhere else both survive, and the older run in
+    // each bucket does not.
+    const latest = latestPerBucket(
+      [
+        makeWorkflowRun({ runNumber: 9, headBranch: "feature/x" }),
+        makeWorkflowRun({ runNumber: 8, headBranch: "feature/y" }),
+        makeWorkflowRun({ runNumber: 7, headBranch: "main" }),
+        makeWorkflowRun({ runNumber: 6, headBranch: "main" }),
+      ],
+      "main",
+    );
+    expect(latest).toEqual([
+      {
+        run: expect.objectContaining({ runNumber: 9 }),
+        onDefaultBranch: false,
+      },
+      { run: expect.objectContaining({ runNumber: 7 }), onDefaultBranch: true },
     ]);
-    expect(latest.map((r) => r.runNumber)).toEqual([9, 8]);
+  });
+
+  it("files the buckets by the repository's OWN default branch", () => {
+    // A repository on `master` must not have its main-line run filed as a
+    // side branch. Asserted through the whole returned structure, because a
+    // check on one flag would pass while the other row was wrong.
+    const latest = latestPerBucket(
+      [
+        makeWorkflowRun({ runNumber: 9, headBranch: "main" }),
+        makeWorkflowRun({ runNumber: 8, headBranch: "master" }),
+      ],
+      "master",
+    );
+    expect(latest).toEqual([
+      {
+        run: expect.objectContaining({ runNumber: 9 }),
+        onDefaultBranch: false,
+      },
+      { run: expect.objectContaining({ runNumber: 8 }), onDefaultBranch: true },
+    ]);
+  });
+
+  it("treats a run with no head branch as not on the default branch", () => {
+    // `head_branch` is nullable, and "GitHub named no branch" is not "GitHub
+    // named this one" - a null filed as main would invent a red main.
+    const latest = latestPerBucket(
+      [makeWorkflowRun({ runNumber: 9, headBranch: null })],
+      "main",
+    );
+    expect(latest).toEqual([
+      {
+        run: expect.objectContaining({ runNumber: 9 }),
+        onDefaultBranch: false,
+      },
+    ]);
   });
 });
 
@@ -50,11 +110,24 @@ describe("the Actions lane (story 15)", () => {
   let clock: number;
   let watched: { owner: string; name: string }[];
 
+  /** What each repository declares, as `resolveDefaultBranch` would answer. */
+  let defaultBranches: Map<string, string>;
+  /**
+   * A threshold in the order of magnitude the wiring uses. Nothing here pins
+   * it to the lane's cadence, and this comment does not claim it does: the
+   * binding lives in `main()`, which is not exported, so the story that first
+   * reads the count is where it gets pinned.
+   */
+  const HUNG_AFTER_MS = 2 * 60 * 60_000;
+
   const deps = () => ({
     github,
     store,
     watchedIn: (installation: string) =>
       watched.filter((r) => r.owner.toLowerCase() === installation),
+    defaultBranchOf: (repo: { owner: string; name: string }) =>
+      defaultBranches.get(`${repo.owner}/${repo.name}`.toLowerCase()) ?? "main",
+    hungAfterMs: HUNG_AFTER_MS,
     now: () => new Date(Date.UTC(2026, 7, 18, 20, clock++)).toISOString(),
     log: (m: string) => logs.push(m),
   });
@@ -69,6 +142,7 @@ describe("the Actions lane (story 15)", () => {
     logs = [];
     clock = 0;
     watched = [REPO];
+    defaultBranches = new Map();
   });
 
   afterEach(() => {
@@ -571,6 +645,536 @@ describe("the Actions lane (story 15)", () => {
     );
     expect(r.outcome).toBe("ok");
     expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
+  });
+
+  it("keeps the failed default-branch run while pull requests churn", async () => {
+    // The failure this story exists for. Keyed by workflow alone, the first
+    // pull-request run superseded the red main within minutes and the store
+    // forgot main was broken - for as long as anyone kept pushing.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, conclusion: "failure" }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const firstSeen = current().find((c) => c.subject.key === "WFR_1");
+
+    for (const runNumber of [2, 3, 4]) {
+      github.workflowRuns.set("no42-org/packyard", [
+        makeWorkflowRun({ runNumber, headBranch: "feature/x" }),
+      ]);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+    }
+
+    // The red main is still present, still says failure, and is still
+    // current: the sweeps that did not supersede it confirmed it.
+    const main = current().find((c) => c.subject.key === "WFR_1");
+    expect(main?.payload).toMatchObject({
+      conclusion: "failure",
+      headBranch: "main",
+    });
+    // Current, not merely present: every sweep that did not supersede it
+    // confirmed it, so it never ages into stale behind the branch runs.
+    expect(main?.verifiedAt.localeCompare(firstSeen?.verifiedAt ?? "")).toBe(1);
+    expect(main?.observedAt).toBe(firstSeen?.observedAt);
+    // Two rows, one per bucket: the red main and the newest branch run.
+    expect(
+      current()
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_1", "WFR_4"]);
+  });
+
+  it("supersedes only within a bucket, in both directions", async () => {
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, headBranch: "main" }),
+      makeWorkflowRun({ runNumber: 2, headBranch: "feature/x" }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(
+      current()
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_1", "WFR_2"]);
+
+    // A newer run in each bucket, arriving one bucket at a time. Each
+    // replaces its own row and leaves the other alone.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 3, headBranch: "feature/y" }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(
+      current()
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_1", "WFR_3"]);
+
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 4, headBranch: "main" }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(
+      current()
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_3", "WFR_4"]);
+  });
+
+  it("files a master repository's main-line run as the default-branch row", async () => {
+    // Read through the declared branch, not a `main` literal. A repository on
+    // master would otherwise have every run of its real main line filed as a
+    // side branch, and a stray `main` branch would become its default row.
+    defaultBranches.set("no42-org/packyard", "master");
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, headBranch: "main" }),
+      makeWorkflowRun({
+        runNumber: 2,
+        headBranch: "master",
+        conclusion: "failure",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    // A newer run on `main` supersedes the OTHER-branch row, because on this
+    // repository main is just another branch.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 3, headBranch: "main" }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(
+      current()
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_2", "WFR_3"]);
+    // And the master row is what the failing counter counted.
+    expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
+      { repo: "no42-org/packyard", workflows: 1, failing: 1 },
+    );
+  });
+
+  it("confirms a retained row the page did not supersede", async () => {
+    // A default-branch run whose bucket has no run on this page is still the
+    // latest that bucket has, and the page can see that: both runs here were
+    // created at the same instant, so the carried row sits inside the window
+    // the page is evidence about. Without the touch it would age into stale
+    // while every sweep could see it was still the last word on that branch.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, conclusion: "failure" }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const before = current().find((c) => c.subject.key === "WFR_1");
+
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 2, headBranch: "feature/x" }),
+    ]);
+    const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+    const after = current().find((c) => c.subject.key === "WFR_1");
+
+    // Confirmed, not rewritten: freshness moved, the value did not.
+    expect(after?.verifiedAt).not.toBe(before?.verifiedAt);
+    expect(after?.observedAt).toBe(before?.observedAt);
+    // Counted as seen, exactly as a 304-confirmed row is.
+    expect(r.runs).toBe(2);
+  });
+
+  it("confirms a carried row the page's window reaches back to", async () => {
+    // The window a page is evidence about runs from its oldest run forward.
+    // Release last ran on the 16th and this page reaches back to midday on
+    // the 15th, so "no Release run here" really is proof that nothing newer
+    // exists - and the row may be badged current.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 1,
+        workflowId: 100,
+        createdAt: "2026-08-15T00:00:00.000Z",
+      }),
+      makeWorkflowRun({
+        runNumber: 2,
+        workflowId: 200,
+        workflowName: "Release",
+        conclusion: "failure",
+        createdAt: "2026-08-16T00:00:00.000Z",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const before = current().find((c) => c.subject.key === "WFR_2");
+
+    // Two runs, so the window is a range rather than a point: the carried
+    // Release row sits between them. Read from the NEWEST run the page would
+    // not cover it, and this is the assertion that says which end the window
+    // is anchored to.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 4,
+        workflowId: 300,
+        workflowName: "Docs",
+        createdAt: "2026-08-17T00:00:00.000Z",
+      }),
+      makeWorkflowRun({
+        runNumber: 3,
+        workflowId: 100,
+        createdAt: "2026-08-15T12:00:00.000Z",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    const after = current().find((c) => c.subject.key === "WFR_2");
+    expect(after?.verifiedAt).not.toBe(before?.verifiedAt);
+    expect(after?.observedAt).toBe(before?.observedAt);
+    // Vouched for, so it counts towards what the sweep attested.
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 3,
+      failing: 1,
+    });
+  });
+
+  it("still has a window when one run on the page has a bad timestamp", async () => {
+    // One unreadable time is not a reason to stop believing the rest of the
+    // page. The window is the oldest time the page DOES state, so a carried
+    // row inside it is still confirmed.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 1,
+        workflowId: 100,
+        createdAt: "2026-08-15T00:00:00.000Z",
+      }),
+      makeWorkflowRun({
+        runNumber: 2,
+        workflowId: 200,
+        workflowName: "Release",
+        createdAt: "2026-08-16T00:00:00.000Z",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const before = current().find((c) => c.subject.key === "WFR_2");
+
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 3, workflowId: 100, createdAt: "nonsense" }),
+      makeWorkflowRun({
+        runNumber: 4,
+        workflowId: 300,
+        workflowName: "Docs",
+        createdAt: "2026-08-15T12:00:00.000Z",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    const after = current().find((c) => c.subject.key === "WFR_2");
+    expect(after?.verifiedAt).not.toBe(before?.verifiedAt);
+  });
+
+  it("leaves a carried row the page's window cannot reach to age", async () => {
+    // The same shape with the window one day short. Release last ran on the
+    // 16th and this page only reaches back to the 17th, so its absence
+    // proves nothing: with more than a hundred newer runs a newer Release
+    // run can sit outside the page entirely, and badging the stored failure
+    // fresh would keep showing a red main somebody had already fixed.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 1,
+        workflowId: 100,
+        createdAt: "2026-08-15T00:00:00.000Z",
+      }),
+      makeWorkflowRun({
+        runNumber: 2,
+        workflowId: 200,
+        workflowName: "Release",
+        conclusion: "failure",
+        createdAt: "2026-08-16T00:00:00.000Z",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const before = current().find((c) => c.subject.key === "WFR_2");
+
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 3,
+        workflowId: 100,
+        createdAt: "2026-08-17T00:00:00.000Z",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    const after = current().find((c) => c.subject.key === "WFR_2");
+    // Still present - nothing superseded it - but not confirmed, so it ages
+    // into stale and the page says the sweep did not look far enough back.
+    expect(after).toBeDefined();
+    expect(after?.verifiedAt).toBe(before?.verifiedAt);
+    // And not counted either: the attestation vouches only for what this
+    // sweep could see.
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 1,
+      failing: 0,
+    });
+  });
+
+  it("confirms no carried row from a page with no runs at all", async () => {
+    // An empty page is evidence about nothing: it has no window, so it
+    // cannot prove the absence of anything.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, conclusion: "failure" }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const before = current().find((c) => c.subject.key === "WFR_1");
+
+    github.workflowRuns.set("no42-org/packyard", []);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    const after = current().find((c) => c.subject.key === "WFR_1");
+    expect(after).toBeDefined();
+    expect(after?.verifiedAt).toBe(before?.verifiedAt);
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 0,
+      failing: 0,
+    });
+  });
+
+  it("confirms nothing on a page it could not read completely", async () => {
+    // An unreadable payload might have been the newer run of either bucket,
+    // so neither superseding nor vouching for what is left is honest. The
+    // whole repository freezes rather than half of it moving.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, conclusion: "failure" }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const before = current().find((c) => c.subject.key === "WFR_1");
+
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 2, headBranch: "feature/x" }),
+    ]);
+    github.workflowRunUnreadable.set("no42-org/packyard", 1);
+    const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    const after = current().find((c) => c.subject.key === "WFR_1");
+    expect(after?.verifiedAt).toBe(before?.verifiedAt);
+    expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
+      { workflows: null, failing: null },
+    );
+  });
+
+  it("counts failing from the verdict, on the default branch only", async () => {
+    // Three retained default-branch rows - failed, hung, passed - and one
+    // failing branch run that must not be counted. The hung one is an
+    // unfinished run created twenty hours before this sweep, well past the
+    // two-hour threshold the wiring passes.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, workflowId: 100, conclusion: "failure" }),
+      makeWorkflowRun({
+        runNumber: 2,
+        workflowId: 200,
+        status: "in_progress",
+        conclusion: null,
+      }),
+      makeWorkflowRun({ runNumber: 3, workflowId: 300, conclusion: "success" }),
+      makeWorkflowRun({
+        runNumber: 4,
+        workflowId: 400,
+        headBranch: "feature/x",
+        conclusion: "failure",
+      }),
+    ]);
+
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      // Four distinct workflows retained, four rows; the failing count is
+      // the two broken default-branch ones.
+      workflows: 4,
+      failing: 2,
+    });
+  });
+
+  it("counts one workflow once, however many buckets it fills", async () => {
+    // A workflow with a run on main and one on a branch is still ONE
+    // workflow; reporting two would put a count on the page that nothing on
+    // it explains.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, headBranch: "main" }),
+      makeWorkflowRun({ runNumber: 2, headBranch: "feature/x" }),
+    ]);
+
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 1,
+      failing: 0,
+    });
+  });
+
+  it("counts a retained row the page never showed, on a 200 and a 304", async () => {
+    // The red main that fell out of the window is still what the counter is
+    // about, whichever way the next sweep answered.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, conclusion: "failure" }),
+    ]);
+    github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 2, headBranch: "feature/x" }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
+      { workflows: 1, failing: 1 },
+    );
+
+    github.workflowRunNotModified.add("no42-org/packyard");
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
+      { workflows: 1, failing: 1 },
+    );
+  });
+
+  it("does not count a failing branch run when a 304 confirms it", async () => {
+    // The free path judges the same way the fetched one does. Counting every
+    // stored failure here would make a repository whose only red run is on a
+    // feature branch read broken for as long as it stayed quiet.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 1,
+        headBranch: "feature/x",
+        conclusion: "failure",
+      }),
+      makeWorkflowRun({ runNumber: 2, headBranch: "main" }),
+    ]);
+    github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 1,
+      failing: 0,
+    });
+
+    github.workflowRunNotModified.add("no42-org/packyard");
+    const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(r.notModified).toBe(1);
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 1,
+      failing: 0,
+    });
+  });
+
+  it("leaves a stored row it cannot read out of every decision", async () => {
+    // A row with no workflow id is one the buckets cannot judge. It is
+    // skipped rather than guessed at: read through a hole it would land in a
+    // bucket of its own, never be superseded, and be counted and confirmed
+    // forever.
+    //
+    // Its created time is deliberately VALID and inside the page's window,
+    // so the window check below cannot stand in for the missing guard - it
+    // did, and the first version of this test passed with the guard removed.
+    const at = "2026-08-18T19:00:00.000Z";
+    const seeded = store.beginRun({
+      lane: LANE,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: at,
+    });
+    store.recordObservations(seeded, at, [
+      {
+        subject: { type: "workflow_run", key: "WFR_bad" },
+        payload: {
+          repo: "no42-org/packyard",
+          workflowName: "CI",
+          runNumber: 1,
+          status: "completed",
+          conclusion: "failure",
+          headBranch: "main",
+          event: "push",
+          htmlUrl: "https://github.com/no42-org/packyard/actions/runs/1",
+          createdAt: "2026-08-18T06:00:00.000Z",
+        },
+      },
+    ]);
+    store.finishRun(seeded, "ok", at);
+
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 9 }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    const bad = current().find((c) => c.subject.key === "WFR_bad");
+    // Present, because nothing observed supersedes what nothing could read.
+    expect(bad).toBeDefined();
+    // Not confirmed: the sweep has no idea what this row says.
+    expect(bad?.verifiedAt).toBe(at);
+    // And not counted, so the attestation cannot vouch for it either.
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 1,
+      failing: 0,
+    });
+  });
+
+  it("sorts an old store's rows into buckets without losing one", async () => {
+    // A store written before this change holds one row per workflow, on
+    // whatever branch happened to run last. One sweep reclassifies them from
+    // the head branch each row already carries: nothing is tombstoned for
+    // having been written on the wrong side of a line that did not exist.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 1, workflowId: 100, headBranch: "main" }),
+      makeWorkflowRun({
+        runNumber: 2,
+        workflowId: 200,
+        headBranch: "feature/x",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const schemaBefore = store.schemaVersion();
+
+    // Sweep 2: one run in a bucket neither stored row occupies.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 3,
+        workflowId: 100,
+        headBranch: "feature/y",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(
+      current()
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_1", "WFR_2", "WFR_3"]);
+    expect(
+      store.currentByType("workflow_run").filter((c) => c.state === "resolved"),
+    ).toEqual([]);
+    expect(store.schemaVersion()).toBe(schemaBefore);
+  });
+
+  it("degrades one repository when the branch resolver throws", async () => {
+    // The resolver is the caller's, and it is consulted before the read. A
+    // throw there must look like any other per-repository failure - partial,
+    // the rest of the sweep intact - rather than ending the sweep for the
+    // repositories behind it.
+    watched.push({ owner: "no42-org", name: "twiki" });
+    github.workflowRuns.set("no42-org/twiki", [
+      makeWorkflowRun({
+        nodeId: "WFR_t",
+        repo: { owner: "no42-org", name: "twiki" },
+      }),
+    ]);
+    const exploding = {
+      ...deps(),
+      defaultBranchOf: (repo: { owner: string; name: string }) => {
+        if (repo.name === "packyard") throw new Error("no config loaded");
+        return "main";
+      },
+    };
+
+    const r = await collectWorkflowRuns(exploding, "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    expect(r.failedRepos).toBe(1);
+    expect(current().map((c) => c.subject.key)).toEqual(["WFR_t"]);
   });
 
   it("writes run rows under its own lane name", async () => {

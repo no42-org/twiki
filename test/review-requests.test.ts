@@ -248,6 +248,7 @@ describe("the reviews page", () => {
 
   const app = () =>
     createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [{ owner: "no42-org", name: "packyard" }],
       policy: SWEEP,

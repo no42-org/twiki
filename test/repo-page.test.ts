@@ -13,7 +13,11 @@ import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
 import { LANE as KEV_LANE } from "../src/tricorder/collect/kev.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
-import { buildRepoView } from "../src/tricorder/web/repo-view.js";
+import {
+  buildRepoView,
+  compareRunRows,
+  type RepoRunRow,
+} from "../src/tricorder/web/repo-view.js";
 import { makeAlert, primaryNav } from "./fakes.js";
 
 const NOW = new Date("2026-08-20T12:00:00.000Z");
@@ -529,6 +533,182 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.runs[0]?.status).toBe("in_progress");
   });
 
+  it("orders the run list totally: workflow, then main, then run number", () => {
+    // The lane retains up to two rows per workflow now, so a sort on the
+    // workflow name alone ties and leaves the two halves in whatever order
+    // the store happened to return. Default branch first, because a failure
+    // on main is the one a reader came for.
+    const row = (over: Record<string, unknown>) => ({
+      subject: { type: "workflow_run", key: `WFR_${over.runNumber}` },
+      payload: {
+        repo: "no42-org/twiki",
+        workflowId: 1,
+        workflowName: "CI",
+        status: "completed",
+        conclusion: "success",
+        headBranch: "main",
+        event: "push",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/1",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        ...over,
+      },
+    });
+    seed("rest-actions-runs", [
+      row({ workflowName: "Release", runNumber: 1 }),
+      row({ runNumber: 10, headBranch: "feature/x" }),
+      row({ runNumber: 9 }),
+      // A second workflow that happens to share a display name, both on
+      // main: the run number is what breaks the next tie.
+      row({ workflowId: 2, runNumber: 4 }),
+      // And a third sharing the name AND the run number, which GitHub allows
+      // because run numbers count per workflow. Nothing but the subject key
+      // separates these two, so without it the order is whatever the store
+      // returned and moves between renders - and the JSX key collides the
+      // same way.
+      {
+        ...row({ workflowId: 3, runNumber: 4 }),
+        subject: { type: "workflow_run", key: "WFR_dup" },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, {
+      ...DEPS,
+      defaultBranch: "main",
+    });
+
+    expect(
+      view.runs.map((r) => [r.workflowName, r.headBranch, r.runNumber]),
+    ).toEqual([
+      ["CI", "main", 9],
+      // The tie the subject key breaks: `WFR_4` before `WFR_dup`.
+      ["CI", "main", 4],
+      ["CI", "main", 4],
+      ["CI", "feature/x", 10],
+      ["Release", "main", 1],
+    ]);
+    // Stated as keys too, because the pair above is indistinguishable in the
+    // columns a reader sees and an unstable order would still match it.
+    expect(view.runs.map((r) => r.key)).toEqual([
+      "WFR_9",
+      "WFR_4",
+      "WFR_dup",
+      "WFR_10",
+      "WFR_1",
+    ]);
+  });
+
+  it("never returns 0 for two different rows", () => {
+    // The comparator asserted directly, because its last term is invisible
+    // through buildRepoView: `currentByType` already returns rows in
+    // subject-key order and `Array.sort` is stable, so dropping the term
+    // still renders correctly - until the store's ORDER BY changes. A
+    // comparator documented as total must be total on its own.
+    const row = (over: Partial<RepoRunRow>): RepoRunRow => ({
+      key: "WFR_1",
+      workflowName: "CI",
+      runNumber: 4,
+      status: "completed",
+      conclusion: "success",
+      verdict: "passed",
+      headBranch: "main",
+      htmlUrl: null,
+      freshness: "fresh",
+      age: "5m ago",
+      ...over,
+    });
+    const onDefault = (r: RepoRunRow) => r.headBranch === "main";
+    const a = row({ key: "WFR_1" });
+    // Same name, same run number, same bucket: only the key differs, which
+    // is exactly the pair GitHub allows and the old sort tied on.
+    const b = row({ key: "WFR_2" });
+
+    expect(compareRunRows(a, b, onDefault)).toBeLessThan(0);
+    expect(compareRunRows(b, a, onDefault)).toBeGreaterThan(0);
+    // And it is a comparator, not a one-way rule: a row against itself ties.
+    expect(compareRunRows(a, a, onDefault)).toBe(0);
+  });
+
+  it("orders by the repository's declared default branch, not by `main`", () => {
+    // On a repository that declares master, a run on main is a side branch.
+    const row = (over: Record<string, unknown>) => ({
+      subject: { type: "workflow_run", key: `WFR_${over.runNumber}` },
+      payload: {
+        repo: "no42-org/twiki",
+        workflowId: 1,
+        workflowName: "CI",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/1",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        ...over,
+      },
+    });
+    seed("rest-actions-runs", [
+      row({ runNumber: 9, headBranch: "main" }),
+      row({ runNumber: 8, headBranch: "master" }),
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, {
+      ...DEPS,
+      defaultBranch: "master",
+    });
+
+    expect(view.runs.map((r) => [r.headBranch, r.runNumber])).toEqual([
+      ["master", 8],
+      ["main", 9],
+    ]);
+  });
+
+  it("refuses a run row whose guarded fields are the wrong shape", () => {
+    // `workflowId` and `createdAt` are what the lane's buckets, the confirm
+    // window and `runVerdict` read: a row answering undefined for either
+    // would be filed into a bucket of its own and never superseded. The two
+    // nullable fields are checked because the page prints them. All four are
+    // counted as unreadable rather than forwarded.
+    const complete = {
+      repo: "no42-org/twiki",
+      workflowId: 1,
+      workflowName: "CI",
+      runNumber: 9,
+      status: "completed",
+      conclusion: "success",
+      headBranch: "main",
+      event: "push",
+      htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+      createdAt: "2026-08-20T00:00:00.000Z",
+    };
+    const { workflowId: _id, ...noWorkflowId } = complete;
+    const { createdAt: _at, ...noCreatedAt } = complete;
+    seed("rest-actions-runs", [
+      { subject: { type: "workflow_run", key: "WFR_1" }, payload: complete },
+      {
+        subject: { type: "workflow_run", key: "WFR_2" },
+        payload: noWorkflowId,
+      },
+      {
+        subject: { type: "workflow_run", key: "WFR_3" },
+        payload: noCreatedAt,
+      },
+      {
+        subject: { type: "workflow_run", key: "WFR_4" },
+        // Null is legal here - a run still going has no conclusion - but a
+        // number is not, and forwarding it would have the page print `42`
+        // as a result word.
+        payload: { ...complete, conclusion: 42 },
+      },
+      {
+        subject: { type: "workflow_run", key: "WFR_5" },
+        payload: { ...complete, headBranch: 42 },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.runs.map((r) => r.runNumber)).toEqual([9]);
+    expect(view.unattributable).toBe(4);
+  });
+
   it("does not read a stale coverage attestation as loss of coverage", () => {
     // `unknown` is what a stale attestation degrades to, not evidence that
     // GitHub stopped watching. Treating it as not-covered would let one dead
@@ -628,6 +808,7 @@ describe("the per-repository page", () => {
 
   const app = () =>
     createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [REPO],
       policy: SWEEP,
@@ -853,7 +1034,7 @@ describe("the per-repository page", () => {
     );
   });
 
-  it("renders the CI section from this repository's runs, a running one with no result yet", async () => {
+  it("renders the CI section from this repository's runs, painting every broken verdict", async () => {
     const r = store.beginRun({
       lane: "rest-actions-runs",
       installation: "no42-org",
@@ -880,7 +1061,9 @@ describe("the per-repository page", () => {
         workflowName: "Release",
         runNumber: 3,
         status: "completed",
-        conclusion: "failure",
+        // Broken without saying `failure`. Read as a bare conclusion this
+        // rendered in normal weight while the lane counted it as failing.
+        conclusion: "timed_out",
         headBranch: "v1.2.0",
         htmlUrl: "https://github.com/no42-org/twiki/actions/runs/3",
       }),
@@ -889,7 +1072,19 @@ describe("the per-repository page", () => {
         runNumber: 9,
         status: "in_progress",
         conclusion: null,
+        // Started twelve hours before the render, against a two-hour
+        // threshold: hung, and painted as broken though it has no
+        // conclusion at all.
         htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+      }),
+      run({
+        workflowName: "Docs",
+        runNumber: 4,
+        status: "in_progress",
+        conclusion: null,
+        // Started ten minutes ago: still going, not hung, not painted.
+        createdAt: "2026-08-20T11:50:00.000Z",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/4",
       }),
     ] as never[]);
     store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
@@ -901,14 +1096,132 @@ describe("the per-repository page", () => {
     const fresh =
       '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>';
     expect(html).toContain(
-      '<h2 id="ci">CI <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">2 shown</span></h2>' +
+      '<h2 id="ci">CI <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">3 shown</span></h2>' +
         '<table class="cards" role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Workflow</th><th scope="col" role="columnheader">Result</th><th scope="col" role="columnheader">Branch</th><th scope="col" role="columnheader">Last confirmed</th></tr></thead><tbody role="rowgroup">' +
-        // Workflows in name order; a run still going says so rather than
-        // passing, and a failure is painted as one.
-        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(9, "CI")}</td><td role="cell"><span class="lbl">Result</span>in_progress, no result yet</td><td role="cell"><span class="lbl">Branch</span>main</td>${fresh}</tr>` +
-        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(3, "Release")}</td><td class="crit" role="cell"><span class="lbl">Result</span>failure</td><td role="cell"><span class="lbl">Branch</span>v1.2.0</td>${fresh}</tr>` +
+        // Workflows in name order. A run still going says so rather than
+        // passing, and the painting follows the VERDICT: the hung run and
+        // the timed-out one are both critical though neither says
+        // `failure`, and the ten-minute-old run is not.
+        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(9, "CI")}</td><td class="crit" role="cell"><span class="lbl">Result</span>in_progress, no result yet</td><td role="cell"><span class="lbl">Branch</span>main</td>${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(4, "Docs")}</td><td role="cell"><span class="lbl">Result</span>in_progress, no result yet</td><td role="cell"><span class="lbl">Branch</span>main</td>${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(3, "Release")}</td><td class="crit" role="cell"><span class="lbl">Result</span>timed_out</td><td role="cell"><span class="lbl">Branch</span>v1.2.0</td>${fresh}</tr>` +
         "</tbody></table>",
     );
+  });
+
+  it("orders the rendered run list by the repository's declared branch", async () => {
+    // Driven through createApp, not buildRepoView, because the two ordering
+    // tests that call the builder directly leave the WIRING untested: with
+    // an optional resolver, deleting the binding in `src/tricorder.ts` or
+    // the call in `app.ts` left the whole suite green, and every repository
+    // on `master` silently ordered its side branches above its main line.
+    const r = store.beginRun({
+      lane: "rest-actions-runs",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    const run = (over: Record<string, unknown>) => ({
+      subject: { type: "workflow_run", key: `WFR_${over.runNumber}` },
+      payload: {
+        repo: "no42-org/twiki",
+        workflowId: 1,
+        workflowName: "CI",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        ...over,
+      },
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: 1, failing: 0 },
+      },
+      run({
+        runNumber: 9,
+        headBranch: "main",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+      }),
+      run({
+        runNumber: 8,
+        headBranch: "master",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/8",
+      }),
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const html = await (
+      await createApp({
+        store,
+        watched: [REPO],
+        policy: SWEEP,
+        rankPolicy: DEFAULT_RANK_POLICY,
+        // What repos.yaml declares for this repository. On a repository that
+        // says master, a run on main is a side branch.
+        defaultBranchOf: () => "master",
+        now: () => NOW,
+      }).request("/repo/no42-org/twiki")
+    ).text();
+
+    const link = (n: number) =>
+      `<a href="https://github.com/no42-org/twiki/actions/runs/${n}" target="_blank" rel="noopener noreferrer">CI<span class="ext" aria-hidden="true">\u202F\u2197</span><span class="sr-only">, opens GitHub in a new tab</span></a> <span class="why">#${n}</span>`;
+    const fresh =
+      '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>';
+    // The whole tbody, in order: master first though `main` sorts before it
+    // alphabetically and carries the higher run number.
+    expect(html).toContain(
+      '<tbody role="rowgroup">' +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(8)}</td><td role="cell"><span class="lbl">Result</span>success</td><td role="cell"><span class="lbl">Branch</span>master</td>${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(9)}</td><td role="cell"><span class="lbl">Result</span>success</td><td role="cell"><span class="lbl">Branch</span>main</td>${fresh}</tr>` +
+        "</tbody>",
+    );
+  });
+
+  it("still renders the page when the branch resolver throws", async () => {
+    // The resolver is the caller's. The lane wraps the same call in its
+    // per-repository try and degrades one repository; a route that let it
+    // escape would answer 500 for the whole page instead. The ordering
+    // degrades to the default; no value on the page changes.
+    const r = store.beginRun({
+      lane: "rest-actions-runs",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "workflow_run", key: "WFR_9" },
+        payload: {
+          repo: "no42-org/twiki",
+          workflowId: 1,
+          workflowName: "CI",
+          runNumber: 9,
+          status: "completed",
+          conclusion: "success",
+          headBranch: "main",
+          event: "push",
+          htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+          createdAt: "2026-08-20T00:00:00.000Z",
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const res = await createApp({
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      defaultBranchOf: () => {
+        throw new Error("no config loaded");
+      },
+      now: () => NOW,
+    }).request("/repo/no42-org/twiki");
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('<span class="lbl">Branch</span>main');
   });
 
   it("leads with a breadcrumb back to the overview", async () => {
@@ -1134,6 +1447,7 @@ describe("the per-repository page", () => {
     store.finishRun(fresh, "ok", "2026-08-20T11:55:00.000Z");
 
     const withDailyCoverage = createApp({
+      defaultBranchOf: () => "main",
       store,
       watched: [REPO],
       policy: SWEEP,
@@ -1243,6 +1557,7 @@ describe("the per-repository page", () => {
 
     const html = await (
       await createApp({
+        defaultBranchOf: () => "main",
         store,
         watched: [REPO],
         policy: SWEEP,
@@ -1281,6 +1596,7 @@ describe("the per-repository page", () => {
 
     const html = await (
       await createApp({
+        defaultBranchOf: () => "main",
         store,
         watched: [REPO],
         policy: SWEEP,
@@ -1304,6 +1620,7 @@ describe("the per-repository page", () => {
 
     const html = await (
       await createApp({
+        defaultBranchOf: () => "main",
         store,
         watched: [REPO],
         policy: SWEEP,

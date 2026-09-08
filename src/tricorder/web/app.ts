@@ -43,7 +43,44 @@ export interface AppDeps {
   cutRank?: number;
   /** Days a review request may wait before a repository is at least soon. */
   reviewBudgetDays?: number;
+  /**
+   * What a repository calls its default branch, in production
+   * `resolveDefaultBranch` bound to the loaded config (AD-33). Read by the
+   * per-repository run list, to order its rows.
+   *
+   * Required, with no default, for the reason Story 2.1's own review found
+   * the hard way: an optional binding that falls back to `main` lets the
+   * wiring be deleted with the whole suite still green, and then every
+   * repository on `master` silently orders its side branches above its main
+   * line. A required field makes deleting the binding a compile error.
+   */
+  defaultBranchOf: (repo: RepoRef) => string;
+  /**
+   * How long a run may sit unfinished before the repository page calls it
+   * hung. The wiring passes twice the Actions cadence, the same expression
+   * the lane's wiring uses, so the page and the lane agree about a row.
+   */
+  hungAfterMs?: number;
   now: () => Date;
+}
+
+/**
+ * The repository's declared default branch, or undefined when the resolver
+ * refused to say. Undefined leaves `buildRepoView` on its documented default,
+ * so the page renders with the commonest ordering rather than not at all.
+ */
+function defaultBranchOrDefault(
+  deps: AppDeps,
+  repo: RepoRef,
+): string | undefined {
+  try {
+    return deps.defaultBranchOf(repo);
+  } catch {
+    // Nothing to log to: a route has no logger here, and a page that renders
+    // slightly out of order is a smaller failure than one that 500s. The
+    // ordering degrades; no value on the page changes.
+    return undefined;
+  }
 }
 
 export function createApp(deps: AppDeps): Hono {
@@ -141,6 +178,13 @@ export function createApp(deps: AppDeps): Hono {
       rankPolicy,
       cutRank,
       reviewBudgetDays,
+      hungAfterMs: deps.hungAfterMs,
+      // Guarded exactly as the lane guards the same call. The resolver is
+      // the caller's, and a throw here would answer 500 for a whole
+      // repository page where the lane merely degrades one repository. The
+      // page falls back to the default ordering, which is a shuffled run
+      // list rather than no page at all.
+      defaultBranch: defaultBranchOrDefault(deps, repo),
     });
     const body = RepoPage({ view, generatedAt: now.toISOString() });
     return c.html(`<!DOCTYPE html>${body}`);

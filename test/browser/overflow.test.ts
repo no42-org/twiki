@@ -121,6 +121,7 @@ describe("rendered in Chromium (Story 1.9, #131)", () => {
 
     server = startServer(
       createApp({
+        defaultBranchOf: () => "main",
         store,
         watched: [REPO, LONG],
         policy: POLICY,
