@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { isDefaultBranchRun } from "../src/core/branch.js";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
@@ -597,6 +598,37 @@ describe("the per-repository view (CAP-7)", () => {
     ]);
   });
 
+  it("sorts a fork's pull request below the genuine default-branch run (#141)", () => {
+    // Driven through buildRepoView rather than by handing compareRunRows a
+    // predicate the test wrote: the thing that can regress is the wiring in
+    // repo-view, and a test that supplies its own predicate cannot see that.
+    const row = (over: Record<string, unknown>) => ({
+      subject: { type: "workflow_run", key: `WFR_${String(over.event)}` },
+      payload: {
+        repo: "no42-org/twiki",
+        workflowId: 1,
+        workflowName: "CI",
+        headBranch: "main",
+        event: "push",
+        status: "completed",
+        conclusion: "success",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/1",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        ...over,
+      },
+    });
+    // Same workflow, same run number, both saying `main`. Only the event
+    // separates a build of main from a stranger's proposed merge.
+    seed("rest-actions-runs", [
+      row({ runNumber: 7, event: "pull_request", conclusion: "failure" }),
+      row({ runNumber: 7, event: "push" }),
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.runs.map((x) => x.event)).toEqual(["push", "pull_request"]);
+  });
+
   it("never returns 0 for two different rows", () => {
     // The comparator asserted directly, because its last term is invisible
     // through buildRepoView: `currentByType` already returns rows in
@@ -609,6 +641,7 @@ describe("the per-repository view (CAP-7)", () => {
       runNumber: 4,
       status: "completed",
       conclusion: "success",
+      event: "push",
       verdict: "passed",
       headBranch: "main",
       htmlUrl: null,

@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { isDefaultBranchRef } from "../src/core/branch.js";
+import { isDefaultBranchRef, isDefaultBranchRun } from "../src/core/branch.js";
 import { buildConfig, resolveDefaultBranch } from "../src/core/config.js";
 import { DEFAULT_POLICY } from "../src/core/types.js";
 
@@ -118,5 +118,58 @@ describe("isDefaultBranchRef", () => {
     // `head_branch` on a workflow run is nullable, and "GitHub named no
     // branch" is not "GitHub named this one".
     expect(isDefaultBranchRef(null, "main")).toBe(false);
+  });
+});
+
+describe("isDefaultBranchRun", () => {
+  // The question the callers actually ask. A branch NAME is not evidence
+  // about whose branch it is: a pull request from a fork's own `main`
+  // produces a run in THIS repository whose head_branch is `main` (#141),
+  // and only the event says the run built a proposed merge rather than the
+  // branch. One row per case, each naming why it lands where it does.
+  const run = (event: string, headBranch: string | null) => ({
+    event,
+    headBranch,
+  });
+
+  describe.each<[string, string, string | null, boolean]>([
+    ["a push to it", "push", "main", true],
+    ["a scheduled run on it", "schedule", "main", true],
+    ["a dispatched run on it", "workflow_dispatch", "main", true],
+    // 218 of the 797 default-branch runs measured on this estate were
+    // `dynamic`. An allowlist of the obvious triggers would drop them, and
+    // a dropped default-branch build is a red main nobody sees.
+    ["a dynamic run on it", "dynamic", "main", true],
+    [
+      "an event this code has never heard of",
+      "some_future_event",
+      "main",
+      true,
+    ],
+    ["a push to another branch", "push", "feature", false],
+    ["a pull request from a fork's own main", "pull_request", "main", false],
+    ["a pull request targeted at it", "pull_request_target", "main", false],
+    ["a pull request from a feature branch", "pull_request", "feature", false],
+    ["a run GitHub named no branch for", "push", null, false],
+  ])("%s", (_name, event, headBranch, expected) => {
+    it(`is ${expected}`, () => {
+      expect(isDefaultBranchRun(run(event, headBranch), "main")).toBe(expected);
+    });
+  });
+
+  it("follows the declared branch, not the word main", () => {
+    // The repository declares `master`, so a push to master is its build and
+    // a push to main is not.
+    expect(isDefaultBranchRun(run("push", "master"), "master")).toBe(true);
+    expect(isDefaultBranchRun(run("push", "main"), "master")).toBe(false);
+  });
+
+  it("still strips the one ref prefix the branch half handles", () => {
+    // Delegated rather than reimplemented: the run-level question adds the
+    // event and leaves the string comparison where it already lives.
+    expect(isDefaultBranchRun(run("push", "refs/heads/main"), "main")).toBe(
+      true,
+    );
+    expect(isDefaultBranchRun(run("push", "refs/tags/v1"), "main")).toBe(false);
   });
 });

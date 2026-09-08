@@ -12,6 +12,7 @@ import {
   collectWorkflowRuns,
   LANE,
   latestPerBucket,
+  normaliseRun,
 } from "../src/tricorder/collect/workflow-runs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { FakeGitHubReadPort, makeWorkflowRun } from "./fakes.js";
@@ -681,6 +682,130 @@ describe("the Actions lane (story 15)", () => {
         .map((c) => c.subject.key)
         .sort(),
     ).toEqual(["WFR_1", "WFR_4"]);
+  });
+
+  it("leaves a fork's pull request out of the default bucket (#141)", async () => {
+    // The reported failure. A contributor works on their fork's own `main`
+    // and opens a pull request; GitHub runs it HERE and reports
+    // head_branch: "main", because that is the branch name in the head
+    // repository. Bucketing it by the name alone put a stranger's failed run
+    // in the default bucket, where it superseded the genuine push row and
+    // counted as "main is broken".
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 9,
+        headBranch: "main",
+        event: "pull_request",
+        conclusion: "failure",
+      }),
+      makeWorkflowRun({ runNumber: 2, headBranch: "main", event: "push" }),
+    ]);
+
+    const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("ok");
+    // Both rows survive: the push in the default bucket, the pull request in
+    // the other one. Neither tombstones the other, because they are no
+    // longer in the same bucket.
+    expect(
+      current()
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_2", "WFR_9"]);
+    const push = current().find((c) => c.subject.key === "WFR_2");
+    expect(push?.payload).toMatchObject({ event: "push", headBranch: "main" });
+    // And the repository is not reported broken on a stranger's evidence.
+    expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
+      { workflows: 1, failing: 0 },
+    );
+  });
+
+  it("reclassifies a stored fork run out of the default bucket on one sweep", async () => {
+    // A store written under the branch-only rule holds the fork run in the
+    // default bucket. The event is already in every stored payload, so the
+    // first sweep that reads it moves the row without a migration, and the
+    // genuine push row is not tombstoned for having been in the wrong one.
+    const first = store.beginRun({
+      lane: LANE,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-18T19:00:00.000Z",
+    });
+    store.recordObservations(first, "2026-08-18T19:00:00.000Z", [
+      normaliseRun(
+        makeWorkflowRun({
+          runNumber: 9,
+          headBranch: "main",
+          event: "pull_request",
+          conclusion: "failure",
+        }),
+      ),
+      normaliseRun(
+        makeWorkflowRun({ runNumber: 2, headBranch: "main", event: "push" }),
+      ),
+    ]);
+    store.finishRun(first, "ok", "2026-08-18T19:00:00.000Z");
+
+    // The page carries a NEWER push on main. That makes the default bucket
+    // observed, so a stored row wrongly filed there is tombstoned: this is
+    // what tells a branch-only reclassification apart from the right one.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 12, headBranch: "main", event: "push" }),
+    ]);
+
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    // The newer push supersedes the older push. The fork's run belongs to
+    // the other bucket, which the page never observed, so it survives -
+    // whereas filing it by branch alone would have tombstoned it here.
+    expect(
+      current()
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_12", "WFR_9"]);
+    expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
+      { failing: 0 },
+    );
+  });
+
+  it("leaves a stored row with no event out of every decision", async () => {
+    // The bucket reads the event, so the guard checks it. A payload without
+    // one cannot be filed, and an unreadable row is left alone rather than
+    // guessed at.
+    const first = store.beginRun({
+      lane: LANE,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-18T19:00:00.000Z",
+    });
+    const complete = normaliseRun(
+      makeWorkflowRun({ runNumber: 2, headBranch: "main" }),
+    );
+    store.recordObservations(first, "2026-08-18T19:00:00.000Z", [
+      complete,
+      {
+        subject: { type: "workflow_run", key: "WFR_noevent" },
+        payload: { ...(complete.payload as object), event: undefined },
+      } as never,
+    ]);
+    store.finishRun(first, "ok", "2026-08-18T19:00:00.000Z");
+
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({ runNumber: 12, headBranch: "main" }),
+    ]);
+
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    // The readable row was superseded; the unreadable one was neither
+    // superseded nor counted, and it is still present.
+    expect(
+      current()
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_12", "WFR_noevent"]);
+    expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
+      { workflows: 1 },
+    );
   });
 
   it("supersedes only within a bucket, in both directions", async () => {
