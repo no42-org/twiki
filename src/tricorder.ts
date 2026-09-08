@@ -40,6 +40,7 @@ import {
   collectKev,
   KEV_INSTALLATION,
   LANE as KEV_LANE,
+  type KevDeps,
 } from "./tricorder/collect/kev.js";
 import {
   collectReviewRequests,
@@ -62,12 +63,17 @@ import {
 } from "./tricorder/collect/update-status.js";
 import {
   LANE as ACTIONS_LANE,
+  type ActionsDeps,
   collectWorkflowRuns,
 } from "./tricorder/collect/workflow-runs.js";
 import { diagnose, formatReport } from "./tricorder/doctor.js";
-import type { RunOutcome, RunScope } from "./tricorder/store/port.js";
+import type {
+  RunOutcome,
+  RunScope,
+  StorePort,
+} from "./tricorder/store/port.js";
 import { SqliteStore } from "./tricorder/store/sqlite-store.js";
-import { createApp } from "./tricorder/web/app.js";
+import { type AppDeps, createApp } from "./tricorder/web/app.js";
 import { startServer } from "./tricorder/web/server.js";
 
 // gitricorder's entrypoint. Two roles from one image, chosen by argument
@@ -518,6 +524,68 @@ export function parseKevUrl(raw: string | undefined): string | undefined {
   return url.toString();
 }
 
+/**
+ * Everything the `web` role hands `createApp`, in one named place.
+ *
+ * Extracted from `main()` so the completeness guard sits on a SIGNATURE
+ * rather than inside a function nothing can import (#143). The return type is
+ * `Required<AppDeps>`, which strips the optionality `AppDeps` declares, so
+ * dropping any binding below is a compile error here - while the type stays
+ * optional for the many tests that legitimately want the defaults, so the
+ * guard costs no test call site.
+ *
+ * On a signature, and not `satisfies` on the literal inside `main()`, because
+ * review deleted that assertion and left typecheck, lint and the whole suite
+ * green: an inline guard is exactly as droppable as the binding it guards.
+ * Here `test/wiring-completeness.test.ts` calls this and asserts the whole
+ * structure it returns, so `make test` fails too.
+ *
+ * Three of these bindings fell out of review one at a time, and two of the
+ * three - `cutRank` and `reviewBudgetDays` - carry documented environment
+ * variables. Their defaults are right for every test and every default
+ * install, and wrong only for the operator who deliberately configured
+ * something, which is why nothing ever noticed.
+ *
+ * Takes the whole parsed attention block rather than three loose arguments,
+ * so the env-to-deps hop is covered too: a field dropped on the way in is a
+ * missing property here rather than a default the page silently applies. The
+ * limit of what this can guard is written where the fields are declared, in
+ * `AppDeps`.
+ */
+export function buildWebDeps(input: {
+  store: StorePort;
+  config: Config;
+  attention: ReturnType<typeof parseAttentionEnv>;
+  now: () => Date;
+}): Required<AppDeps> {
+  const { store, config, attention, now } = input;
+  return {
+    store,
+    // repos.yaml is the entire universe (AD-10), so its entries ARE the
+    // watched set. There is no second filter to apply here.
+    watched: config.repos,
+    // Matches the full-sweep cadence the architecture plans for.
+    policy: { cadenceMs: ALERT_CADENCE_MS },
+    // Each lane judged on its own cadence. One global threshold applied to
+    // every lane is a defect AD-11 names explicitly, and it made both daily
+    // lanes read stale thirty minutes after succeeding.
+    lanePolicies: {
+      [KEV_LANE]: { cadenceMs: KEV_CADENCE_MS },
+      [COVERAGE_LANE]: { cadenceMs: COVERAGE_CADENCE_MS },
+    },
+    rankPolicy: attention.rankPolicy,
+    cutRank: attention.cutRank,
+    reviewBudgetDays: attention.reviewBudgetDays,
+    // Bound here, exactly as the collect role and doctor bind it, so the two
+    // keying rules in config.ts stay behind their accessor.
+    defaultBranchOf: (repo) => resolveDefaultBranch(config, repo),
+    // The same expression the lane's wiring uses, so a run the page paints as
+    // broken is one the lane counted as failing.
+    hungAfterMs: ACTIONS_CADENCE_MS * 2,
+    now,
+  };
+}
+
 function usage(): never {
   console.error("usage: tricorder <collect|web|doctor>");
   process.exit(2);
@@ -552,38 +620,15 @@ async function main(): Promise<void> {
   };
 
   if (role === "web") {
-    const { rankPolicy, cutRank, reviewBudgetDays } = attentionEnvOrExit();
+    const attention = attentionEnvOrExit();
     // Read-only, and refuses a schema this build does not understand rather
     // than serving misread rows (AD-26).
     const store = SqliteStore.openForRead(dbPath);
-    // repos.yaml is the entire universe (AD-10), so its entries ARE the
-    // watched set. There is no second filter to apply here.
     const config = loadConfig(configPath);
-    const watched = config.repos;
 
-    const app = createApp({
-      store,
-      watched,
-      // Matches the full-sweep cadence the architecture plans for.
-      policy: { cadenceMs: ALERT_CADENCE_MS },
-      // Each lane judged on its own cadence. One global threshold applied to
-      // every lane is a defect AD-11 names explicitly, and it made both daily
-      // lanes read stale thirty minutes after succeeding.
-      lanePolicies: {
-        [KEV_LANE]: { cadenceMs: KEV_CADENCE_MS },
-        [COVERAGE_LANE]: { cadenceMs: COVERAGE_CADENCE_MS },
-      },
-      rankPolicy,
-      cutRank,
-      reviewBudgetDays,
-      // Bound here, exactly as the collect role and doctor bind it, so the
-      // two keying rules in config.ts stay behind their accessor.
-      defaultBranchOf: (repo) => resolveDefaultBranch(config, repo),
-      // The same expression the lane's wiring uses, so a run the page paints
-      // as broken is one the lane counted as failing.
-      hungAfterMs: ACTIONS_CADENCE_MS * 2,
-      now: () => new Date(),
-    });
+    const app = createApp(
+      buildWebDeps({ store, config, attention, now: () => new Date() }),
+    );
 
     const server = startServer(app, {
       host: env.TRICORDER_HOST,
@@ -661,7 +706,20 @@ async function main(): Promise<void> {
       coverage: (installation) =>
         collectCoverage(laneDeps, installation, "full"),
       kev: (scope) =>
-        collectKev({ enrichment, store, now: laneDeps.now, log }, scope),
+        collectKev(
+          {
+            enrichment,
+            store,
+            now: laneDeps.now,
+            log,
+            // Hand-assembled rather than a `laneDeps` spread, which makes it
+            // the collect literal with the most room to quietly stop
+            // supplying something. Same guard as the Actions lane below,
+            // where the note explains why only the two hand-assembled
+            // literals carry one.
+          } satisfies Required<KevDeps>,
+          scope,
+        ),
       updatePrs:
         config.bots.length > 0
           ? (installation) =>
@@ -713,7 +771,22 @@ async function main(): Promise<void> {
                   // never finished is called hung, and a threshold shorter
                   // than the cadence would call every in-flight run hung.
                   hungAfterMs: ACTIONS_CADENCE_MS * 2,
-                },
+                  // The same completeness guard `buildWebDeps` carries, for
+                  // the same reason (#143): a field this lane declares and
+                  // this wiring stops supplying is a compile error here, not
+                  // a default nobody notices.
+                  //
+                  // Guarding what is added next rather than anything today.
+                  // No collect deps type declares an optional member, so
+                  // `Required<T>` is `T` for all of them and the parameter
+                  // type already rejects a missing field. The scope, so the
+                  // next reader does not assume the file is covered: of the
+                  // nine dependency literals here, only this one and the KEV
+                  // one above are assembled by hand - the rest are handed the
+                  // shared `laneDeps` object and cannot individually omit
+                  // anything. The optional fields that made #143 possible are
+                  // all on the read side, in `AppDeps`.
+                } satisfies Required<ActionsDeps>,
                 installation,
                 "full",
                 {

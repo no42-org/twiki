@@ -900,12 +900,13 @@ describe("the Actions lane (story 15)", () => {
     // into stale and the page says the sweep did not look far enough back.
     expect(after).toBeDefined();
     expect(after?.verifiedAt).toBe(before?.verifiedAt);
-    // And not counted either: the attestation vouches only for what this
-    // sweep could see.
+    // Still counted, though: the window decides whose freshness this sweep
+    // may touch, not what the store holds. The page renders this row, so the
+    // count includes it, and the two cannot disagree about the repository.
     expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
       repo: "no42-org/packyard",
-      workflows: 1,
-      failing: 0,
+      workflows: 2,
+      failing: 1,
     });
   });
 
@@ -924,10 +925,13 @@ describe("the Actions lane (story 15)", () => {
     const after = current().find((c) => c.subject.key === "WFR_1");
     expect(after).toBeDefined();
     expect(after?.verifiedAt).toBe(before?.verifiedAt);
+    // Unconfirmed and still held, so still counted: an empty page proves no
+    // absence, and reporting zero here would be a confident zero about rows
+    // the store plainly has (AD-28).
     expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
       repo: "no42-org/packyard",
-      workflows: 0,
-      failing: 0,
+      workflows: 1,
+      failing: 1,
     });
   });
 
@@ -1058,6 +1062,94 @@ describe("the Actions lane (story 15)", () => {
       repo: "no42-org/packyard",
       workflows: 1,
       failing: 0,
+    });
+  });
+
+  it("writes the same counters on a 200 and the 304 after it", async () => {
+    // #142. The counters used to run over `retained` on the 200 path and
+    // over everything stored on the 304 path, so a repository whose red main
+    // had aged out of the page window wrote `failing: 0` on the sweep that
+    // read a page and `failing: 1` on the next one that was told nothing had
+    // changed - two numbers about a repository nothing had touched. Both
+    // paths now count the rows the store HOLDS, so they agree because they
+    // are the same computation over the same set.
+    github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 1,
+        nodeId: "WFR_1",
+        conclusion: "failure",
+        createdAt: "2026-08-15T00:00:00.000Z",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    // A second page, every run on it newer than the red row: the window
+    // starts after that row, so this sweep cannot vouch for its freshness.
+    // It is still held, and still counted.
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 3,
+        nodeId: "WFR_3",
+        workflowId: 200,
+        workflowName: "Release",
+        createdAt: "2026-08-18T00:00:00.000Z",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    const afterFetch = store.currentByType("repository_actions")[0]?.payload;
+    expect(afterFetch).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 2,
+      failing: 1,
+    });
+    // Both rows held, which is what the two paths now have in common.
+    expect(current()).toHaveLength(2);
+
+    github.workflowRunNotModified.add("no42-org/packyard");
+    const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(r.notModified).toBe(1);
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual(
+      afterFetch,
+    );
+  });
+
+  it("counts a run that turns hung under repeated 304s", async () => {
+    // Why the counters are not carried forward from the last confirmation,
+    // which is what a 304 seems to invite. `failing` counts hung runs, and a
+    // run becomes hung by the CLOCK rather than by the listing: carried
+    // forward, this run would be painted red by the page and counted by
+    // nothing, for as long as the repository stayed quiet.
+    github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
+    github.workflowRuns.set("no42-org/packyard", [
+      makeWorkflowRun({
+        runNumber: 1,
+        nodeId: "WFR_1",
+        status: "in_progress",
+        conclusion: null,
+        // Half an hour before the first sweep, against a two-hour threshold.
+        createdAt: "2026-08-18T19:30:00.000Z",
+      }),
+    ]);
+    await collectWorkflowRuns(deps(), "no42-org", "full");
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 1,
+      failing: 0,
+    });
+
+    // Three hours and twenty minutes later, with GitHub still saying the
+    // listing has not changed. The run has not moved; the clock has.
+    clock = 200;
+    github.workflowRunNotModified.add("no42-org/packyard");
+    const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+
+    expect(r.notModified).toBe(1);
+    expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+      repo: "no42-org/packyard",
+      workflows: 1,
+      failing: 1,
     });
   });
 

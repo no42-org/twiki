@@ -6,7 +6,7 @@
 /* biome-ignore-all lint/a11y/noRedundantRoles: the table roles are implied by the elements at desktop width only; the phone cards restyle them to `display: block`, and a browser then drops the implied role. Stating it survives that (EXPERIENCE.md Accessibility Floor). */
 
 import type { Child, FC, PropsWithChildren } from "hono/jsx";
-import { isBrokenVerdict } from "../../core/run-verdict.js";
+import { isBrokenVerdict, type RunVerdict } from "../../core/run-verdict.js";
 import { safeUrl } from "../../core/safe-url.js";
 import { foldSlug } from "../../core/slug.js";
 import type { Tier } from "../../core/tier.js";
@@ -1028,6 +1028,32 @@ const SectionBody: FC<{
  * order on the page is TOPICS' order and nothing else (AD-32): a section
  * cannot be forgotten or moved without the exhaustiveness check noticing.
  */
+/**
+ * The word the Result cell shows for a verdict, or null to let GitHub speak.
+ *
+ * The cell is worded by the same verdict that colours it (#144). Only the
+ * hung case needs a word of our own: a run that has sat unfinished past the
+ * threshold has no conclusion to print, so the cell used to read
+ * `in_progress, no result yet` in red - the colour asserting broken and the
+ * words asserting unknown, on one row.
+ *
+ * Everywhere else GitHub's own word IS the verdict, and it is the more
+ * precise of the two: `timed_out` says more than `failed` would, and a run
+ * that is simply still going says it has not finished. Null means exactly
+ * that, and the cell falls through to the raw conclusion.
+ *
+ * A `Record` keyed by the verdict type rather than a comparison against the
+ * one literal that needs handling: a verdict added to `RunVerdict` later is a
+ * build failure here, which is what stops #144 being reopened silently by a
+ * new broken state that nothing gave a word to.
+ */
+const VERDICT_WORDS: Record<RunVerdict, string | null> = {
+  hung: "hung",
+  failed: null,
+  passed: null,
+  other: null,
+};
+
 const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
   switch (topic) {
     case "security":
@@ -1123,9 +1149,9 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
                     label="Result"
                     show
                   >
-                    {/* A run still going has no conclusion yet, which is a
-                        state to show rather than a gap to paper over. */}
-                    {r.conclusion ?? `${r.status}, no result yet`}
+                    {VERDICT_WORDS[r.verdict] ??
+                      r.conclusion ??
+                      `${r.status}, no result yet`}
                   </Td>
                   <Td label="Branch" show>
                     {r.headBranch ?? "unknown"}
