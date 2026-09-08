@@ -53,7 +53,22 @@ export interface ReleaseOutcome {
      * `detail` says what release state the tag has (published, draft, none)
      * so the reader knows whether a human is mid-release.
      */
-    | "tag-exists";
+    | "tag-exists"
+    /**
+     * The tree at the commit about to be tagged does not agree that this is
+     * its version, so nothing was pushed (#145).
+     *
+     * Covers every way a declared source fails to confirm the version - it
+     * says something else, nothing is at that path, something that is not a
+     * file is, GitHub would not inline it, its pattern finds no version, or
+     * its pattern matches in more than one place - because they mean the
+     * same thing to a reader: twiki will not tag a tree it cannot confirm.
+     * `detail` says which file, what it said and what twiki computed.
+     *
+     * Like `tag-exists`, not an error and not a stop. Nothing failed and
+     * nothing was written; a human has to land a version bump.
+     */
+    | "tree-version-mismatch";
   version?: string;
   detail: string;
 }
@@ -83,10 +98,11 @@ export interface RepoResult {
    * True when this repository stopped before finishing what it had to do.
    *
    * Deliberately does NOT claim a write failed. The usual cause is a refused
-   * merge, but `evaluateRelease` reads `latestTag` and `defaultBranchSha`
-   * before it pushes anything, so a 502 on either stops the repository with
-   * no write attempted. `error` carries the actual cause; this flag only
-   * says the work is incomplete.
+   * merge, but `evaluateRelease` reads `latestTag`, `defaultBranchSha` and -
+   * where the repository declares version sources - the tree at that sha,
+   * all before it pushes anything, so a 502 on any of them stops the
+   * repository with no write attempted. `error` carries the actual cause;
+   * this flag only says the work is incomplete.
    *
    * Load-bearing for the reader, not decoration. Stopping creates a second
    * reason a pull request can be missing from `prs`, alongside "evaluated and

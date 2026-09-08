@@ -156,6 +156,25 @@ export interface RepoFacts {
   mainWorkflowRuns?: WorkflowRunRef[];
 }
 
+/**
+ * Where a repository's tree carries its version.
+ *
+ * A file path and a pattern with exactly one capture group; the group is what
+ * the tree says its version is. Declared, never discovered: there is no
+ * universal answer to where a tree keeps its version, and guessing produces
+ * the confident wrongness this system exists to refuse.
+ *
+ * The pattern is matched with the `g` and `m` flags, so `^` and `$` anchor to
+ * a line rather than to the whole file, which is what somebody writing a
+ * pattern for a version LINE means by them.
+ */
+export interface VersionSource {
+  /** Path in the tree, as `repos.getContent` takes it: no leading slash. */
+  path: string;
+  /** The pattern source, as declared. Compiled by `compileVersionPattern`. */
+  pattern: string;
+}
+
 export interface RepoPolicy {
   /** Auto-merge minor bumps (in addition to always-on patch). Default true. */
   autoMergeMinor: boolean;
@@ -171,12 +190,28 @@ export interface RepoPolicy {
    * the declaration against what GitHub reports; nothing repairs it.
    */
   defaultBranch: string;
+  /**
+   * Where this repository's tree carries its version. Default: nowhere.
+   *
+   * Empty is a real answer, not an opt-out and not a gap to fill. A module
+   * tagged by ref alone genuinely carries no version in its tree, and for
+   * that repository tagging head is correct - so an undeclared repository
+   * releases exactly as it did before this check existed, and no content is
+   * read for it at all.
+   *
+   * When it is non-empty, every source must agree with the version twiki
+   * computed before a tag is pushed. Disagreement blocks the release; twiki
+   * never edits the tree, opens a bump pull request, or runs a command a
+   * repository supplied.
+   */
+  versionSources: readonly VersionSource[];
 }
 
 export const DEFAULT_POLICY: RepoPolicy = {
   autoMergeMinor: true,
   mergeOnly: false,
   defaultBranch: "main",
+  versionSources: [],
 };
 
 export type Mode = "shadow" | "enforce";

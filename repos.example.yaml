@@ -32,6 +32,37 @@ repos:
   - repo: no42-org/venerable-thing
     defaultBranch: master
 
+  # Where this repository's tree carries its version.
+  #
+  # Absent means nowhere, and that is a real answer rather than a way to opt
+  # out: a module tagged by ref alone genuinely carries no version in its
+  # tree, so twiki tags its head exactly as it always has and reads nothing.
+  #
+  # Each source is a file and a pattern with exactly ONE capture group, and
+  # the group is the version. Before pushing a tag, twiki reads these files at
+  # the commit it is about to tag and compares what they say against the
+  # version it computed. A leading `v` is optional on either side, so `v0.6.2`
+  # matches `0.6.2`; nothing else is normalised, so `0.6.2-rc` matches
+  # neither. The pattern is matched with `g` and `m`, so `^` and `$` anchor to
+  # a line.
+  #
+  # Any of these blocks the release, names the file in the digest, and writes
+  # nothing: the file disagrees, nothing is at that path at that commit,
+  # something other than a file is, the file is too big for GitHub to hand
+  # back inline, the pattern finds no version, or the pattern matches in more
+  # than one place. twiki never edits the tree - a human lands the version
+  # bump, and the next tick releases. Until it does, a settled repository
+  # reports the same block every tick, which is the check working.
+  #
+  # A repository with no tag yet computes v0.0.1 for its first release, so a
+  # declared source must say 0.0.1 before that first release goes out.
+  - repo: no42-org/versioned-service
+    versionSources:
+      - path: internal/version/version.go
+        pattern: 'const version = "([^"]+)"'
+      - path: compose.yml
+        pattern: 'image: ghcr\.io/no42-org/versioned-service:(\S+)'
+
 # Dependency-update bot actors for gitricorder's update-PR lane, as GitHub
 # search qualifiers. Configuration and only configuration: no bot login exists
 # in the source, so an empty or absent list disables the lane, loudly.

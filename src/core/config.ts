@@ -15,6 +15,7 @@ import {
   type RepoRef,
   repoSlug,
 } from "./types.js";
+import { versionPatternProblem } from "./version-agreement.js";
 
 // Strict schemas: unknown keys are rejected so a typo in repos.yaml fails loudly
 // rather than silently disabling a policy override.
@@ -42,6 +43,52 @@ const RepoEntrySchema = z.strictObject({
       (v) => !v.startsWith("refs/"),
       "must name the branch, not the ref: write `main`, not `refs/heads/main`",
     )
+    .optional(),
+  /**
+   * Where this repository's tree carries its version; absent means nowhere.
+   *
+   * Absence is a real answer rather than an opt-out, so there is no default
+   * to fall back to and nothing is guessed.
+   *
+   * The pattern is validated HERE, where it was written, because a pattern
+   * that cannot compile or that captures the wrong number of things is a
+   * mistake in the document and not a fact about any repository. An
+   * empty list is refused for the same reason `defaultBranch: ""` is:
+   * somebody who wrote it meant something, and silently reading it as
+   * "declares nothing" would hide the one declaration that is definitely
+   * wrong.
+   */
+  versionSources: z
+    .array(
+      z.strictObject({
+        path: z
+          .string()
+          .transform((v) => v.trim())
+          .refine((v) => v.length > 0, "must name a file in the tree")
+          // Each of these reaches the contents endpoint exactly as written,
+          // so a path that can never name a file is refused where it was
+          // typed rather than blocking a release months later.
+          .refine(
+            (v) => !v.startsWith("/"),
+            "must be a path within the tree, with no leading slash",
+          )
+          .refine(
+            (v) => !v.endsWith("/"),
+            "must name a file, not a directory: drop the trailing slash",
+          )
+          .refine(
+            (v) => !v.split("/").includes(".."),
+            "must not climb out of the tree with `..`",
+          ),
+        pattern: z.string().superRefine((v, ctx) => {
+          const problem = versionPatternProblem(v);
+          if (problem !== null) {
+            ctx.addIssue({ code: "custom", message: problem });
+          }
+        }),
+      }),
+    )
+    .min(1, "list at least one source, or leave the key out entirely")
     .optional(),
 });
 
@@ -227,6 +274,7 @@ export function buildConfig(
       autoMergeMinor: entry.autoMergeMinor ?? DEFAULT_POLICY.autoMergeMinor,
       mergeOnly: entry.mergeOnly ?? DEFAULT_POLICY.mergeOnly,
       defaultBranch: entry.defaultBranch ?? DEFAULT_POLICY.defaultBranch,
+      versionSources: entry.versionSources ?? DEFAULT_POLICY.versionSources,
     });
     declaredSlugs.set(key, slug);
   }

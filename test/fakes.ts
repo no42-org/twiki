@@ -22,6 +22,7 @@ import type {
 } from "../src/enrich/port.js";
 import type {
   DependabotAccess,
+  FileAtRef,
   GitHubPort,
   GitHubReadPort,
   IssuePage,
@@ -244,6 +245,12 @@ export interface FakeRepoData {
   workflowRuns?: Record<string, WorkflowRunRef[]>;
   /** behind_by keyed by PR head SHA. */
   behindByMap?: Record<string, number | null>;
+  /**
+   * File text keyed by `<ref>:<path>`. Anything unlisted is absent AT THAT
+   * REF, which is what makes "the tree is read at the sha being tagged"
+   * expressible here: the same path can exist at one sha and not another.
+   */
+  contents?: Record<string, string>;
 }
 
 /**
@@ -562,6 +569,18 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   async behindBy(repo: RepoRef, headSha: string): Promise<number | null> {
     // Default null (unknown/fail-closed), matching the real adapter on error.
     return this.get(repo).behindByMap?.[headSha] ?? null;
+  }
+  /** Every content read, so a test can assert that NONE happened. */
+  contentReads: { repo: string; path: string; ref: string }[] = [];
+
+  async readFileAtRef(
+    repo: RepoRef,
+    path: string,
+    ref: string,
+  ): Promise<FileAtRef> {
+    this.contentReads.push({ repo: repoSlug(repo), path, ref });
+    const text = this.get(repo).contents?.[`${ref}:${path}`];
+    return text === undefined ? { kind: "absent" } : { kind: "text", text };
   }
 }
 

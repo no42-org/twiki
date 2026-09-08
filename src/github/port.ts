@@ -181,6 +181,25 @@ export interface GitHubRepoReadPort {
   /** Whether the default branch is defended, and what could not be read. */
   branchProtection(repo: RepoRef, branch: string): Promise<ProtectionFact>;
   defaultBranchSha(repo: RepoRef): Promise<string>;
+  /**
+   * What is at one path at one ref: its text, or WHICH of the several
+   * different reasons there is no text to read.
+   *
+   * `ref` is a sha, branch or tag. The release check passes the sha it is
+   * about to tag, so what it reads is the tree that gets tagged and not
+   * whatever the branch has moved on to.
+   *
+   * One `null` for all of them was the first shape and it was wrong: the
+   * caller then said "not in the tree" about a path holding a directory, a
+   * symlink, a submodule or a file too big to inline, sending an operator to
+   * look for a file that is right there. Each answer says only what was
+   * established.
+   *
+   * None of them is a failure. A 403, a 502 or anything else THROWS, because
+   * "we could not read it" and "it is not there" send a reader to different
+   * places, and only one of them is the repository's business.
+   */
+  readFileAtRef(repo: RepoRef, path: string, ref: string): Promise<FileAtRef>;
 
   // Remediation reads (read-only). `ref` is a SHA or branch name.
   failingChecks(repo: RepoRef, ref: string): Promise<FailingCheck[]>;
@@ -360,6 +379,25 @@ export interface GitHubWritePort {
  * type said so.
  */
 /** What GitHub holds for a tag: a published release, a draft, or nothing. */
+/** What `readFileAtRef` found at a path, or why there was no text there. */
+export type FileAtRef =
+  | { kind: "text"; text: string }
+  /** Nothing at that path at that ref: GitHub answered 404. */
+  | { kind: "absent" }
+  /**
+   * Something is there and it is not a file with text in it. `type` is
+   * GitHub's own word for it - `dir`, `symlink`, `submodule` - so the caller
+   * repeats what GitHub said rather than guessing which one it was.
+   */
+  | { kind: "not-a-file"; type: string }
+  /**
+   * A file GitHub would not inline. The contents endpoint answers a file over
+   * its size limit with empty content and `encoding: "none"`, which decodes
+   * to an empty string - indistinguishable, without this, from a file that
+   * really is empty, and reported as the operator's pattern finding nothing.
+   */
+  | { kind: "too-large"; bytes: number; limitBytes: number; encoding: string };
+
 export type ReleaseState = "published" | "draft" | "none";
 
 /**

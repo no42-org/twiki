@@ -448,3 +448,124 @@ describe("the installation listing maps field for field", () => {
     );
   });
 });
+
+describe("reading a file at a ref", () => {
+  // The version check reads the tree at the sha it is about to tag (#145).
+  // The payload is a real one: a public repository's LICENSE, fetched at a
+  // sha, carrying the `encoding` field that separates a file GitHub inlined
+  // from one it refused to.
+  const REPO = { owner: "no42-org", name: "demo" };
+  type ContentFile = {
+    type: string;
+    size: number;
+    encoding: string;
+    content: string;
+  };
+
+  /** An Octokit whose getContent answers with `data`, recording the params. */
+  const contentStub = (data: unknown) => {
+    const seen: Record<string, unknown>[] = [];
+    return {
+      gh: {
+        repos: {
+          getContent: async (params: Record<string, unknown>) => {
+            seen.push(params);
+            return { data };
+          },
+        },
+      } as unknown as Octokit,
+      seen,
+    };
+  };
+
+  /** An Octokit whose getContent rejects with an HTTP status. */
+  const failingStub = (status: number) =>
+    ({
+      repos: {
+        getContent: async () => {
+          throw Object.assign(new Error(`HTTP ${status}`), { status });
+        },
+      },
+    }) as unknown as Octokit;
+
+  it("asks for the ref it was given and decodes what came back", async () => {
+    const raw = recorded<ContentFile>("contents-file.json");
+    expect(raw.encoding).toBe("base64");
+    const { gh, seen } = contentStub(raw);
+    const adapter = adapterFor(gh, "organization");
+
+    const file = await adapter.readFileAtRef(REPO, "LICENSE", "deadbee");
+
+    // The ref is the whole point: without it GitHub answers with the default
+    // branch's head, which is not necessarily the commit being tagged.
+    expect(seen[0]).toMatchObject({
+      owner: "no42-org",
+      repo: "demo",
+      path: "LICENSE",
+      ref: "deadbee",
+    });
+    expect(file).toEqual({
+      kind: "text",
+      text: Buffer.from(raw.content, "base64").toString("utf8"),
+    });
+  });
+
+  it("says a file was not inlined rather than reading it as empty", async () => {
+    // DERIVED from the recording above, because no file on this estate is
+    // over the limit: GitHub answers one with empty content and
+    // `encoding: "none"`, documented but not recordable here. Decoded
+    // blindly it is an empty file, and the operator would be told their
+    // pattern matched nothing in a file that is perfectly fine.
+    const raw = derived<ContentFile>("contents-file.json");
+    const { gh } = contentStub({
+      ...raw,
+      size: 2_000_000,
+      encoding: "none",
+      content: "",
+    });
+    const adapter = adapterFor(gh, "organization");
+
+    const file = await adapter.readFileAtRef(REPO, "big.bin", "deadbee");
+
+    expect(file).toEqual({
+      kind: "too-large",
+      bytes: 2_000_000,
+      limitBytes: 1024 * 1024,
+      encoding: "none",
+    });
+  });
+
+  it("reads a missing file as absence rather than throwing", async () => {
+    const adapter = adapterFor(failingStub(404), "organization");
+    await expect(
+      adapter.readFileAtRef(REPO, "version.go", "deadbee"),
+    ).resolves.toEqual({ kind: "absent" });
+  });
+
+  it("lets anything but a 404 through, rather than calling it absence", async () => {
+    // "we could not read it" and "it is not there" send a reader to
+    // different places, and only one of them is the repository's business.
+    const adapter = adapterFor(failingStub(403), "organization");
+    await expect(
+      adapter.readFileAtRef(REPO, "version.go", "deadbee"),
+    ).rejects.toThrow(/403/);
+  });
+
+  it("repeats GitHub's own word for something that is not a file", async () => {
+    // Never "absent": each of these IS at the declared path, and telling an
+    // operator the file is missing sends them looking for one that is there.
+    const raw = derived<ContentFile>("contents-file.json");
+    for (const type of ["symlink", "submodule"]) {
+      const { gh } = contentStub({ ...raw, type });
+      const adapter = adapterFor(gh, "organization");
+      await expect(
+        adapter.readFileAtRef(REPO, "version.go", "deadbee"),
+      ).resolves.toEqual({ kind: "not-a-file", type });
+    }
+    // A directory comes back as the listing, with no `type` to repeat.
+    const { gh } = contentStub([{ type: "file", name: "version.go" }]);
+    await expect(
+      adapterFor(gh, "organization").readFileAtRef(REPO, "internal", "deadbee"),
+    ).resolves.toEqual({ kind: "not-a-file", type: "dir" });
+  });
+});

@@ -47,13 +47,24 @@ architecture makes that safe structurally, not by instruction:
 
 ## Configure
 
-Copy `repos.example.yaml` to `repos.yaml` and list your repos (see that file for per-repo `autoMergeMinor`, `mergeOnly` and `defaultBranch` overrides).
+Copy `repos.example.yaml` to `repos.yaml` and list your repos (see that file for per-repo `autoMergeMinor`, `mergeOnly`, `defaultBranch` and `versionSources` overrides).
 
 `defaultBranch` is what the repository calls its default branch.
 Absent means `main`, so only a repository on something else needs the line.
 Write the branch name, not a ref: `master`, never `refs/heads/master`.
 The declaration is what the read side will sort workflow runs by, and against the wrong name a failed build on the real default branch would read as a build on just another branch.
 `tricorder doctor` compares the declaration against what GitHub reports and names any disagreement.
+
+`versionSources` is where the repository's tree carries its version: a file, and a pattern with exactly one capture group.
+Before pushing a tag, twiki reads those files at the exact commit it is about to tag and compares what they say against the version it computed.
+A disagreement blocks the release, writes nothing, and says in the digest which file said what.
+So does a declared file that is not there at that commit, a pattern that finds no version, and a pattern that matches in more than one place, because none of those identifies a version either.
+twiki never edits the tree: a human lands the bump, and the next tick releases.
+Until that bump lands, a settled repository reports the same block on every tick.
+That repetition is the check working, not a fault: the repository is ready to release and its tree says otherwise, and that stays true until somebody changes it.
+A repository with no tag yet computes `v0.0.1` for its first release, so a declared source has to say `0.0.1` before that release will go out.
+Absent means the tree carries no version, which is a real answer and not an opt-out.
+A repository that declares nothing releases exactly as it did before, and no file is read for it.
 
 ### Environment
 
