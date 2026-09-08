@@ -25,6 +25,7 @@ import type {
   AccountKind,
   AppIdentity,
   DependabotAccess,
+  FileAtRef,
   GitHubAppPort,
   GitHubPort,
   GitHubReadPort,
@@ -49,6 +50,16 @@ import type {
 import { TagExistsError } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
+
+/**
+ * The largest file the contents endpoint will inline.
+ *
+ * GitHub documents 1 MB: above it the JSON answer carries empty `content` and
+ * `encoding: "none"`, and the raw media type or the blob endpoint is the
+ * documented way to fetch one. Named here so the number that reaches an
+ * operator is the API's own limit rather than a guess made further up.
+ */
+const CONTENTS_INLINE_LIMIT_BYTES = 1024 * 1024;
 
 /**
  * Branch rules that gate what LANDS on a branch, as opposed to what survives.
@@ -1231,6 +1242,57 @@ export class OctokitGitHub implements GitHubPort {
       branch: meta.default_branch,
     });
     return data.commit.sha;
+  }
+
+  async readFileAtRef(
+    repo: RepoRef,
+    path: string,
+    ref: string,
+  ): Promise<FileAtRef> {
+    const gh = await this.client(repo);
+    let data: Awaited<ReturnType<typeof gh.repos.getContent>>["data"];
+    try {
+      ({ data } = await gh.repos.getContent({
+        owner: repo.owner,
+        repo: repo.name,
+        path,
+        ref,
+      }));
+    } catch (err) {
+      // 404 only. `hasTagReleaseWorkflow` above swallows every error into
+      // "no workflow", which is safe there because the answer only ever
+      // withholds a release. Here the answer BLOCKS one, so a 403 or a 502
+      // reported as "the file is not in the tree" would name the repository
+      // for twiki's own outage.
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        (err as { status?: number }).status === 404
+      ) {
+        return { kind: "absent" };
+      }
+      throw err;
+    }
+    // An array is the listing of a directory. Otherwise GitHub names what it
+    // found, and its word for it is repeated rather than guessed at.
+    if (Array.isArray(data)) return { kind: "not-a-file", type: "dir" };
+    if (data.type !== "file") return { kind: "not-a-file", type: data.type };
+    // Anything but base64 means GitHub declined to inline the content and
+    // sent an empty string instead. Decoding it would produce a file that
+    // reads as empty, and the operator would be told their pattern matched
+    // nothing in a file that is perfectly fine.
+    if (data.encoding !== "base64") {
+      return {
+        kind: "too-large",
+        bytes: data.size,
+        limitBytes: CONTENTS_INLINE_LIMIT_BYTES,
+        encoding: data.encoding,
+      };
+    }
+    return {
+      kind: "text",
+      text: Buffer.from(data.content, "base64").toString("utf8"),
+    };
   }
 
   async failingChecks(repo: RepoRef, ref: string): Promise<FailingCheck[]> {

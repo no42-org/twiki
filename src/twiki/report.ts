@@ -60,7 +60,12 @@ function repoHasActivity(repo: RepoResult): boolean {
     s === "released" ||
     s === "would-release" ||
     s === "no-release-workflow" ||
-    s === "tag-exists"
+    s === "tag-exists" ||
+    // A blocked release is news, and it hides in exactly the repository this
+    // suppression is aimed at: one whose only other states are routine. Left
+    // out, a quiet repository would be blocked every tick and reported on
+    // none of them, which is the failure this check exists to end.
+    s === "tree-version-mismatch"
   );
 }
 
@@ -237,6 +242,12 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
       // like one. The release state tells the reader whether a human is
       // mid-release (draft, published) or a stray tag wants attention (none).
       lines.push(`  ⏭️ ${rel.detail}`);
+      break;
+    case "tree-version-mismatch":
+      // No write was attempted and none failed: the tree has to be bumped by
+      // a human before this repository can release. The detail names the
+      // file and both versions, so the reader knows what to go and change.
+      lines.push(`  🛑 ${rel.detail}`);
       break;
     case "skipped-merge-only":
       // Only interesting if it would otherwise have released — keep quiet.

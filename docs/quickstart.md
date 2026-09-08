@@ -68,7 +68,14 @@ repos:
     mergeOnly: true         # never cut releases here
   - repo: your-org/venerable
     defaultBranch: master   # branch name, not a ref; absent means "main"
+  - repo: your-org/versioned
+    versionSources:         # where the tree carries its version
+      - path: internal/version/version.go
+        pattern: 'const version = "([^"]+)"'
 ```
+
+`versionSources` is read at the commit twiki is about to tag, and a file that disagrees with the computed version blocks the release instead of publishing a tag the tree contradicts.
+Absent means the tree carries no version, which is a real answer: that repository releases exactly as it would without the key, and no file is read for it.
 
 gitricorder's setup check reads this same file.
 `tricorder doctor` names any repository whose `defaultBranch` is not the branch GitHub reports.
