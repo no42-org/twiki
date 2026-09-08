@@ -19,7 +19,8 @@ import {
   type RequestValidator,
   workflowRunsUrl,
 } from "../../github/port.js";
-import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
+import type { ObservationInput, RunScope } from "../store/port.js";
+import { type LaneRunDeps, withLaneRun } from "./lifecycle.js";
 
 // The Actions lane (CAP: build failures), story 15's shape: one installation,
 // one REST call per watched repository, and the real cost written down.
@@ -133,9 +134,8 @@ export interface ActionsRepoObservation {
   failing: number | null;
 }
 
-export interface ActionsDeps {
+export interface ActionsDeps extends LaneRunDeps {
   github: GitHubReadPort;
-  store: StorePort;
   watchedIn: (installation: string) => readonly RepoRef[];
   /**
    * The configured default branch of a repository, which in production is
@@ -155,8 +155,6 @@ export interface ActionsDeps {
    * evidence of a hang.
    */
   hungAfterMs: number;
-  now: () => string;
-  log: (msg: string) => void;
 }
 
 export interface ActionsResult {
@@ -369,391 +367,12 @@ export async function collectWorkflowRuns(
   scope: RunScope,
   bound: SweepBound = {},
 ): Promise<ActionsResult> {
-  let run: ReturnType<StorePort["beginRun"]> | null = null;
   const log = safeLog(deps.log);
 
-  try {
-    // Captured rather than read twice: this is the sweep's own clock, and it
-    // is what every verdict below is judged against, so one sweep cannot
-    // call the same run fresh for one repository and hung for the next.
-    const startedAt = deps.now();
-    run = deps.store.beginRun({
-      lane: LANE,
-      installation,
-      scope,
-      startedAt,
-    });
-    const sweptAt = new Date(startedAt);
-
-    // Stored present runs for this installation, grouped by repo slug, read
-    // once. Node keys carry no owner, so the payload answers (AD-23).
-    //
-    // Through the same guard the pages read these rows with, so a row the
-    // lane retains cannot be one the page later refuses: `readWorkflowRun`
-    // validates the head branch this bucketing depends on and the timestamp
-    // the verdict depends on.
-    const storedByRepo = new Map<
-      string,
-      { key: string; payload: WorkflowRunObservation }[]
-    >();
-    for (const c of deps.store.currentByType("workflow_run")) {
-      if (c.state !== "present") continue;
-      const p = readWorkflowRun(c.payload);
-      if (p === null) continue;
-      const slug = p.repo.toLowerCase();
-      const list = storedByRepo.get(slug) ?? [];
-      list.push({ key: c.subject.key, payload: p });
-      storedByRepo.set(slug, list);
-    }
-
-    const observations: ObservationInput[] = [];
-    const confirmations: ObservationInput[] = [];
-    const confirmed: { type: "workflow_run"; key: string }[] = [];
-    const gone: { type: "workflow_run"; key: string }[] = [];
-    // Deferred until the rows they vouch for are committed. A validator
-    // written inside the loop would survive a recordObservations failure and
-    // then 304-confirm rows that were never written: a red build rendering
-    // green and fresh for as long as the repository stays quiet. The alert
-    // lane saves after its writes for the same reason.
-    const validatorOps: { url: string; validator: RequestValidator | null }[] =
-      [];
-    let unreadable = 0;
-    let fetched = 0;
-    let notModified = 0;
-    let failedRepos = 0;
-
-    // Least-recently-confirmed first, never-confirmed before that. A sweep
-    // that yields must not re-walk the same prefix next time: with a fixed
-    // order the tail would never be reached at all, and its repositories
-    // would sit permanently uncollected while the sweep reported success.
-    const confirmedAt = new Map<string, string>();
-    for (const c of deps.store.currentByType("repository_actions")) {
-      if (c.state === "present") confirmedAt.set(c.subject.key, c.verifiedAt);
-    }
-    const order = [...deps.watchedIn(installation)].sort((a, b) => {
-      const at = confirmedAt.get(`${a.owner}/${a.name}`.toLowerCase());
-      const bt = confirmedAt.get(`${b.owner}/${b.name}`.toLowerCase());
-      if (at === undefined && bt === undefined) return 0;
-      if (at === undefined) return -1;
-      if (bt === undefined) return 1;
-      return at.localeCompare(bt);
-    });
-
-    let yielded = false;
-    let reached = 0;
-
-    // The budget check happens once, up front, and never mid-sweep: this
-    // lane is bounded by wall-clock, not by budget (a 304 costs nothing and
-    // a full estate is ~941 calls against 5800/hour), so the floor exists to
-    // keep a lane that is ALREADY starved from taking the last of it from
-    // the security lanes, which have no cheaper route.
-    if (bound.budgetFloor !== undefined) {
-      try {
-        const { remaining } = await deps.github.rateLimit(installation);
-        if (remaining < bound.budgetFloor) {
-          yielded = true;
-          log(
-            `${LANE} ${installation}: yielding before starting, ${remaining} budget left`,
-          );
-        }
-      } catch {
-        // Unreadable budget is not evidence of a low one. Proceeding is the
-        // conservative choice here: the deadline still bounds the sweep, and
-        // refusing to run on a failed diagnostic would let one flaky
-        // endpoint silently stop collection altogether.
-      }
-    }
-
-    for (const repo of yielded ? [] : order) {
-      // Checked before the call, not after: stopping once the deadline has
-      // already been blown past would make the bound advisory.
-      if (bound.deadlineAt && deps.now() >= bound.deadlineAt) {
-        yielded = true;
-        break;
-      }
-      const slug = `${repo.owner}/${repo.name}`.toLowerCase();
-      const url = workflowRunsUrl(repo);
-      try {
-        // Inside the try, because the resolver is the caller's: a throw here
-        // must degrade this one repository like a failed read, not end the
-        // sweep for the ones behind it.
-        //
-        // Declared, never stored (AD-10): the lane reads what repos.yaml
-        // says this repository calls its default branch and writes it
-        // nowhere.
-        const defaultBranch = deps.defaultBranchOf(repo);
-        // The stored rows, sorted into their buckets and judged. An old
-        // store reclassifies here and nowhere else: every row already
-        // carries the head branch this reads, so one sweep is enough and no
-        // row is lost for having been written before the buckets existed.
-        const stored = (storedByRepo.get(slug) ?? []).map((s) => ({
-          key: s.key,
-          workflowId: s.payload.workflowId,
-          createdAt: s.payload.createdAt,
-          // The same predicate as the page's runs, over the payload's own
-          // event, so a row stored under the old branch-only rule moves to
-          // the bucket it belongs in on the first sweep that reads it (#141).
-          onDefaultBranch: isDefaultBranchRun(s.payload, defaultBranch),
-          verdict: runVerdict(s.payload, sweptAt, deps.hungAfterMs),
-        }));
-        const page = await deps.github.listRepoWorkflowRuns(
-          repo,
-          deps.store.loadValidator(installation, url),
-        );
-
-        if (page.notModified) {
-          // Nothing changed since the sweep that stored these rows: the
-          // stored latest runs are still the latest. Confirm, free.
-          notModified++;
-          reached++;
-          for (const s of stored) {
-            confirmed.push({ type: "workflow_run", key: s.key });
-          }
-          // Reached and confirmed, so the repository's own attestation
-          // advances too: a 304 is evidence about this repository exactly as
-          // a 200 is, and leaving it behind would send the next sweep back
-          // to a repository that is already current.
-          confirmations.push({
-            subject: actionsSubject(repo),
-            payload: {
-              repo: slug,
-              // Over the rows the store HOLDS, judged at this sweep's clock -
-              // the same set, by the same rule, as the 200 path below (#142).
-              //
-              // Not carried forward from the last confirmation, though a 304
-              // does mean the listing has not changed: `failing` counts hung
-              // runs, and a run becomes hung by the clock rather than by the
-              // listing. A run ageing past the threshold while GitHub keeps
-              // answering 304 would be painted red by the page and never
-              // counted here, which is the disagreement between the lane and
-              // the page that this whole change exists to remove.
-              workflows: countWorkflows(stored),
-              failing: countFailing(stored),
-            } satisfies ActionsRepoObservation,
-          });
-          if (page.validator) {
-            validatorOps.push({ url, validator: page.validator });
-          }
-          continue;
-        }
-
-        fetched++;
-        unreadable += page.unreadable;
-        const latest = latestPerBucket(page.runs, defaultBranch);
-        observations.push(...latest.map((l) => normaliseRun(l.run)));
-
-        // Supersession, per bucket: a stored run is replaced only by a
-        // DIFFERENT run of the same workflow on the same side of the
-        // default-branch line. Same-key rows are updates, not replacements,
-        // and stay. Keyed by workflow alone - as it was - a pull-request run
-        // displaced the default-branch row it has nothing to say about.
-        const latestKeys = new Set(latest.map((l) => l.run.nodeId));
-        const observedBuckets = new Set(
-          latest.map((l) => retentionKey(l.run.workflowId, l.onDefaultBranch)),
-        );
-
-        // The window this page is evidence about: everything from the oldest
-        // run on it forward. Null for an empty page, which is evidence about
-        // nothing at all.
-        const windowFrom = oldestCreatedAt(page.runs);
-
-        // What this repository HOLDS after the sweep: the rows just
-        // observed, plus every carried row that survives supersession below.
-        //
-        // The rows held, not the narrower set this sweep can vouch the
-        // freshness of. The two are different questions with different
-        // answers, and counting the narrow one made the count depend on
-        // which way GitHub answered (#142). It is the held set the page
-        // renders from, so counting it is what makes the lane and the page
-        // agree about a repository by construction.
-        const held: RetainedRow[] = latest.map((l) => ({
-          workflowId: l.run.workflowId,
-          onDefaultBranch: l.onDefaultBranch,
-          verdict: runVerdict(l.run, sweptAt, deps.hungAfterMs),
-        }));
-
-        // Both the tombstones and the touch are gated on a COMPLETE page: an
-        // unreadable payload might have been the newer run of a bucket, so
-        // neither superseding nor vouching for what is left is honest. A
-        // partial page changes nothing.
-        if (page.unreadable === 0) {
-          for (const s of stored) {
-            // Rewritten by the observation above, which advances its own
-            // freshness. Touching it again would be harmless and confusing.
-            if (latestKeys.has(s.key)) continue;
-            if (
-              observedBuckets.has(retentionKey(s.workflowId, s.onDefaultBranch))
-            ) {
-              gone.push({ type: "workflow_run", key: s.key });
-              continue;
-            }
-            // Its bucket had no run on this page. That is proof the row is
-            // still the latest in its bucket ONLY where the page can see -
-            // from the oldest run on it forward. A row older than that sits
-            // outside the window, and with more than a hundred newer runs a
-            // newer default-branch run can sit outside it too: touching
-            // freshness there would badge a red main as current long after
-            // somebody fixed it, on a page that never saw the fix.
-            //
-            // So a row the window cannot cover is left entirely alone. It
-            // stays present, it ages into stale, and the page says so - the
-            // honest reading of "we did not look far enough back".
-            //
-            // Held either way: the window decides whether this sweep may
-            // touch the row's freshness, not whether the store still has it.
-            // The page shows the row whatever the window said, so the count
-            // includes it whatever the window said.
-            held.push(s);
-            if (!coveredBy(s.createdAt, windowFrom)) continue;
-            confirmed.push({ type: "workflow_run", key: s.key });
-          }
-        }
-
-        reached++;
-        // Vouched for only when every payload mapped. `page.runs` excludes
-        // what could not be read, so counting it on a page with unreadable
-        // payloads would publish "no runs recorded", freshly badged, for a
-        // repository whose runs we simply failed to parse.
-        confirmations.push({
-          subject: actionsSubject(repo),
-          payload:
-            page.unreadable === 0
-              ? {
-                  repo: slug,
-                  workflows: countWorkflows(held),
-                  failing: countFailing(held),
-                }
-              : { repo: slug, workflows: null, failing: null },
-        });
-
-        // Save-or-purge, exactly as the alert lane (AD-25): a 200 that
-        // rewrote rows without earning a validator must not leave the old
-        // one describing a listing that no longer matches stored state.
-        validatorOps.push({
-          url,
-          validator: page.unreadable === 0 ? page.validator : null,
-        });
-      } catch (err) {
-        // The repository's stored rows were not rewritten, so its stored
-        // validator still describes stored state: left alone, like the rows.
-        failedRepos++;
-        reached++;
-        // Reached, and nothing learned. The row advances this repository's
-        // place in the sweep order without vouching for anything, so a
-        // repository that fails every time cannot camp at the head of a
-        // bounded sweep and starve the ones behind it.
-        confirmations.push({
-          subject: actionsSubject(repo),
-          payload: { repo: slug, workflows: null, failing: null },
-        });
-        log(
-          `${LANE} ${installation}: ${slug} failed, ${redact(
-            err instanceof Error ? err.message : String(err),
-          )}`,
-        );
-      }
-    }
-
-    deps.store.recordObservations(run, deps.now(), [
-      ...observations,
-      ...confirmations,
-    ]);
-    if (confirmed.length > 0) {
-      deps.store.touchVerified(confirmed, deps.now());
-    }
-    if (gone.length > 0) {
-      deps.store.recordTombstones(run, deps.now(), gone);
-    }
-    // Only now, with every row committed, may a validator vouch for them.
-    for (const op of validatorOps) {
-      if (op.validator) {
-        deps.store.saveValidator(
-          installation,
-          op.url,
-          op.validator,
-          deps.now(),
-        );
-      } else {
-        deps.store.deleteValidator(installation, op.url);
-      }
-    }
-
-    // Best-effort, after the writes: story 15 asks for the remaining budget
-    // in as many words, and this is the only endpoint that answers honestly
-    // (a 304's headers are stale by GitHub's own documentation).
-    let budgetRemaining: number | null = null;
-    try {
-      budgetRemaining = (await deps.github.rateLimit(installation)).remaining;
-    } catch (err) {
-      log(
-        `${LANE} ${installation}: budget unreadable, ${redact(
-          err instanceof Error ? err.message : String(err),
-        )}`,
-      );
-    }
-
-    // A yielded sweep is partial by construction: it did not look at every
-    // watched repository, so the ones it never reached must go on ageing
-    // rather than be treated as confirmed (AD-16). The unreached
-    // repositories keep their own attestations, which is what makes them
-    // render stale rather than zero.
-    const watchedCount = order.length;
-    const outcome =
-      failedRepos > 0 || unreadable > 0 || yielded ? "partial" : "ok";
-    // Composed, not chosen. A degraded sweep is exactly the one likely to
-    // yield AND fail repositories, and reporting only the yield would leave
-    // the failures visible nowhere but a log line nobody kept.
-    const notes = [
-      yielded
-        ? `yielded after ${reached} of ${watchedCount} repositories; the rest keep ageing`
-        : null,
-      failedRepos > 0 ? `${failedRepos} repositories failed` : null,
-      unreadable > 0 ? `${unreadable} run payloads could not be read` : null,
-    ].filter((n): n is string => n !== null);
-    const detail = notes.length > 0 ? notes.join("; ") : undefined;
-    deps.store.finishRun(run, outcome, deps.now(), detail);
-
-    const runsSeen = observations.length + confirmed.length;
-    // The measurement story 15 exists for. A bare request count would be
-    // tautological (one per watched repository, always) AND misleading: a
-    // 304 is not charged against the primary rate limit, so what costs
-    // budget is `fetched`, and `notModified` is exactly what the AD-25
-    // cache saved.
-    log(
-      `${LANE} ${installation}: ${runsSeen} latest runs across ` +
-        `${deps.watchedIn(installation).length} repositories, ` +
-        `${reached} of ${watchedCount} reached, ` +
-        `${fetched} fetched, ${notModified} not modified, ${failedRepos} failed` +
-        (gone.length > 0 ? `, ${gone.length} superseded` : "") +
-        (unreadable > 0 ? `, ${unreadable} unreadable` : "") +
-        (budgetRemaining === null
-          ? ", budget unknown"
-          : `, ${budgetRemaining} budget left`),
-    );
-    return {
-      installation,
-      outcome,
-      runs: runsSeen,
-      unreadable,
-      fetched,
-      notModified,
-      failedRepos,
-      budgetRemaining,
-      reached,
-      watched: watchedCount,
-      yielded,
-    };
-  } catch (err) {
-    const detail = redact(err instanceof Error ? err.message : String(err));
-    if (run) {
-      try {
-        deps.store.finishRun(run, "failed", deps.now(), detail);
-      } catch {
-        // The store is what failed. Nothing further to record.
-      }
-    }
-    log(`${LANE} ${installation}: failed, ${detail}`);
-    return {
+  return withLaneRun<ActionsResult>(
+    deps,
+    { lane: LANE, installation, scope, reach: "per-installation" },
+    {
       installation,
       outcome: "failed",
       runs: 0,
@@ -765,6 +384,378 @@ export async function collectWorkflowRuns(
       reached: 0,
       watched: 0,
       yielded: false,
-    };
-  }
+    },
+    async (run, startedAt) => {
+      // startedAt is the run's own start, taken once by the wrapper: this is
+      // the sweep's clock, and it is what every verdict below is judged
+      // against, so one sweep cannot call the same run fresh for one
+      // repository and hung for the next.
+      const sweptAt = new Date(startedAt);
+
+      // Stored present runs for this installation, grouped by repo slug, read
+      // once. Node keys carry no owner, so the payload answers (AD-23).
+      //
+      // Through the same guard the pages read these rows with, so a row the
+      // lane retains cannot be one the page later refuses: `readWorkflowRun`
+      // validates the head branch this bucketing depends on and the timestamp
+      // the verdict depends on.
+      const storedByRepo = new Map<
+        string,
+        { key: string; payload: WorkflowRunObservation }[]
+      >();
+      for (const c of deps.store.currentByType("workflow_run")) {
+        if (c.state !== "present") continue;
+        const p = readWorkflowRun(c.payload);
+        if (p === null) continue;
+        const slug = p.repo.toLowerCase();
+        const list = storedByRepo.get(slug) ?? [];
+        list.push({ key: c.subject.key, payload: p });
+        storedByRepo.set(slug, list);
+      }
+
+      const observations: ObservationInput[] = [];
+      const confirmations: ObservationInput[] = [];
+      const confirmed: { type: "workflow_run"; key: string }[] = [];
+      const gone: { type: "workflow_run"; key: string }[] = [];
+      // Deferred until the rows they vouch for are committed. A validator
+      // written inside the loop would survive a recordObservations failure and
+      // then 304-confirm rows that were never written: a red build rendering
+      // green and fresh for as long as the repository stays quiet. The alert
+      // lane saves after its writes for the same reason.
+      const validatorOps: {
+        url: string;
+        validator: RequestValidator | null;
+      }[] = [];
+      let unreadable = 0;
+      let fetched = 0;
+      let notModified = 0;
+      let failedRepos = 0;
+
+      // Least-recently-confirmed first, never-confirmed before that. A sweep
+      // that yields must not re-walk the same prefix next time: with a fixed
+      // order the tail would never be reached at all, and its repositories
+      // would sit permanently uncollected while the sweep reported success.
+      const confirmedAt = new Map<string, string>();
+      for (const c of deps.store.currentByType("repository_actions")) {
+        if (c.state === "present") confirmedAt.set(c.subject.key, c.verifiedAt);
+      }
+      const order = [...deps.watchedIn(installation)].sort((a, b) => {
+        const at = confirmedAt.get(`${a.owner}/${a.name}`.toLowerCase());
+        const bt = confirmedAt.get(`${b.owner}/${b.name}`.toLowerCase());
+        if (at === undefined && bt === undefined) return 0;
+        if (at === undefined) return -1;
+        if (bt === undefined) return 1;
+        return at.localeCompare(bt);
+      });
+
+      let yielded = false;
+      let reached = 0;
+
+      // The budget check happens once, up front, and never mid-sweep: this
+      // lane is bounded by wall-clock, not by budget (a 304 costs nothing and
+      // a full estate is ~941 calls against 5800/hour), so the floor exists to
+      // keep a lane that is ALREADY starved from taking the last of it from
+      // the security lanes, which have no cheaper route.
+      if (bound.budgetFloor !== undefined) {
+        try {
+          const { remaining } = await deps.github.rateLimit(installation);
+          if (remaining < bound.budgetFloor) {
+            yielded = true;
+            log(
+              `${LANE} ${installation}: yielding before starting, ${remaining} budget left`,
+            );
+          }
+        } catch {
+          // Unreadable budget is not evidence of a low one. Proceeding is the
+          // conservative choice here: the deadline still bounds the sweep, and
+          // refusing to run on a failed diagnostic would let one flaky
+          // endpoint silently stop collection altogether.
+        }
+      }
+
+      for (const repo of yielded ? [] : order) {
+        // Checked before the call, not after: stopping once the deadline has
+        // already been blown past would make the bound advisory.
+        if (bound.deadlineAt && deps.now() >= bound.deadlineAt) {
+          yielded = true;
+          break;
+        }
+        const slug = `${repo.owner}/${repo.name}`.toLowerCase();
+        const url = workflowRunsUrl(repo);
+        try {
+          // Inside the try, because the resolver is the caller's: a throw here
+          // must degrade this one repository like a failed read, not end the
+          // sweep for the ones behind it.
+          //
+          // Declared, never stored (AD-10): the lane reads what repos.yaml
+          // says this repository calls its default branch and writes it
+          // nowhere.
+          const defaultBranch = deps.defaultBranchOf(repo);
+          // The stored rows, sorted into their buckets and judged. An old
+          // store reclassifies here and nowhere else: every row already
+          // carries the head branch this reads, so one sweep is enough and no
+          // row is lost for having been written before the buckets existed.
+          const stored = (storedByRepo.get(slug) ?? []).map((s) => ({
+            key: s.key,
+            workflowId: s.payload.workflowId,
+            createdAt: s.payload.createdAt,
+            // The same predicate as the page's runs, over the payload's own
+            // event, so a row stored under the old branch-only rule moves to
+            // the bucket it belongs in on the first sweep that reads it (#141).
+            onDefaultBranch: isDefaultBranchRun(s.payload, defaultBranch),
+            verdict: runVerdict(s.payload, sweptAt, deps.hungAfterMs),
+          }));
+          const page = await deps.github.listRepoWorkflowRuns(
+            repo,
+            deps.store.loadValidator(installation, url),
+          );
+
+          if (page.notModified) {
+            // Nothing changed since the sweep that stored these rows: the
+            // stored latest runs are still the latest. Confirm, free.
+            notModified++;
+            reached++;
+            for (const s of stored) {
+              confirmed.push({ type: "workflow_run", key: s.key });
+            }
+            // Reached and confirmed, so the repository's own attestation
+            // advances too: a 304 is evidence about this repository exactly as
+            // a 200 is, and leaving it behind would send the next sweep back
+            // to a repository that is already current.
+            confirmations.push({
+              subject: actionsSubject(repo),
+              payload: {
+                repo: slug,
+                // Over the rows the store HOLDS, judged at this sweep's clock -
+                // the same set, by the same rule, as the 200 path below (#142).
+                //
+                // Not carried forward from the last confirmation, though a 304
+                // does mean the listing has not changed: `failing` counts hung
+                // runs, and a run becomes hung by the clock rather than by the
+                // listing. A run ageing past the threshold while GitHub keeps
+                // answering 304 would be painted red by the page and never
+                // counted here, which is the disagreement between the lane and
+                // the page that this whole change exists to remove.
+                workflows: countWorkflows(stored),
+                failing: countFailing(stored),
+              } satisfies ActionsRepoObservation,
+            });
+            if (page.validator) {
+              validatorOps.push({ url, validator: page.validator });
+            }
+            continue;
+          }
+
+          fetched++;
+          unreadable += page.unreadable;
+          const latest = latestPerBucket(page.runs, defaultBranch);
+          observations.push(...latest.map((l) => normaliseRun(l.run)));
+
+          // Supersession, per bucket: a stored run is replaced only by a
+          // DIFFERENT run of the same workflow on the same side of the
+          // default-branch line. Same-key rows are updates, not replacements,
+          // and stay. Keyed by workflow alone - as it was - a pull-request run
+          // displaced the default-branch row it has nothing to say about.
+          const latestKeys = new Set(latest.map((l) => l.run.nodeId));
+          const observedBuckets = new Set(
+            latest.map((l) =>
+              retentionKey(l.run.workflowId, l.onDefaultBranch),
+            ),
+          );
+
+          // The window this page is evidence about: everything from the oldest
+          // run on it forward. Null for an empty page, which is evidence about
+          // nothing at all.
+          const windowFrom = oldestCreatedAt(page.runs);
+
+          // What this repository HOLDS after the sweep: the rows just
+          // observed, plus every carried row that survives supersession below.
+          //
+          // The rows held, not the narrower set this sweep can vouch the
+          // freshness of. The two are different questions with different
+          // answers, and counting the narrow one made the count depend on
+          // which way GitHub answered (#142). It is the held set the page
+          // renders from, so counting it is what makes the lane and the page
+          // agree about a repository by construction.
+          const held: RetainedRow[] = latest.map((l) => ({
+            workflowId: l.run.workflowId,
+            onDefaultBranch: l.onDefaultBranch,
+            verdict: runVerdict(l.run, sweptAt, deps.hungAfterMs),
+          }));
+
+          // Both the tombstones and the touch are gated on a COMPLETE page: an
+          // unreadable payload might have been the newer run of a bucket, so
+          // neither superseding nor vouching for what is left is honest. A
+          // partial page changes nothing.
+          if (page.unreadable === 0) {
+            for (const s of stored) {
+              // Rewritten by the observation above, which advances its own
+              // freshness. Touching it again would be harmless and confusing.
+              if (latestKeys.has(s.key)) continue;
+              if (
+                observedBuckets.has(
+                  retentionKey(s.workflowId, s.onDefaultBranch),
+                )
+              ) {
+                gone.push({ type: "workflow_run", key: s.key });
+                continue;
+              }
+              // Its bucket had no run on this page. That is proof the row is
+              // still the latest in its bucket ONLY where the page can see -
+              // from the oldest run on it forward. A row older than that sits
+              // outside the window, and with more than a hundred newer runs a
+              // newer default-branch run can sit outside it too: touching
+              // freshness there would badge a red main as current long after
+              // somebody fixed it, on a page that never saw the fix.
+              //
+              // So a row the window cannot cover is left entirely alone. It
+              // stays present, it ages into stale, and the page says so - the
+              // honest reading of "we did not look far enough back".
+              //
+              // Held either way: the window decides whether this sweep may
+              // touch the row's freshness, not whether the store still has it.
+              // The page shows the row whatever the window said, so the count
+              // includes it whatever the window said.
+              held.push(s);
+              if (!coveredBy(s.createdAt, windowFrom)) continue;
+              confirmed.push({ type: "workflow_run", key: s.key });
+            }
+          }
+
+          reached++;
+          // Vouched for only when every payload mapped. `page.runs` excludes
+          // what could not be read, so counting it on a page with unreadable
+          // payloads would publish "no runs recorded", freshly badged, for a
+          // repository whose runs we simply failed to parse.
+          confirmations.push({
+            subject: actionsSubject(repo),
+            payload:
+              page.unreadable === 0
+                ? {
+                    repo: slug,
+                    workflows: countWorkflows(held),
+                    failing: countFailing(held),
+                  }
+                : { repo: slug, workflows: null, failing: null },
+          });
+
+          // Save-or-purge, exactly as the alert lane (AD-25): a 200 that
+          // rewrote rows without earning a validator must not leave the old
+          // one describing a listing that no longer matches stored state.
+          validatorOps.push({
+            url,
+            validator: page.unreadable === 0 ? page.validator : null,
+          });
+        } catch (err) {
+          // The repository's stored rows were not rewritten, so its stored
+          // validator still describes stored state: left alone, like the rows.
+          failedRepos++;
+          reached++;
+          // Reached, and nothing learned. The row advances this repository's
+          // place in the sweep order without vouching for anything, so a
+          // repository that fails every time cannot camp at the head of a
+          // bounded sweep and starve the ones behind it.
+          confirmations.push({
+            subject: actionsSubject(repo),
+            payload: { repo: slug, workflows: null, failing: null },
+          });
+          log(
+            `${LANE} ${installation}: ${slug} failed, ${redact(
+              err instanceof Error ? err.message : String(err),
+            )}`,
+          );
+        }
+      }
+
+      deps.store.recordObservations(run, deps.now(), [
+        ...observations,
+        ...confirmations,
+      ]);
+      if (confirmed.length > 0) {
+        deps.store.touchVerified(confirmed, deps.now());
+      }
+      if (gone.length > 0) {
+        deps.store.recordTombstones(run, deps.now(), gone);
+      }
+      // Only now, with every row committed, may a validator vouch for them.
+      for (const op of validatorOps) {
+        if (op.validator) {
+          deps.store.saveValidator(
+            installation,
+            op.url,
+            op.validator,
+            deps.now(),
+          );
+        } else {
+          deps.store.deleteValidator(installation, op.url);
+        }
+      }
+
+      // Best-effort, after the writes: story 15 asks for the remaining budget
+      // in as many words, and this is the only endpoint that answers honestly
+      // (a 304's headers are stale by GitHub's own documentation).
+      let budgetRemaining: number | null = null;
+      try {
+        budgetRemaining = (await deps.github.rateLimit(installation)).remaining;
+      } catch (err) {
+        log(
+          `${LANE} ${installation}: budget unreadable, ${redact(
+            err instanceof Error ? err.message : String(err),
+          )}`,
+        );
+      }
+
+      // A yielded sweep is partial by construction: it did not look at every
+      // watched repository, so the ones it never reached must go on ageing
+      // rather than be treated as confirmed (AD-16). The unreached
+      // repositories keep their own attestations, which is what makes them
+      // render stale rather than zero.
+      const watchedCount = order.length;
+      const outcome =
+        failedRepos > 0 || unreadable > 0 || yielded ? "partial" : "ok";
+      // Composed, not chosen. A degraded sweep is exactly the one likely to
+      // yield AND fail repositories, and reporting only the yield would leave
+      // the failures visible nowhere but a log line nobody kept.
+      const notes = [
+        yielded
+          ? `yielded after ${reached} of ${watchedCount} repositories; the rest keep ageing`
+          : null,
+        failedRepos > 0 ? `${failedRepos} repositories failed` : null,
+        unreadable > 0 ? `${unreadable} run payloads could not be read` : null,
+      ].filter((n): n is string => n !== null);
+      const detail = notes.length > 0 ? notes.join("; ") : undefined;
+      deps.store.finishRun(run, outcome, deps.now(), detail);
+
+      const runsSeen = observations.length + confirmed.length;
+      // The measurement story 15 exists for. A bare request count would be
+      // tautological (one per watched repository, always) AND misleading: a
+      // 304 is not charged against the primary rate limit, so what costs
+      // budget is `fetched`, and `notModified` is exactly what the AD-25
+      // cache saved.
+      log(
+        `${LANE} ${installation}: ${runsSeen} latest runs across ` +
+          `${deps.watchedIn(installation).length} repositories, ` +
+          `${reached} of ${watchedCount} reached, ` +
+          `${fetched} fetched, ${notModified} not modified, ${failedRepos} failed` +
+          (gone.length > 0 ? `, ${gone.length} superseded` : "") +
+          (unreadable > 0 ? `, ${unreadable} unreadable` : "") +
+          (budgetRemaining === null
+            ? ", budget unknown"
+            : `, ${budgetRemaining} budget left`),
+      );
+      return {
+        installation,
+        outcome,
+        runs: runsSeen,
+        unreadable,
+        fetched,
+        notModified,
+        failedRepos,
+        budgetRemaining,
+        reached,
+        watched: watchedCount,
+        yielded,
+      };
+    },
+  );
 }

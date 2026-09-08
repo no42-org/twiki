@@ -293,6 +293,11 @@ describe("the KEV lane stores only what it can vouch for", () => {
     expect(r.outcome).toBe("failed");
     expect(store.current(KEV_SUBJECT)).toBeNull();
     expect(store.latestRuns(1)[0]?.detail).toContain("unreachable");
+    // Spelled out, not built from LANE: this line is the only stdout carrying
+    // the reason, and it names the lane ALONE. KEV's installation is the
+    // placeholder `cisa-kev`, so naming it would report the failure against
+    // an org nobody owns.
+    expect(logs).toEqual(["kev: failed, CISA is unreachable"]);
   });
 
   it("a throwing logger cannot fail the lane", async () => {

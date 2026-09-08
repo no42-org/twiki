@@ -176,6 +176,11 @@ describe("the review-request lane (CAP-5)", () => {
     const r = await collectReviewRequests(deps());
     expect(r.outcome).toBe("failed");
     expect(store.latestRuns(1)[0]?.outcome).toBe("failed");
+    // The lane alone, as for KEV: reviews are collected globally and their
+    // installation is a placeholder, not an org.
+    expect(logs).toEqual([
+      "graphql-review-requests: failed, GraphQL upstream 502",
+    ]);
   });
 
   it("a throwing logger cannot fail the lane", async () => {

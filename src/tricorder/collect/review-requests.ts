@@ -4,10 +4,10 @@
  */
 
 import { safeLog } from "../../core/log.js";
-import { redact } from "../../core/redact.js";
 import { nodeSubject } from "../../core/subject.js";
 import type { GitHubReadPort, RawReviewRequest } from "../../github/port.js";
-import type { ObservationInput, RunScope, StorePort } from "../store/port.js";
+import type { ObservationInput, RunScope } from "../store/port.js";
+import { type LaneRunDeps, withLaneRun } from "./lifecycle.js";
 
 // The review-request lane (CAP-5): pull requests waiting on the maintainer.
 //
@@ -47,15 +47,12 @@ export interface ReviewRequestObservation {
   requestedReviewers: string[];
 }
 
-export interface ReviewDeps {
+export interface ReviewDeps extends LaneRunDeps {
   github: GitHubReadPort;
-  store: StorePort;
   /** Logins to collect requests for. Never a literal in source (AD-19). */
   reviewers: readonly string[];
   /** Whose token authenticates the call. The search itself is global. */
   viaInstallation: string;
-  now: () => string;
-  log: (msg: string) => void;
 }
 
 export interface ReviewResult {
@@ -89,74 +86,65 @@ export async function collectReviewRequests(
   deps: ReviewDeps,
   scope: RunScope = "full",
 ): Promise<ReviewResult> {
-  let run: ReturnType<StorePort["beginRun"]> | null = null;
   const log = safeLog(deps.log);
 
-  try {
-    run = deps.store.beginRun({
+  return withLaneRun<ReviewResult>(
+    deps,
+    {
       lane: LANE,
       installation: REVIEWS_INSTALLATION,
       scope,
-      startedAt: deps.now(),
-    });
+      reach: "global",
+    },
+    { outcome: "failed", requests: 0, unreadable: 0 },
+    async (run) => {
+      const page = await deps.github.listReviewRequests(
+        deps.viaInstallation,
+        deps.reviewers,
+      );
+      const observations = page.requests.map(normaliseReviewRequest);
 
-    const page = await deps.github.listReviewRequests(
-      deps.viaInstallation,
-      deps.reviewers,
-    );
-    const observations = page.requests.map(normaliseReviewRequest);
+      // Truncation degrades exactly as unreadable nodes do: an incomplete
+      // result set cannot support concluding that anything is gone.
+      const outcome = page.unreadable > 0 || page.truncated ? "partial" : "ok";
+      // Composed, not chosen: a degraded sweep can hit the ceiling AND fail to
+      // read nodes, and reporting only the ceiling attributes the whole
+      // degradation to one cause in the row an operator actually reads.
+      const notes = [
+        page.truncated
+          ? "search results truncated at GitHub's ceiling; nothing tombstoned"
+          : null,
+        page.unreadable > 0
+          ? `${page.unreadable} review-request nodes could not be read`
+          : null,
+      ].filter((n): n is string => n !== null);
+      const detail = notes.length > 0 ? notes.join("; ") : undefined;
 
-    // Truncation degrades exactly as unreadable nodes do: an incomplete
-    // result set cannot support concluding that anything is gone.
-    const outcome = page.unreadable > 0 || page.truncated ? "partial" : "ok";
-    // Composed, not chosen: a degraded sweep can hit the ceiling AND fail to
-    // read nodes, and reporting only the ceiling attributes the whole
-    // degradation to one cause in the row an operator actually reads.
-    const notes = [
-      page.truncated
-        ? "search results truncated at GitHub's ceiling; nothing tombstoned"
-        : null,
-      page.unreadable > 0
-        ? `${page.unreadable} review-request nodes could not be read`
-        : null,
-    ].filter((n): n is string => n !== null);
-    const detail = notes.length > 0 ? notes.join("; ") : undefined;
+      deps.store.recordObservations(run, deps.now(), observations);
 
-    deps.store.recordObservations(run, deps.now(), observations);
-
-    if (scope === "full" && outcome === "ok") {
-      const seen = new Set(observations.map((o) => o.subject.key));
-      const gone = deps.store
-        .currentByType("review_request")
-        .filter((c) => c.state === "present")
-        .filter((c) => !seen.has(c.subject.key))
-        .map((c) => c.subject);
-      if (gone.length > 0) {
-        deps.store.recordTombstones(run, deps.now(), gone);
-        log(`${LANE}: ${gone.length} review requests answered or withdrawn`);
+      if (scope === "full" && outcome === "ok") {
+        const seen = new Set(observations.map((o) => o.subject.key));
+        const gone = deps.store
+          .currentByType("review_request")
+          .filter((c) => c.state === "present")
+          .filter((c) => !seen.has(c.subject.key))
+          .map((c) => c.subject);
+        if (gone.length > 0) {
+          deps.store.recordTombstones(run, deps.now(), gone);
+          log(`${LANE}: ${gone.length} review requests answered or withdrawn`);
+        }
       }
-    }
 
-    deps.store.finishRun(run, outcome, deps.now(), detail);
-    log(
-      `${LANE}: ${observations.length} awaiting review` +
-        (page.unreadable > 0 ? `, ${page.unreadable} unreadable` : ""),
-    );
-    return {
-      outcome,
-      requests: observations.length,
-      unreadable: page.unreadable,
-    };
-  } catch (err) {
-    const detail = redact(err instanceof Error ? err.message : String(err));
-    if (run) {
-      try {
-        deps.store.finishRun(run, "failed", deps.now(), detail);
-      } catch {
-        // The store is what failed. Nothing further to record.
-      }
-    }
-    log(`${LANE}: failed, ${detail}`);
-    return { outcome: "failed", requests: 0, unreadable: 0 };
-  }
+      deps.store.finishRun(run, outcome, deps.now(), detail);
+      log(
+        `${LANE}: ${observations.length} awaiting review` +
+          (page.unreadable > 0 ? `, ${page.unreadable} unreadable` : ""),
+      );
+      return {
+        outcome,
+        requests: observations.length,
+        unreadable: page.unreadable,
+      };
+    },
+  );
 }
