@@ -29,6 +29,7 @@ import type {
   GitHubPort,
   GitHubReadPort,
   InstallationRef,
+  InstallationRepo,
   IssuePage,
   OrgAlertPage,
   RawDependabotAlert,
@@ -1909,7 +1910,9 @@ export class OctokitGitHubApp implements GitHubAppPort {
     });
   }
 
-  async listInstallationRepos(installationId: number): Promise<RepoRef[]> {
+  async listInstallationRepos(
+    installationId: number,
+  ): Promise<InstallationRepo[]> {
     let client = this.clients.get(installationId);
     if (!client) {
       // Cached: building one re-reads the private key from disk and mints a
@@ -1932,7 +1935,13 @@ export class OctokitGitHubApp implements GitHubAppPort {
       client.apps.listReposAccessibleToInstallation,
       { per_page: 100 },
     );
-    return repos.map((r) => ({ owner: r.owner.login, name: r.name }));
+    // `default_branch` rides the listing this call already pages, so the
+    // check that compares it against repos.yaml costs no extra request.
+    return repos.map((r) => ({
+      owner: r.owner.login,
+      name: r.name,
+      defaultBranch: r.default_branch,
+    }));
   }
 }
 

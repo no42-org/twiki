@@ -161,11 +161,22 @@ export interface RepoPolicy {
   autoMergeMinor: boolean;
   /** Never cut releases for this repo; merge only. Default false. */
   mergeOnly: boolean;
+  /**
+   * What this repository calls its default branch. Default `main`.
+   *
+   * Declared rather than discovered, because the read side sorts workflow
+   * runs by it and a repository on `master` - or one renamed after it was
+   * added - would otherwise have its default-branch build treated as just
+   * another branch, so a red main would read as quiet. `doctor` compares
+   * the declaration against what GitHub reports; nothing repairs it.
+   */
+  defaultBranch: string;
 }
 
 export const DEFAULT_POLICY: RepoPolicy = {
   autoMergeMinor: true,
   mergeOnly: false,
+  defaultBranch: "main",
 };
 
 export type Mode = "shadow" | "enforce";

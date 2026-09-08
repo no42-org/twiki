@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/core/config.js";
+import { loadConfig, resolveDefaultBranch } from "../src/core/config.js";
 
 // Unwrapped, a schema failure surfaced as zod's serialised issue array plus a
 // stack trace into config.ts - naming the parser and never the config file the
@@ -103,6 +103,112 @@ describe("a rejected config says which file and what is wrong", () => {
     }
   });
 
+  it("names the field when a default branch is not a string", () => {
+    const p = write(
+      "repos.yaml",
+      "mode: shadow\nrepos:\n  - repo: no42-org/a\n    defaultBranch: 7\n",
+    );
+    try {
+      loadConfig(p);
+      expect.unreachable("a non-string defaultBranch must be rejected");
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain(p);
+      expect(msg).toContain("repos[0].defaultBranch");
+      expect(msg).not.toContain('"code"');
+    }
+  });
+
+  it("names the field when a default branch is empty", () => {
+    // Not folded into the default. An operator who wrote an empty string
+    // meant something, and answering `main` would hide the one declaration
+    // that is definitely wrong.
+    const p = write(
+      "repos.yaml",
+      'mode: shadow\nrepos:\n  - repo: no42-org/a\n    defaultBranch: ""\n',
+    );
+    try {
+      loadConfig(p);
+      expect.unreachable("an empty defaultBranch must be rejected");
+    } catch (err) {
+      expect((err as Error).message).toContain("repos[0].defaultBranch");
+    }
+  });
+
+  it("rejects a default branch written as a ref", () => {
+    // `refs/heads/main` can never equal a stripped ref, so accepting it would
+    // mean the declaration silently never matches anything.
+    const p = write(
+      "repos.yaml",
+      "mode: shadow\nrepos:\n  - repo: no42-org/a\n    defaultBranch: refs/heads/main\n",
+    );
+    try {
+      loadConfig(p);
+      expect.unreachable("a ref-shaped defaultBranch must be rejected");
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain("repos[0].defaultBranch");
+      expect(msg).toContain("not the ref");
+    }
+  });
+
+  it("trims a default branch rather than never matching on it", () => {
+    // Trailing whitespace in hand-written YAML is invisible and would make
+    // the declaration silently never match.
+    const p = write(
+      "repos.yaml",
+      'mode: shadow\nrepos:\n  - repo: no42-org/a\n    defaultBranch: "  master  "\n',
+    );
+    expect(loadConfig(p).policies.get("no42-org/a")?.defaultBranch).toBe(
+      "master",
+    );
+  });
+
+  it("rejects two entries that are the same repository in different casing", () => {
+    // GitHub slugs are case-insensitive. The folded index keeps one entry per
+    // repository, so without this the second declaration would silently
+    // govern both.
+    const p = write(
+      "repos.yaml",
+      [
+        "mode: shadow",
+        "repos:",
+        "  - repo: No42-Org/A",
+        "  - repo: no42-org/a",
+        "    defaultBranch: master",
+      ].join("\n"),
+    );
+    try {
+      loadConfig(p);
+      expect.unreachable("a case-folded duplicate must be rejected");
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain("no42-org/a");
+      expect(msg).toContain("No42-Org/A");
+    }
+  });
+
+  it("parses the example config this repository ships", () => {
+    // The file the README tells every operator to copy. Nothing else parses
+    // it, so a misspelled key here would break first startup with the whole
+    // suite green.
+    const config = loadConfig(
+      join(import.meta.dirname, "..", "repos.example.yaml"),
+    );
+    expect(
+      resolveDefaultBranch(config, {
+        owner: "no42-org",
+        name: "venerable-thing",
+      }),
+    ).toBe("master");
+    expect(
+      resolveDefaultBranch(config, {
+        owner: "no42-org",
+        name: "example-service",
+      }),
+    ).toBe("main");
+  });
+
   it("still accepts what it accepted before, unchanged", () => {
     // The round-trip guard. Wrapping the error must not move the line between
     // a valid config and an invalid one.
@@ -114,6 +220,8 @@ describe("a rejected config says which file and what is wrong", () => {
         "  - repo: no42-org/a",
         "  - repo: no42-org/b",
         "    mergeOnly: true",
+        "  - repo: no42-org/c",
+        "    defaultBranch: master",
         "bots:",
         "  - app/dependabot",
         "reviewers:",
@@ -122,8 +230,10 @@ describe("a rejected config says which file and what is wrong", () => {
     );
     const config = loadConfig(p);
     expect(config.mode).toBe("enforce");
-    expect(config.repos.map((r) => r.name)).toEqual(["a", "b"]);
+    expect(config.repos.map((r) => r.name)).toEqual(["a", "b", "c"]);
     expect(config.policies.get("no42-org/b")?.mergeOnly).toBe(true);
+    expect(config.policies.get("no42-org/c")?.defaultBranch).toBe("master");
+    expect(config.policies.get("no42-org/a")?.defaultBranch).toBe("main");
     expect(config.bots).toEqual(["app/dependabot"]);
     expect(config.reviewers).toEqual(["indigo423"]);
   });

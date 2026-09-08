@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { watchKey } from "./slug.js";
 import {
   DEFAULT_POLICY,
   type Mode,
@@ -22,6 +23,26 @@ const RepoEntrySchema = z.strictObject({
   repo: z.string().regex(/^[^/]+\/[^/]+$/, "must be owner/name"),
   autoMergeMinor: z.boolean().optional(),
   mergeOnly: z.boolean().optional(),
+  /**
+   * What this repository calls its default branch; absent means `main`.
+   *
+   * A branch NAME, not a ref. Two shapes an operator plausibly writes could
+   * never equal a stripped ref, so each is dealt with here rather than
+   * accepted and silently never matched: surrounding whitespace is trimmed,
+   * and a `refs/` prefix is an error naming the field. Empty is an error for
+   * the same reason. Somebody who wrote `defaultBranch: ""` meant something,
+   * and answering `main` would hide the one declaration that is definitely
+   * wrong.
+   */
+  defaultBranch: z
+    .string()
+    .transform((v) => v.trim())
+    .refine((v) => v.length > 0, "must name a branch")
+    .refine(
+      (v) => !v.startsWith("refs/"),
+      "must name the branch, not the ref: write `main`, not `refs/heads/main`",
+    )
+    .optional(),
 });
 
 const ConfigSchema = z.strictObject({
@@ -79,8 +100,19 @@ export interface Config {
   mode: Mode;
   /** Allowlist of repos, in declaration order. */
   repos: RepoRef[];
-  /** Resolved per-repo policy, keyed by "owner/name". */
+  /** Resolved per-repo policy, keyed by "owner/name" as declared. */
   policies: Map<string, RepoPolicy>;
+  /**
+   * The declared slug for a case-folded one: `watchKey` to the `policies` key.
+   *
+   * An index, not a second copy. This file now holds two keying rules,
+   * deliberately: `policies` is keyed by the raw declared slug and twiki's
+   * allowlist matching has always gone through it, so re-keying it would
+   * change which repositories twiki acts on. The read side compares against
+   * slugs GitHub supplies with its own casing (AD-22), so it needs a folded
+   * way in, and this is it. Read both through the accessors below.
+   */
+  declaredSlugs: Map<string, string>;
   /** CI-remediation settings. */
   remediation: RemediationConfig;
   /** Dependency-update bot actors (AD-19). Empty when none are configured. */
@@ -173,22 +205,36 @@ export function buildConfig(
 ): Config {
   const repos: RepoRef[] = [];
   const policies = new Map<string, RepoPolicy>();
+  const declaredSlugs = new Map<string, string>();
   for (const entry of raw.repos) {
     const ref = parseRepoSlug(entry.repo);
     const slug = repoSlug(ref);
-    if (policies.has(slug)) {
-      throw new Error(`Duplicate repo in config: ${slug}`);
+    // Folded, because GitHub slugs are case-insensitive: `Org/A` and `org/a`
+    // are one repository. A raw-slug check lets both through, and then the
+    // folded index keeps only the last one - so the second declaration would
+    // silently govern both.
+    const key = watchKey(ref);
+    const already = declaredSlugs.get(key);
+    if (already !== undefined) {
+      throw new Error(
+        already === slug
+          ? `Duplicate repo in config: ${slug}`
+          : `Duplicate repo in config: ${slug} and ${already} are the same repository`,
+      );
     }
     repos.push(ref);
     policies.set(slug, {
       autoMergeMinor: entry.autoMergeMinor ?? DEFAULT_POLICY.autoMergeMinor,
       mergeOnly: entry.mergeOnly ?? DEFAULT_POLICY.mergeOnly,
+      defaultBranch: entry.defaultBranch ?? DEFAULT_POLICY.defaultBranch,
     });
+    declaredSlugs.set(key, slug);
   }
   return {
     mode: modeOverride ?? raw.mode,
     repos,
     policies,
+    declaredSlugs,
     remediation,
     bots: raw.bots ?? [],
     reviewers: raw.reviewers ?? [],
@@ -214,6 +260,26 @@ export function resolvePolicy(config: Config, repo: RepoRef): RepoPolicy {
 
 export function isAllowlisted(config: Config, repo: RepoRef): boolean {
   return config.policies.has(repoSlug(repo));
+}
+
+/**
+ * What a repository calls its default branch, as declared.
+ *
+ * The one way to ask. Keyed by `watchKey`, so a repository declared
+ * `Owner/Name` answers the same as one asked for as `owner/name` (AD-22) -
+ * the read side never sees the casing repos.yaml was written in.
+ *
+ * A repository nobody declared answers `main`, exactly as an allowlisted one
+ * that declared nothing does. Absence of a declaration is not knowledge that
+ * the branch is called something else, and this accessor is not the place to
+ * discover that a repository is unwatched; `isAllowlisted` is.
+ */
+export function resolveDefaultBranch(config: Config, repo: RepoRef): string {
+  const slug = config.declaredSlugs.get(watchKey(repo));
+  // Through the policy, so the declared branch has one home. A second map
+  // holding the value would be two copies kept in step by hand.
+  const policy = slug === undefined ? undefined : config.policies.get(slug);
+  return policy?.defaultBranch ?? DEFAULT_POLICY.defaultBranch;
 }
 
 /**

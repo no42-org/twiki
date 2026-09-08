@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ProtectionFact, RepoPolicy } from "../src/core/types.js";
+import { DEFAULT_POLICY } from "../src/core/types.js";
 import { createGitHubFromEnv } from "../src/github/octokit-adapter.js";
 import { canRebase, isSettled, mergeBlock } from "../src/twiki/gates.js";
 import { buildDigest, hasActionableActivity } from "../src/twiki/report.js";
@@ -224,7 +225,11 @@ describe("protection is reported, never gated on", () => {
   // blocking on an undefended branch is obviously right. It may well be - but
   // it is a policy decision with a deadlock attached, and this change
   // deliberately does not take it (D4).
-  const policy: RepoPolicy = { autoMergeMinor: true, mergeOnly: false };
+  const policy: RepoPolicy = {
+    ...DEFAULT_POLICY,
+    autoMergeMinor: true,
+    mergeOnly: false,
+  };
   const facts = (state: ProtectionFact["state"]) => ({
     repo: REPO,
     mainChecks: "green" as const,
