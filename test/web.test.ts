@@ -182,7 +182,7 @@ describe("the page", () => {
   it("puts the policy note in a footer outside main", async () => {
     const html = await (await app().request("/")).text();
     expect(html).toContain(
-      '</main><footer class="policy-note">Tiers are buckets over the ordering of the queue, which is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</footer>',
+      '</main><footer class="policy-note">Tiers are buckets over the ordering of the queue, which is a local policy: a broken default branch, then CISA KEV listing, then EPSS, then severity, then update size, then whether GitHub could prepare the update. It is not SSVC and not any published standard.</footer>',
     );
   });
 
@@ -500,10 +500,10 @@ describe("issues found in review (round 2)", () => {
       );
     const NO_LANE = (label: string) => unconfirmed(label, NO_COLLECTOR);
     const UNSWEPT = (label: string) => unconfirmed(label, NO_SWEEP);
-    // CI, Dependencies, Pull requests, Issues, Reviews: two have no collector
-    // yet, three have a lane that has not confirmed this repository.
+    // CI, Dependencies, Pull requests, Issues, Reviews: one has no collector
+    // yet, four have a lane that has not confirmed this repository.
     const REST =
-      NO_LANE("CI") +
+      UNSWEPT("CI") +
       UNSWEPT("Dependencies") +
       NO_LANE("Pull requests") +
       UNSWEPT("Issues") +
@@ -688,7 +688,7 @@ describe("issues found in review (round 2)", () => {
       `<div class="tile"><span class="count unconfirmed">unconfirmed</span><span class="label">${label}</span><span class="attest">${reason}</span></div>`;
     /** Every tile but Security, none of which has a confirmed chip here. */
     const REST_TILES =
-      unconfirmedTile("CI", NO_COLLECTOR) +
+      unconfirmedTile("CI", NO_SWEEP) +
       unconfirmedTile("Dependencies", NO_SWEEP) +
       unconfirmedTile("Pull requests", NO_COLLECTOR) +
       unconfirmedTile("Issues", NO_SWEEP) +
@@ -720,6 +720,92 @@ describe("issues found in review (round 2)", () => {
       );
       expect(html).toContain(
         '<p class="legend">now: act today · soon: act this week · quiet: nothing pressing</p>',
+      );
+    });
+
+    it("renders a red main first, as a now tile, chip and rationale", async () => {
+      // The whole surface of Story 2.3 in one rendering: the CI tile carries
+      // a count and the `now` marker, the row's CI chip links to the
+      // filtered queue, and the rationale is one plain sentence naming the
+      // workflow. The alert beside it is KEV-listed and `now` too, and it
+      // ranks second, because nothing ships from a red main.
+      const alerts = [
+        makeAlert({ number: 1, repo: OTHER, epssPercentage: 0.5 }),
+      ];
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        ...alerts.map(normalise),
+        summariseRepo(REPO, []),
+        summariseRepo(OTHER, alerts),
+        summariseRepo(NEVER, []),
+      ]);
+      const actions = store.beginRun({
+        lane: "rest-actions-runs",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-08-16T11:55:00.000Z",
+      });
+      store.recordObservations(actions, "2026-08-16T11:55:00.000Z", [
+        {
+          subject: { type: "repository_actions", key: "no42-org/twiki" },
+          payload: { repo: "no42-org/twiki", workflows: 1, failing: 1 },
+        },
+        {
+          subject: { type: "workflow_run", key: "WFR_9" },
+          payload: {
+            repo: "no42-org/twiki",
+            workflowId: 1,
+            workflowName: "CI",
+            runNumber: 9,
+            status: "completed",
+            conclusion: "failure",
+            headBranch: "main",
+            event: "push",
+            htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+            createdAt: "2026-08-16T10:00:00.000Z",
+          },
+        },
+      ] as never[]);
+      store.finishRun(actions, "ok", "2026-08-16T11:55:00.000Z");
+
+      const html = await render();
+
+      expect(html).toContain(
+        '<nav class="tiles" aria-label="topics">' +
+          '<a class="tile" href="/queue?topic=security"><span class="count critical">1 <span class="now-marker">· 1 now</span></span><span class="label">Security</span></a>' +
+          '<a class="tile" href="/queue?topic=ci"><span class="count critical">1 <span class="now-marker">· 1 now</span></span><span class="label">CI</span></a>' +
+          unconfirmedTile("Dependencies", NO_SWEEP) +
+          unconfirmedTile("Pull requests", NO_COLLECTOR) +
+          unconfirmedTile("Issues", NO_SWEEP) +
+          unconfirmedTile("Reviews", NO_SWEEP) +
+          "</nav>",
+      );
+      // The red main is the first row on the board, above the KEV alert.
+      expect(html).toContain(
+        open("now") +
+          slug("no42-org/twiki") +
+          tier("now") +
+          signals(
+            '<a class="chip" href="/queue?repo=no42-org%2Ftwiki&amp;topic=ci">CI 1</a>',
+          ) +
+          ZERO +
+          cell(
+            "CI",
+            '<a class="chip" href="/queue?repo=no42-org%2Ftwiki&amp;topic=ci">1</a>',
+          ) +
+          UNSWEPT("Dependencies") +
+          NO_LANE("Pull requests") +
+          UNSWEPT("Issues") +
+          UNSWEPT("Reviews") +
+          FRESH +
+          "</tr>" +
+          why(
+            "workflow run #9: default branch workflow CI failed 2h ago",
+            "zero: Security · unconfirmed: Dependencies, Pull requests, Issues, Reviews",
+          ) +
+          "</tbody>",
+      );
+      expect(html.indexOf("no42-org/twiki")).toBeLessThan(
+        html.indexOf("no42-org/quiet"),
       );
     });
 
@@ -774,7 +860,7 @@ describe("issues found in review (round 2)", () => {
             '<a class="chip" href="/queue?repo=no42-org%2Ftwiki&amp;topic=dependencies">Dependencies 1</a>',
           ) +
           ZERO +
-          NO_LANE("CI") +
+          UNSWEPT("CI") +
           cell(
             "Dependencies",
             '<a class="chip" href="/queue?repo=no42-org%2Ftwiki&amp;topic=dependencies">1</a>',
@@ -1487,5 +1573,166 @@ describe("issues found in review (round 2)", () => {
 
       expect(html).toContain("stale");
     });
+  });
+});
+
+// The web role's own wiring, asserted through the routes. Each of these
+// could be unwired with the rest of the suite green, because every view-model
+// test passes the value directly and only the app supplies it from a lane
+// name or a guard.
+describe("what createApp binds for the CI signal", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const ACTIONS_LANE = "rest-actions-runs";
+  // Forty-five minutes before the render: stale on the fifteen-minute sweep
+  // budget, which tolerates two cadences, and fresh on the hourly one.
+  const CONFIRMED_AT = new Date(NOW.getTime() - 45 * 60_000).toISOString();
+
+  const seedRedMain = () => {
+    const alerts = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: CONFIRMED_AT,
+    });
+    store.recordObservations(alerts, CONFIRMED_AT, [summariseRepo(REPO, [])]);
+    store.finishRun(alerts, "ok", CONFIRMED_AT);
+
+    const actions = store.beginRun({
+      lane: ACTIONS_LANE,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: CONFIRMED_AT,
+    });
+    store.recordObservations(actions, CONFIRMED_AT, [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: 1, failing: 1 },
+      },
+      {
+        subject: { type: "workflow_run", key: "WFR_9" },
+        payload: {
+          repo: "no42-org/twiki",
+          workflowId: 1,
+          workflowName: "CI",
+          runNumber: 9,
+          status: "completed",
+          conclusion: "failure",
+          headBranch: "main",
+          event: "push",
+          htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+          createdAt: "2026-08-16T10:00:00.000Z",
+        },
+      },
+    ] as never[]);
+    store.finishRun(actions, "ok", CONFIRMED_AT);
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "wiring-"));
+    store = SqliteStore.openForWrite(join(dir, "w.db"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("judges the Actions lane on its own hourly cadence, not the sweep's", async () => {
+    // Exactly the shape of the KEV test above, and for the same reason: the
+    // view-model tests pass `actionsPolicy` directly, so unwiring the lane
+    // lookup in createApp left every one of them green while the whole
+    // feature switched itself off - a confirmation is stale within half an
+    // hour on the sweep budget, and with it go the item, the chip and the
+    // tile.
+    seedRedMain();
+
+    const html = await (
+      await createApp({
+        defaultBranchOf: () => "main",
+        store,
+        watched: [REPO],
+        policy: POLICY,
+        lanePolicies: { [ACTIONS_LANE]: { cadenceMs: 60 * 60_000 } },
+        now: () => NOW,
+      }).request("/")
+    ).text();
+
+    expect(html).toContain(
+      '<a class="tile" href="/queue?topic=ci"><span class="count critical">1 <span class="now-marker">· 1 now</span></span><span class="label">CI</span></a>',
+    );
+    expect(html).toContain(
+      "workflow run #9: default branch workflow CI failed 2h ago",
+    );
+  });
+
+  it("reads the sweep cadence with no lane policy, so the same store says unconfirmed", async () => {
+    // The control for the test above: same store, no lane policy, and the
+    // CI tile must then read `unconfirmed` rather than counting. Without
+    // this, the assertion above passes whatever cadence is in force.
+    seedRedMain();
+
+    const html = await (
+      await createApp({
+        defaultBranchOf: () => "main",
+        store,
+        watched: [REPO],
+        policy: POLICY,
+        now: () => NOW,
+      }).request("/")
+    ).text();
+
+    expect(html).toContain(
+      '<div class="tile"><span class="count unconfirmed">unconfirmed</span><span class="label">CI</span>',
+    );
+  });
+
+  it("answers 200 on every page when the branch resolver throws", async () => {
+    // The board and the queue call the resolver now, not only the repository
+    // page, so removing the guard 500s the whole dashboard rather than one
+    // page of it. A route has no logger; a page is what it has.
+    seedRedMain();
+    // Lifted by an overdue review, so the repository has a row and its chips
+    // are rendered: a quiet repository folds into the quiet block and shows
+    // none of them.
+    const reviews = store.beginRun({
+      lane: "graphql-review-requests",
+      installation: "reviews",
+      scope: "full",
+      startedAt: CONFIRMED_AT,
+    });
+    store.recordObservations(reviews, CONFIRMED_AT, [
+      normaliseReviewRequest(
+        makeReviewRequest({
+          repo: REPO,
+          number: 4,
+          createdAt: "2026-08-07T12:00:00.000Z",
+        }),
+      ),
+    ]);
+    store.finishRun(reviews, "ok", CONFIRMED_AT);
+    const app = createApp({
+      defaultBranchOf: () => {
+        throw new Error("repos.yaml is unreadable");
+      },
+      store,
+      watched: [REPO],
+      policy: POLICY,
+      lanePolicies: { [ACTIONS_LANE]: { cadenceMs: 60 * 60_000 } },
+      now: () => NOW,
+    });
+
+    for (const path of ["/", "/queue", "/repo/no42-org/twiki"]) {
+      expect((await app.request(path)).status).toBe(200);
+    }
+
+    // And the guard does not answer `main`: a resolver that could not say is
+    // not evidence that this repository's build is green, so the chip reads
+    // unconfirmed rather than a confident zero.
+    const html = await (await app.request("/")).text();
+    expect(html).toContain(
+      '<span class="chip unconfirmed" title="the default branch could not be resolved">unconfirmed</span>',
+    );
   });
 });

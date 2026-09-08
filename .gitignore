@@ -26,6 +26,7 @@ write-spike*.json
 github-app-private-key*
 
 # AI tools
+.agents/
 _bmad-output/
 _bmad/
 openspec-output/

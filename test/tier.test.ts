@@ -27,6 +27,9 @@ const CUT = epssRank(DEFAULT_NOW_EPSS, P.epssBands);
 
 /** The all-least-known baseline: every term measured and found harmless. */
 const quietItem = (over: Partial<RankInput> = {}): RankInput => ({
+  // n/a, the state every kind but a CI failure passes; the measured-green
+  // `false` is a row of the table below.
+  broken: NOT_APPLICABLE,
   kev: false,
   epss: NOT_APPLICABLE,
   severity: "low",
@@ -43,6 +46,7 @@ describe("tier() over every term state (AD-29)", () => {
     // n/a is least-known too: nothing to know is not something to act on.
     expect(
       bucket({
+        broken: NOT_APPLICABLE,
         kev: NOT_APPLICABLE,
         epss: NOT_APPLICABLE,
         severity: NOT_APPLICABLE,
@@ -57,6 +61,7 @@ describe("tier() over every term state (AD-29)", () => {
     // collect cannot read as quiet; and nothing unknown is evidence for now.
     expect(
       bucket({
+        broken: null,
         kev: null,
         epss: null,
         severity: null,
@@ -68,6 +73,12 @@ describe("tier() over every term state (AD-29)", () => {
 
   describe.each<[keyof RankInput, RankInput[keyof RankInput], Tier]>([
     // One term at a time from the quiet baseline, every state of it.
+    // A red default branch is the chain's leading term, and the only other
+    // one that reaches `now` on its own: nothing ships from a broken main.
+    ["broken", null, "soon"],
+    ["broken", NOT_APPLICABLE, "quiet"],
+    ["broken", false, "quiet"],
+    ["broken", true, "now"],
     ["kev", null, "soon"],
     ["kev", NOT_APPLICABLE, "quiet"],
     ["kev", false, "quiet"],

@@ -9,6 +9,7 @@ import { coverageReason, isCovered } from "../../core/coverage.js";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import {
   DEFAULT_HUNG_AFTER_MS,
+  isBrokenVerdict,
   type RunVerdict,
   runVerdict,
 } from "../../core/run-verdict.js";
@@ -19,7 +20,8 @@ import {
   defaultCutRank,
   type Tier,
 } from "../../core/tier.js";
-import { DEFAULT_POLICY, type RepoRef } from "../../core/types.js";
+import type { RepoRef } from "../../core/types.js";
+import { actionsVouched } from "../attention/actions-confirmation.js";
 import {
   laneAttestation,
   type SectionState,
@@ -154,10 +156,17 @@ export interface RepoReviewRow {
  * documented as total must not depend on an invariant of the store to be so.
  *
  * Workflow name first, then the default-branch row, because a failure on main
- * is the one a reader came for; then the run number, newest first; then the
+ * is the one a reader came for; then the broken run within its bucket, for
+ * the same reason one level down - the run that needs the reader is the one
+ * that did not go green, and a rerun that passed is newer than the failure
+ * it has not yet replaced; then the run number, newest first; then the
  * subject key, which is what makes it total. Two workflows may share a
  * display name (GitHub allows it) and a re-run shares its run number, so
  * neither is unique on its own.
+ *
+ * `broken` sits BELOW the default-branch term deliberately: a failed feature
+ * branch must not climb above a green main, because it is not a statement
+ * about main at all.
  */
 export function compareRunRows(
   a: RepoRunRow,
@@ -167,6 +176,7 @@ export function compareRunRows(
   return (
     a.workflowName.localeCompare(b.workflowName) ||
     Number(onDefaultBranch(b)) - Number(onDefaultBranch(a)) ||
+    Number(isBrokenVerdict(b.verdict)) - Number(isBrokenVerdict(a.verdict)) ||
     b.runNumber - a.runNumber ||
     a.key.localeCompare(b.key)
   );
@@ -241,8 +251,15 @@ export interface RepoViewDeps {
   policy: FreshnessPolicy;
   /** The coverage lane's own daily cadence (AD-11). */
   coveragePolicy?: FreshnessPolicy;
-  /** The Actions lane's cadence, for judging its attestation. */
-  actionsPolicy?: FreshnessPolicy;
+  /**
+   * The Actions lane's own hourly cadence (AD-11).
+   *
+   * Required, as it is on `QueueDeps`, and for the same reason: this view
+   * and the overview derive the same CI facts from the same rows, and one
+   * of them silently falling back to the fifteen-minute sweep budget would
+   * make a repository read `now` on one page and `quiet` on the other.
+   */
+  actionsPolicy: FreshnessPolicy;
   /** The KEV catalogue's own cadence, for the chain's first term (AD-11). */
   kevPolicy?: FreshnessPolicy;
   /** Thresholds only; the chain order is code (AD-20). */
@@ -263,14 +280,16 @@ export interface RepoViewDeps {
   hungAfterMs?: number;
   /**
    * What this repository calls its default branch, in production
-   * `resolveDefaultBranch` bound to the loaded config (AD-33). Only the run
-   * list reads it, and only to order rows: a wrong value here shuffles two
-   * rows, it does not change a verdict.
+   * `resolveDefaultBranch` bound to the loaded config (AD-33), or null when
+   * the caller could not say.
    *
-   * Defaults to the same `main` an undeclared repository resolves to, so an
-   * unbound caller sorts by the commonest case rather than by nothing.
+   * Required, with no default. It no longer only orders the run list: the
+   * header's tier now comes from a queue that derives a CI item from this
+   * branch, so a silent `main` here would make a `master` repository read
+   * `quiet` on its own page while the overview read `now` from the very
+   * same rows. Null derives no item and treats no run as a build of main.
    */
-  defaultBranch?: string;
+  defaultBranch: string | null;
 }
 
 /** Rows of one node-keyed type belonging to this repository. */
@@ -351,6 +370,8 @@ export function buildRepoView(
   // and handed in, so a repository this page refuses to count alerts for is
   // not at the same time judged `now` by one of them.
   const rankPolicy = deps.rankPolicy ?? DEFAULT_RANK_POLICY;
+  const { actionsPolicy, defaultBranch } = deps;
+  const hungAfterMs = deps.hungAfterMs ?? DEFAULT_HUNG_AFTER_MS;
   const attention = repoAttention(
     store,
     repo,
@@ -358,9 +379,17 @@ export function buildRepoView(
     {
       policy: deps.policy,
       kevPolicy: deps.kevPolicy ?? deps.policy,
+      actionsPolicy,
       rankPolicy,
       cutRank: deps.cutRank ?? defaultCutRank(rankPolicy),
       reviewBudgetDays: deps.reviewBudgetDays ?? DEFAULT_REVIEW_BUDGET_DAYS,
+      hungAfterMs,
+      // One repository's page, so one branch: `repoAttention` keeps only this
+      // repository's items and discards the rest, so a run in some other
+      // repository judged against this branch reaches nothing. Constant
+      // rather than a resolver because this view is handed the resolved
+      // value, not the resolver (AD-33).
+      defaultBranchOf: () => defaultBranch,
     },
     notCovered ? new Set([slug]) : undefined,
   );
@@ -514,38 +543,25 @@ export function buildRepoView(
   const actionsConfirmation = store
     .currentByType("repository_actions")
     .find((v) => v.state === "present" && v.subject.key === slug);
-  // Three things have to hold before this section counts as vouched for,
-  // and each was a real failure without it: the sweep reached this
-  // repository, it could actually read what it found (null workflows means
-  // it reached and could not), and the confirmation is still current. The
-  // last is the same rule the coverage lookup above applies, for the same
-  // reason: a lane that died days ago must not keep badging its last word
-  // as though it were this hour's (AD-28). Failing any of them, the
-  // section falls back to the lane's own standing, which says "collected
-  // earlier, not confirmed since" rather than asserting a count.
-  const actionsPayload = actionsConfirmation?.payload as
-    | { workflows: number | null }
-    | undefined;
-  const actionsVouched =
-    actionsConfirmation !== undefined &&
-    actionsPayload?.workflows !== null &&
-    actionsPayload?.workflows !== undefined &&
-    freshness(
-      actionsConfirmation.verifiedAt,
-      now,
-      deps.actionsPolicy ?? deps.policy,
-    ) === "fresh";
+  // The three conditions, and the reason they are one shared function, are
+  // written where that function lives: the queue derives a `ci_failure` item
+  // from exactly this judgement and the board's CI chip counts them, so a
+  // copy here could let one page show a failing build while the next reads
+  // `unconfirmed` off the same row. Failing it, the section falls back to
+  // the lane's own standing, which says "collected earlier, not confirmed
+  // since" rather than asserting a count.
+  const vouched = actionsVouched(actionsConfirmation, now, actionsPolicy);
 
   const runResult = forRepo(
     store.currentByType("workflow_run"),
     slug,
     readWorkflowRun,
   );
-  const defaultBranch = deps.defaultBranch ?? DEFAULT_POLICY.defaultBranch;
+  // No declared branch means no run can be shown to be a build of main, and
+  // saying otherwise would be a guess: the list falls back to run order.
   const onDefaultBranch = (row: RepoRunRow): boolean =>
-    isDefaultBranchRun(row, defaultBranch);
+    defaultBranch !== null && isDefaultBranchRun(row, defaultBranch);
   unattributable += runResult.unattributable;
-  const hungAfterMs = deps.hungAfterMs ?? DEFAULT_HUNG_AFTER_MS;
   const runs = runResult.rows
     .map(({ value, payload }) => ({
       key: value.subject.key,
@@ -629,21 +645,15 @@ export function buildRepoView(
     // sweep.
     actionsSection: actionsConfirmation
       ? {
-          attested: actionsVouched,
+          attested: vouched,
           freshness: freshness(
             actionsConfirmation.verifiedAt,
             now,
-            deps.actionsPolicy ?? deps.policy,
+            actionsPolicy,
           ),
           age: ageLabel(actionsConfirmation.verifiedAt, now),
         }
-      : laneAttestation(
-          store,
-          ACTIONS_LANE,
-          installation,
-          now,
-          deps.actionsPolicy ?? deps.policy,
-        ),
+      : laneAttestation(store, ACTIONS_LANE, installation, now, actionsPolicy),
     reviews,
     reviewSection: laneAttestation(
       store,

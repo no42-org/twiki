@@ -150,7 +150,8 @@ There is no default: AD-19 forbids a bot login in source, so an absent list disa
 A PR inherits the risk of what it fixes: when its package matches an open alert, the alert's KEV, EPSS and severity rank the PR; otherwise it is a plain update ranked by bump size.
 
 `web` serves two pages on the loopback bind: `/` lists every watched repository with its alert count and freshness, and `/queue` is one cross-repository list ordered by the ranking chain, each row saying why it ranks where it does.
-The ordering is a local policy (KEV, then EPSS, then severity, then update size), not SSVC or any published standard.
+The ordering is a local policy, not SSVC or any published standard: a broken default branch, then CISA KEV listing, then EPSS, then severity, then update size, then whether GitHub could prepare the update.
+A failed or hung workflow run on a repository's default branch leads the chain, because nothing ships from a red main whatever else is open.
 
 ### The read-only GitHub App
 
@@ -199,7 +200,8 @@ renames should read as a name mismatch rather than as "you did not grant
 something you did grant", so `doctor` prints what GitHub actually reported
 alongside what it expected.
 
-`collect` migrates the schema, then runs each lane on its own cadence: Dependabot alerts every 15 minutes, coverage daily, and the CISA KEV catalogue daily.
+`collect` migrates the schema, then runs each lane on its own cadence: Dependabot alerts every 15 minutes, workflow runs hourly, coverage daily, and the CISA KEV catalogue daily.
+Each is judged for freshness on its own cadence, so an hourly lane is not read as stale on a fifteen-minute budget.
 KEV is the one non-GitHub request the system makes.
 The catalogue is collected and stored; the ranked queue that consumes it is not built yet, so nothing renders it today.
 Due-ness is read from the store rather than from memory, so a restart neither re-sweeps everything nor waits a full cadence before doing anything.

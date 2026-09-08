@@ -21,7 +21,12 @@ import {
   LANE as REVIEWS_LANE,
 } from "../collect/review-requests.js";
 import { LANE as UPDATE_PR_LANE } from "../collect/update-prs.js";
+import { LANE as ACTIONS_LANE } from "../collect/workflow-runs.js";
 import type { CurrentValue, StorePort } from "../store/port.js";
+import {
+  actionsConfirmations,
+  actionsVouched,
+} from "./actions-confirmation.js";
 import { latestFullRun } from "./attestation.js";
 import {
   ageLabel,
@@ -172,9 +177,16 @@ export interface Board {
   health: CollectionHealth[];
 }
 
-/** The two absences an `unconfirmed` chip or tile can stand for. */
+/** The absences an `unconfirmed` chip or tile can stand for. */
 export const NO_COLLECTOR = "no collector for this topic yet";
 export const NO_SWEEP = "not confirmed by any completed sweep";
+/**
+ * The repository's default branch could not be resolved, so nothing here
+ * knows which runs were builds of main. Its own absence rather than a
+ * variant of NO_SWEEP: a sweep may well have confirmed the repository, and
+ * what is missing is a fact about our own configuration.
+ */
+export const NO_BRANCH = "the default branch could not be resolved";
 
 /** A chip with no count behind it. */
 function absent(state: "unconfirmed" | "not-covered", reason: string): Chip {
@@ -276,6 +288,13 @@ export function buildBoard(
   for (const value of store.currentByType("repository")) {
     if (value.state === "present") confirmations.set(value.subject.key, value);
   }
+  // The same question for CI, asked of the Actions lane's own per-repository
+  // confirmation and judged on its own hourly cadence (AD-11). The security
+  // chip below reads this repository's confirmation first for the same
+  // reason: a bounded sweep reaches some repositories and yields before
+  // others, so a lane-wide verdict would either mark every repository
+  // unconfirmed or confirm one the sweep never reached.
+  const actions = actionsConfirmations(store);
 
   // One read of collection health for the whole page: the tile warnings and
   // the table at the foot come from it (#127). A lane whose latest full
@@ -288,6 +307,11 @@ export function buildBoard(
     ...deps.lanePolicies,
     [COVERAGE_LANE]:
       deps.coveragePolicy ?? deps.lanePolicies?.[COVERAGE_LANE] ?? deps.policy,
+    // The Actions lane is hourly, and its cadence is a REQUIRED dependency
+    // rather than an optional map entry, because the queue derives every CI
+    // item under it. Overridden here for the same reason coverage is: the
+    // table and the chip must judge one lane on one budget.
+    [ACTIONS_LANE]: deps.actionsPolicy,
   });
   const collected =
     health.some((h) => h.outcome === "ok" || h.outcome === "partial") ||
@@ -399,7 +423,14 @@ export function buildBoard(
     const key = `${lane}|${installation}`;
     let result = standings.get(key);
     if (result === undefined) {
-      const policy = deps.lanePolicies?.[lane] ?? deps.policy;
+      // The Actions lane's own cadence comes from the required dependency,
+      // not the optional map: the chip, the item it counts and this standing
+      // are one judgement, and reading two of them from two places is how a
+      // lane ends up fresh on one line of the page and stale on the next.
+      const policy =
+        lane === ACTIONS_LANE
+          ? deps.actionsPolicy
+          : (deps.lanePolicies?.[lane] ?? deps.policy);
       const run = latestFullRun(store, lane, installation);
       if (run?.outcome !== "ok") {
         result = { current: false, verifiedAt: null, policy, reason: NO_SWEEP };
@@ -465,17 +496,62 @@ export function buildBoard(
       security = absent("unconfirmed", NO_SWEEP);
     }
 
+    // This repository's OWN confirmation, judged on the Actions lane's own
+    // cadence - the same value the `ci_failure` items were derived under, so
+    // the chip and the count behind it cannot disagree. A confirmed
+    // repository with nothing broken reads `0`; one no sweep has vouched for
+    // never does (AD-28).
+    //
+    // The count is the ITEMS, not the lane's stored `failing` number, and
+    // that is the authoritative one: `failing` is judged at the sweep's
+    // clock and this page is rendered at another, so a run that hung in
+    // between is broken here and was not there. Deriving the chip from the
+    // items keeps it equal to the rows the queue behind the link lists, and
+    // to the tier those same items produced. The stored number is Collection
+    // health detail and nothing on this page reads it.
+    //
+    // The lane's standing supplies the REASON and never a count, which is
+    // where this chip stops mirroring the lane-attested ones. That lane is
+    // bounded: it reaches some repositories and yields before others
+    // (AD-24), so its clean run is not a statement about this repository,
+    // and counting from it would put a confident `0` on a repository the
+    // sweep may never have opened. The repository page applies the same rule
+    // to the same rows.
+    const actionsConfirmation = actions.get(slug);
+    // Without a resolved default branch the queue derived nothing for this
+    // repository, whatever its rows say, so a `0` here would be the guard in
+    // `createApp` turning a broken configuration into a measured zero.
+    const branchKnown = deps.defaultBranchOf(repo) !== null;
+    let ci: Chip;
+    if (
+      branchKnown &&
+      actionsVouched(actionsConfirmation, now, deps.actionsPolicy)
+    ) {
+      sources.push({
+        verifiedAt: actionsConfirmation.verifiedAt,
+        policy: deps.actionsPolicy,
+      });
+      ci = counted(ofKind("ci_failure"), null, topicPath("ci", repo));
+    } else if (!branchKnown) {
+      ci = absent("unconfirmed", NO_BRANCH);
+    } else {
+      ci = absent(
+        "unconfirmed",
+        standing(ACTIONS_LANE, owner).reason ?? NO_SWEEP,
+      );
+    }
+
     return {
       chips: {
         security,
-        // No lane yet (Epics 2 and 3), so no sweep has confirmed anything:
-        // `unconfirmed`, never `0` (AD-28).
-        ci: absent("unconfirmed", NO_COLLECTOR),
+        ci,
         dependencies: fromLane(
           standing(UPDATE_PR_LANE, owner),
           "dependencies",
           ofKind("update_pr"),
         ),
+        // No lane yet (Epic 3), so no sweep has confirmed anything:
+        // `unconfirmed`, never `0` (AD-28).
         pulls: absent("unconfirmed", NO_COLLECTOR),
         issues: fromLane(
           standing(ISSUE_LANE, owner),
@@ -560,8 +636,8 @@ export function buildBoard(
   // only items of repositories whose chip for the topic is a count: an item
   // no chip may count cannot be counted one level up either (AD-28). A
   // topic reads `unconfirmed` while no watched repository has a confirmed
-  // chip for it: every CI and Pull requests tile today, and every tile
-  // before the first sweep.
+  // chip for it: the Pull requests tile today, and every tile before the
+  // first sweep.
   const tiles: Tile[] = TOPICS.map(({ topic, label, kinds }) => {
     const chips = [...chipsBySlug.entries()].map(([slug, c]) => ({
       slug,

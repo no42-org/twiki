@@ -44,12 +44,16 @@ import {
 const NOW = new Date("2026-08-16T12:00:00.000Z");
 const AT = "2026-08-16T11:55:00.000Z";
 const POLICY = { cadenceMs: 15 * 60_000 };
+const HOURLY = { cadenceMs: 60 * 60_000 };
 const DEPS = {
   policy: POLICY,
   kevPolicy: { cadenceMs: 24 * 60 * 60_000 },
+  actionsPolicy: HOURLY,
   rankPolicy: DEFAULT_RANK_POLICY,
   cutRank: epssRank(DEFAULT_NOW_EPSS, DEFAULT_RANK_POLICY.epssBands),
   reviewBudgetDays: 3,
+  hungAfterMs: 2 * 60 * 60_000,
+  defaultBranchOf: () => "main",
 };
 const REPO = { owner: "no42-org", name: "twiki" };
 const OTHER = { owner: "no42-org", name: "quiet" };
@@ -72,7 +76,7 @@ const absent = (reason: string): Chip => ({
   href: null,
   reason,
 });
-/** A topic that has no collector yet: CI, Pull requests. */
+/** A topic that has no collector yet: Pull requests. */
 const NO_LANE = absent(NO_COLLECTOR);
 /** A topic whose lane has not completed a current sweep here. */
 const UNSWEPT = absent(NO_SWEEP);
@@ -102,7 +106,9 @@ const REST_TOPICS: Topic[] = [
 /** The six chips of a row that only the alert lane has confirmed. */
 const alertsOnly = (security: Chip): BoardRow["chips"] => ({
   security,
-  ci: NO_LANE,
+  // CI has a lane now, so its absence is the same absence Dependencies has:
+  // no sweep confirmed this repository, not "nobody collects this".
+  ci: UNSWEPT,
   dependencies: UNSWEPT,
   pulls: NO_LANE,
   issues: UNSWEPT,
@@ -112,7 +118,7 @@ const alertsOnly = (security: Chip): BoardRow["chips"] => ({
 const TILE_FACTS: Record<Topic, [label: string, href: string, absent: string]> =
   {
     security: ["Security", "/queue?topic=security", NO_SWEEP],
-    ci: ["CI", "/queue?topic=ci", NO_COLLECTOR],
+    ci: ["CI", "/queue?topic=ci", NO_SWEEP],
     dependencies: ["Dependencies", "/queue?topic=dependencies", NO_SWEEP],
     pulls: ["Pull requests", "/queue?topic=pulls", NO_COLLECTOR],
     issues: ["Issues", "/queue?topic=issues", NO_SWEEP],
@@ -467,7 +473,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
         reason: "pull request #4 open 9d, past the 3d review budget",
         chips: {
           security: ZERO,
-          ci: NO_LANE,
+          ci: UNSWEPT,
           dependencies: UNSWEPT,
           pulls: NO_LANE,
           issues: UNSWEPT,
@@ -482,6 +488,211 @@ describe("buildBoard (AD-32, AD-35)", () => {
         age: "5m ago",
       },
     ]);
+  });
+
+  describe("the CI chip and tile (Story 2.3)", () => {
+    const ACTIONS_LANE = "rest-actions-runs";
+    const CI = "/queue?repo=no42-org%2Ftwiki&topic=ci";
+    // Forty-five minutes old: stale on the fifteen-minute sweep budget,
+    // which tolerates two cadences, and fresh on the Actions lane's own
+    // hourly one. Every case here therefore also proves the chip is judged
+    // on the right cadence (AD-11).
+    const CONFIRMED_AT = hoursAgo(0.75);
+
+    const actions = (
+      observations: { subject: unknown; payload: unknown }[],
+      at = CONFIRMED_AT,
+    ) => seed(ACTIONS_LANE, "no42-org", observations, at);
+
+    const confirmation = (repo: RepoRef, workflows: number | null = 1) => ({
+      subject: {
+        type: "repository_actions",
+        key: `${repo.owner}/${repo.name}`.toLowerCase(),
+      },
+      payload: {
+        repo: `${repo.owner}/${repo.name}`.toLowerCase(),
+        workflows,
+        failing: 0,
+      },
+    });
+
+    const brokenRun = (repo: RepoRef, over: Record<string, unknown> = {}) => ({
+      subject: { type: "workflow_run", key: `WFR_${over.runNumber ?? 9}` },
+      payload: {
+        repo: `${repo.owner}/${repo.name}`.toLowerCase(),
+        workflowId: 1,
+        workflowName: "CI",
+        runNumber: 9,
+        status: "completed",
+        conclusion: "failure",
+        headBranch: "main",
+        event: "push",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+        createdAt: hoursAgo(2),
+        ...over,
+      },
+    });
+
+    it("counts a red main on the chip and the tile, and marks it now", () => {
+      sweep([{ repo: REPO, alerts: [] }]);
+      actions([confirmation(REPO), brokenRun(REPO)]);
+
+      const board = buildBoard(store, [REPO], NOW, DEPS);
+
+      expect(board.rows).toEqual([
+        {
+          slug: "no42-org/twiki",
+          tier: "now",
+          reason: "workflow run #9: default branch workflow CI failed 2h ago",
+          // The badge below is the alert lane's 5m, not this section's 45m,
+          // and that is the documented rule rather than a loose fixture: a
+          // row is badged by the NEWEST confirmation behind any chip showing
+          // a number, and both the Security zero and the CI count are such
+          // chips here. The CI item carries the Actions timestamp on its own
+          // row in the queue, which is where a reader asks how old this
+          // particular fact is.
+          chips: {
+            security: ZERO,
+            ci: linked(1, CI),
+            dependencies: UNSWEPT,
+            pulls: NO_LANE,
+            issues: UNSWEPT,
+            reviews: UNSWEPT,
+          },
+          signals: [{ topic: "ci", text: "CI 1" }],
+          signalsRest: {
+            zero: ["security"],
+            unconfirmed: ["dependencies", "pulls", "issues", "reviews"],
+          },
+          freshness: "fresh",
+          age: "5m ago",
+        },
+      ]);
+      // The count and the marker: every ci_failure is `now` by construction,
+      // so a tile carrying a count with no marker would mean the tier rule
+      // and the chip disagree about the same item.
+      expect(board.tiles).toEqual([
+        tile("security", 0),
+        tile("ci", 1, 1),
+        tile("dependencies", "unconfirmed"),
+        tile("pulls", "unconfirmed"),
+        tile("issues", "unconfirmed"),
+        tile("reviews", "unconfirmed"),
+      ]);
+    });
+
+    it("reads a confirmed clean repository as 0, never as unconfirmed", () => {
+      sweep([{ repo: REPO, alerts: [] }]);
+      actions([confirmation(REPO), brokenRun(REPO, { conclusion: "success" })]);
+      seed("graphql-review-requests", "reviews", [overdue(REPO, 12)]);
+
+      const board = buildBoard(store, [REPO], NOW, DEPS);
+
+      expect(board.rows[0]?.chips.ci).toEqual(ZERO);
+      expect(board.tiles[1]).toEqual(tile("ci", 0));
+    });
+
+    it("reads unconfirmed, never 0, with no confirmation for this repository", () => {
+      sweep([{ repo: REPO, alerts: [] }]);
+      // A clean, current full run of the lane, and a red main among its
+      // rows - but no confirmation naming THIS repository. The lane is
+      // bounded and yields (AD-24), so its run says nothing about a
+      // repository it may never have opened: the chip must not read `0`.
+      actions([brokenRun(REPO)]);
+      seed("graphql-review-requests", "reviews", [overdue(REPO, 12)]);
+
+      const board = buildBoard(store, [REPO], NOW, DEPS);
+
+      expect(board.rows[0]?.chips.ci).toEqual(UNSWEPT);
+      expect(board.tiles[1]).toEqual(tile("ci", "unconfirmed"));
+    });
+
+    it("reads unconfirmed when the lane has never completed a sweep either", () => {
+      sweep([{ repo: REPO, alerts: [] }]);
+      seed("graphql-review-requests", "reviews", [overdue(REPO, 12)]);
+
+      const board = buildBoard(store, [REPO], NOW, DEPS);
+
+      expect(board.rows[0]?.chips.ci).toEqual(UNSWEPT);
+      expect(board.tiles[1]).toEqual(tile("ci", "unconfirmed"));
+    });
+
+    it("refuses to count from a confirmation that could not read what it found", () => {
+      sweep([{ repo: REPO, alerts: [] }]);
+      actions([confirmation(REPO, null), brokenRun(REPO)]);
+      seed("graphql-review-requests", "reviews", [overdue(REPO, 12)]);
+
+      const board = buildBoard(store, [REPO], NOW, DEPS);
+
+      // The sweep reached this repository and could not read what it found.
+      // That is an absence, not a zero, and no item is derived from the red
+      // main behind it either: a broken build must never be rendered as a
+      // green one.
+      expect(board.rows[0]?.chips.ci).toEqual(UNSWEPT);
+      expect(board.tiles[1]).toEqual(tile("ci", "unconfirmed"));
+      expect(board.rows[0]?.tier).toBe("soon");
+    });
+
+    it("does not read a tombstoned confirmation as vouching", () => {
+      // A tombstone is a retracted assertion, and it carries its payload
+      // forward: read without the state guard it still says `workflows: 1`,
+      // still passes the freshness check, and puts a confident count on a
+      // repository the sweep has just said it can no longer speak for.
+      sweep([{ repo: REPO, alerts: [] }]);
+      const r = actions([confirmation(REPO), brokenRun(REPO)]);
+      store.recordTombstones(r, CONFIRMED_AT, [
+        { type: "repository_actions" as const, key: "no42-org/twiki" },
+      ]);
+      seed("graphql-review-requests", "reviews", [overdue(REPO, 12)]);
+
+      const board = buildBoard(store, [REPO], NOW, DEPS);
+
+      expect(board.rows[0]?.chips.ci).toEqual(UNSWEPT);
+      expect(board.tiles[1]).toEqual(tile("ci", "unconfirmed"));
+    });
+
+    it("reads unconfirmed, not a zero, when the default branch cannot be resolved", () => {
+      // `createApp` guards the resolver so one unreadable config cannot 500
+      // the dashboard. A guard must not turn that error into a measured
+      // zero: with no branch, nothing here knows which runs built main.
+      sweep([{ repo: REPO, alerts: [] }]);
+      actions([confirmation(REPO), brokenRun(REPO)]);
+      seed("graphql-review-requests", "reviews", [overdue(REPO, 12)]);
+
+      const board = buildBoard(store, [REPO], NOW, {
+        ...DEPS,
+        defaultBranchOf: () => null,
+      });
+
+      expect(board.rows[0]?.chips.ci).toEqual(
+        absent("the default branch could not be resolved"),
+      );
+      expect(board.tiles[1]).toEqual(tile("ci", "unconfirmed"));
+    });
+
+    it("judges the confirmation on the hourly cadence, not the sweep's", () => {
+      sweep([{ repo: REPO, alerts: [] }]);
+      actions([confirmation(REPO), brokenRun(REPO)]);
+
+      // The same store, judged on the fifteen-minute budget: the
+      // half-hour-old confirmation is stale, so the chip and the item both
+      // vanish. That is precisely the section that read stale within minutes
+      // of a successful sweep before the lane got its own policy.
+      const onSweepCadence = buildBoard(store, [REPO], NOW, {
+        ...DEPS,
+        actionsPolicy: POLICY,
+      });
+
+      // The red main is gone from the board entirely: no item, no row, and
+      // the tile says `unconfirmed` rather than counting one.
+      expect(onSweepCadence.rows).toEqual([]);
+      expect(onSweepCadence.quiet).toEqual(["no42-org/twiki"]);
+      expect(onSweepCadence.tiles[1]).toEqual(tile("ci", "unconfirmed"));
+      // And on the lane's own cadence it is back, as `now`.
+      expect(
+        buildBoard(store, [REPO], NOW, DEPS).rows.map((r) => r.tier),
+      ).toEqual(["now"]);
+    });
   });
 
   describe("the Security chip (AD-28, AD-35)", () => {
@@ -858,7 +1069,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             "update PR #7 left-pad: no CVE to check against KEV, no CVE to score, no advisory, minor bump, no Dependabot fix attempt on record",
           chips: {
             security: ZERO,
-            ci: NO_LANE,
+            ci: UNSWEPT,
             dependencies: linked(
               1,
               "/queue?repo=no42-org%2Ftwiki&topic=dependencies",
@@ -898,7 +1109,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           reason: "pull request #12 open 9d, past the 3d review budget",
           chips: {
             security: ZERO,
-            ci: NO_LANE,
+            ci: UNSWEPT,
             dependencies: UNSWEPT,
             pulls: NO_LANE,
             issues: linked(1, "/queue?repo=no42-org%2Ftwiki&topic=issues"),
@@ -937,7 +1148,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           reason: "pull request #12 open 9d, past the 3d review budget",
           chips: {
             security: UNSWEPT,
-            ci: NO_LANE,
+            ci: UNSWEPT,
             dependencies: UNSWEPT,
             pulls: NO_LANE,
             issues: linked(1, "/queue?repo=no42-org%2Ftwiki&topic=issues"),
@@ -968,7 +1179,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           reason: "pull request #12 open 9d, past the 3d review budget",
           chips: {
             security: ZERO,
-            ci: NO_LANE,
+            ci: UNSWEPT,
             dependencies: UNSWEPT,
             pulls: NO_LANE,
             issues: absent("last confirmed 5d ago"),

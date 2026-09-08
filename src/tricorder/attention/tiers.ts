@@ -59,6 +59,11 @@ const DAY_MS = 24 * 60 * 60_000;
 
 const KIND_WORD: Readonly<Record<QueueItem["kind"], string>> = {
   alert: "alert",
+  // The run, not the workflow: the number beside it is the run's, and the
+  // workflow's own name is in the explanation the sentence ends with. A kind
+  // missing from this table prints `undefined` into the rationale rather
+  // than failing, which is why the record is keyed by the whole union.
+  ci_failure: "workflow run",
   update_pr: "update PR",
   issue: "issue",
 };

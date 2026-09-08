@@ -27,9 +27,12 @@ const REPO = { owner: "no42-org", name: "twiki" };
 const DEPS = {
   policy: { cadenceMs: 15 * 60_000 },
   kevPolicy: { cadenceMs: 24 * 60 * 60_000 },
+  actionsPolicy: { cadenceMs: 60 * 60_000 },
   rankPolicy: DEFAULT_RANK_POLICY,
   cutRank: epssRank(DEFAULT_NOW_EPSS, DEFAULT_RANK_POLICY.epssBands),
   reviewBudgetDays: 3,
+  hungAfterMs: 2 * 60 * 60_000,
+  defaultBranchOf: () => "main",
 };
 
 const daysAgo = (days: number): string =>
@@ -113,6 +116,53 @@ describe("repoAttention (AD-29, AD-34)", () => {
       "alert #7 left-pad: listed in CISA KEV, EPSS 42.0%, severity high, not an update, stuck state unknown",
     );
     expect(attention.items.map((i) => i.kind)).toEqual(["alert", "issue"]);
+  });
+
+  it("makes a red default branch now, and names the workflow in one sentence", () => {
+    // The tier is the easy thing to miss: leading the chain decides ORDER,
+    // and without its own rule in tier() a broken main would satisfy nothing
+    // but `anyAboveLeast` and land in `soon`.
+    seedKev(["CVE-2021-44228"]);
+    seed("rest-org-dependabot", [
+      normalise(
+        makeAlert({ number: 7, cveId: "CVE-2021-44228", severity: "high" }),
+      ),
+    ]);
+    seed(
+      "rest-actions-runs",
+      [
+        {
+          subject: { type: "repository_actions", key: "no42-org/twiki" },
+          payload: { repo: "no42-org/twiki", workflows: 1, failing: 1 },
+        },
+        {
+          subject: { type: "workflow_run", key: "WFR_9" },
+          payload: {
+            repo: "no42-org/twiki",
+            workflowId: 1,
+            workflowName: "CI",
+            runNumber: 9,
+            status: "completed",
+            conclusion: "failure",
+            headBranch: "main",
+            event: "push",
+            htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+            createdAt: "2026-08-20T10:00:00.000Z",
+          },
+        },
+      ],
+      "2026-08-20T11:30:00.000Z",
+    );
+
+    const attention = repoAttention(store, REPO, NOW, DEPS);
+
+    expect(attention.tier).toBe("now");
+    // One plain sentence: the run it points at, and what happened to which
+    // workflow. The KEV-listed alert is `now` too and ranks below it.
+    expect(attention.reason).toBe(
+      "workflow run #9: default branch workflow CI failed 2h ago",
+    );
+    expect(attention.items.map((i) => i.kind)).toEqual(["ci_failure", "alert"]);
   });
 
   it("names the first item in chain order AT the tier, not the first item", () => {

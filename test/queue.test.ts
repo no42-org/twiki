@@ -9,7 +9,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
-import { buildQueue } from "../src/tricorder/attention/queue.js";
+import {
+  buildQueue,
+  type DefaultBranchRun,
+  newerRun,
+} from "../src/tricorder/attention/queue.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
 import type { UpdatePrObservation } from "../src/tricorder/collect/update-prs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
@@ -19,10 +23,14 @@ import { makeAlert, primaryNav } from "./fakes.js";
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 const SWEEP = { cadenceMs: 15 * 60_000 };
 const DAILY = { cadenceMs: 24 * 60 * 60_000 };
+const HOURLY = { cadenceMs: 60 * 60_000 };
 const DEPS = {
   policy: SWEEP,
   kevPolicy: DAILY,
+  actionsPolicy: HOURLY,
   rankPolicy: DEFAULT_RANK_POLICY,
+  hungAfterMs: 2 * 60 * 60_000,
+  defaultBranchOf: () => "main",
 };
 
 describe("the ranked queue (CAP-6)", () => {
@@ -379,6 +387,35 @@ describe("update PRs in the queue (CAP-3)", () => {
     expect(prs.map((i) => i.number)).toEqual([10, 11]);
     expect(prs[0]?.kevListed).toBe(true);
     expect(prs[0]?.advisory).toBe("CVE-2021-44228");
+  });
+
+  it("says nothing about the build on a PR that inherited an advisory", () => {
+    // The candidate-bearing branch builds its own RankInput, and nothing
+    // else pinned what it passes for `broken`. A `null` there ranks UNKNOWN,
+    // above the LEAST_KNOWN every alert carries, so every advisory-linked PR
+    // in the estate would outrank every alert including the KEV-listed ones
+    // - the inversion the chain exists to prevent, and the exact claim this
+    // story rests on. The whole sentence, so the leading term is pinned by
+    // its absence from it.
+    seedKev(["CVE-2021-44228"]);
+    seedAlert(1, {
+      packageName: "log4j",
+      cveId: "CVE-2021-44228",
+      epssPercentage: 0.42,
+      severity: "critical",
+    });
+    seedPr("PR_a", { number: 10, packageName: "log4j" });
+
+    const items = buildQueue(store, NOW, DEPS).items;
+
+    expect(items.find((i) => i.kind === "update_pr")?.explanation).toBe(
+      "listed in CISA KEV, EPSS 42.0%, severity critical, patch bump, no Dependabot fix attempt on record",
+    );
+    // And the alert it copied from still comes first: `PR_a` sorts before
+    // `no42-org/twiki#1` on the key, so only the chain can put them this way
+    // round, and only if the two agree that neither says anything about a
+    // build.
+    expect(items.map((i) => i.kind)).toEqual(["alert", "update_pr"]);
   });
 
   it("treats a PR with no matching open alert as a plain update", () => {
@@ -820,6 +857,384 @@ describe("the stuck flag and untriaged issues (CAP-2, CAP-3)", () => {
   });
 });
 
+describe("CI failures in the queue (Story 2.3)", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const ACTIONS_LANE = "rest-actions-runs";
+  const CONFIRMED_AT = "2026-08-17T11:15:00.000Z";
+
+  /**
+   * One Actions sweep: the repository's own confirmation plus its rows.
+   *
+   * Confirmed forty-five minutes before the render, which is STALE on the
+   * fifteen-minute alert cadence - it tolerates two of them - and FRESH on
+   * the lane's own hourly one. The whole feature therefore derives nothing
+   * at all if the Actions policy is ever taken from the sweep budget, which
+   * is what makes this the fixture rather than a five-minute-old one.
+   */
+  const sweep = (
+    payloads: { subject: unknown; payload: unknown }[],
+    at = CONFIRMED_AT,
+  ) => {
+    const r = store.beginRun({
+      lane: ACTIONS_LANE,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: at,
+    });
+    store.recordObservations(r, at, payloads as never[]);
+    store.finishRun(r, "ok", at);
+  };
+
+  const confirmation = (
+    repo = "no42-org/twiki",
+    workflows: number | null = 1,
+  ) => ({
+    subject: { type: "repository_actions", key: repo },
+    payload: { repo, workflows, failing: 0 },
+  });
+
+  /** A stored run row. Defaults to a failed push on main two hours ago. */
+  const runRow = (over: Record<string, unknown> = {}) => ({
+    subject: { type: "workflow_run", key: `WFR_${over.runNumber ?? 9}` },
+    payload: {
+      repo: "no42-org/twiki",
+      workflowId: 1,
+      workflowName: "CI",
+      runNumber: 9,
+      status: "completed",
+      conclusion: "failure",
+      headBranch: "main",
+      event: "push",
+      htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+      createdAt: "2026-08-17T10:00:00.000Z",
+      ...over,
+    },
+  });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "queue-ci-"));
+    store = SqliteStore.openForWrite(join(dir, "ci.db"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("derives one item per broken default-branch workflow, keyed by the workflow", () => {
+    sweep([confirmation(), runRow()]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    // The whole item, not the field somebody worried about: the key, the
+    // deciding run's number and URL, the chain terms and the freshness are
+    // one derivation and a test of one of them lets the rest drift.
+    expect(items).toEqual([
+      {
+        kind: "ci_failure",
+        // The workflow, not the run: a rerun that breaks the same workflow
+        // again is the same thing needing the same attention.
+        key: "no42-org/twiki#workflow:1",
+        repo: "no42-org/twiki",
+        number: 9,
+        packageName: null,
+        title: "CI",
+        advisory: null,
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+        explanation: "default branch workflow CI failed 2h ago",
+        kevListed: false,
+        displaySeverity: null,
+        ranking: items[0]?.ranking,
+        // The lane's hourly cadence: on the fifteen-minute sweep budget this
+        // half-hour-old confirmation would read stale and the item would not
+        // exist at all.
+        freshness: "fresh",
+        age: "45m ago",
+      },
+    ]);
+    expect(items[0]?.ranking.terms).toEqual([
+      {
+        name: "broken",
+        rank: 2,
+        reason: "default branch workflow CI failed 2h ago",
+      },
+      { name: "kev", rank: 0, reason: "" },
+      { name: "epss", rank: 0, reason: "" },
+      { name: "severity", rank: 0, reason: "" },
+      { name: "bump", rank: 0, reason: "" },
+      { name: "stuck", rank: 0, reason: "" },
+    ]);
+  });
+
+  it("reads the verdict's own word, so a hung run says hung and not failed", () => {
+    sweep([
+      confirmation(),
+      // Started three hours before the render against a two-hour threshold:
+      // hung, and it never said `failure` at all. At exactly two hours it
+      // has used its whole allowance and not yet exceeded it, which is why
+      // the fixture's own two-hour default is not enough here.
+      runRow({
+        status: "in_progress",
+        conclusion: null,
+        createdAt: "2026-08-17T09:00:00.000Z",
+      }),
+    ]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    // What a maintainer does about a workflow that never finished is not
+    // what they do about one that failed.
+    expect(items.map((i) => i.explanation)).toEqual([
+      "default branch workflow CI hung 3h ago",
+    ]);
+  });
+
+  it("lets a green rerun clear a red main", () => {
+    // The newest run of a workflow is the one that says what main is doing.
+    // Selecting among the BROKEN rows first skipped the green rerun
+    // entirely, so the failure it replaced kept the key and a fixed main
+    // went on reading red until the store superseded the row.
+    // Keys chosen so the FAILING row is the one the store returns first:
+    // `currentByType` orders by subject key, so `WFR_a` before `WFR_b`. Held
+    // first-wins, the failure would keep the workflow and this test would
+    // pass on the wrong reason.
+    sweep([
+      {
+        ...runRow({ runNumber: 9, conclusion: "failure" }),
+        subject: { type: "workflow_run", key: "WFR_a" },
+      },
+      {
+        ...runRow({ runNumber: 10, conclusion: "success" }),
+        subject: { type: "workflow_run", key: "WFR_b" },
+      },
+      confirmation(),
+    ]);
+
+    expect(buildQueue(store, NOW, DEPS).items).toEqual([]);
+  });
+
+  it("resolves two rows sharing a run number by their key, not by store order", () => {
+    // Asserted on the comparator directly, because the tie is invisible
+    // through buildQueue: `currentByType` already returns rows in
+    // subject-key order and the first row of a tie is the one held, so the
+    // item comes out right whether or not the term is there - until the
+    // store's ORDER BY changes. GitHub counts run numbers per workflow and a
+    // re-run shares its number, so the tie itself is real, and left to the
+    // store the item would name one run's link and the other's verdict.
+    const at = (key: string, runNumber: number): DefaultBranchRun =>
+      ({
+        row: { subject: { type: "workflow_run", key } },
+        run: { runNumber },
+      }) as never;
+
+    expect(newerRun(at("WFR_b", 10), at("WFR_a", 9))).toBe(true);
+    expect(newerRun(at("WFR_a", 9), at("WFR_b", 10))).toBe(false);
+    // The tie, both ways round, and a row against itself.
+    expect(newerRun(at("WFR_a", 9), at("WFR_b", 9))).toBe(true);
+    expect(newerRun(at("WFR_b", 9), at("WFR_a", 9))).toBe(false);
+    expect(newerRun(at("WFR_a", 9), at("WFR_a", 9))).toBe(false);
+  });
+
+  it("derives nothing from a run row that has itself gone stale", () => {
+    // The confirmation says the sweep reached this repository this hour. It
+    // says nothing about THIS row, which the sweep only touches while the
+    // run is inside the page it reads: a main fixed outside that window, or
+    // a workflow deleted or gone quiet, keeps its last failing row for
+    // ever, and without this gate it would rank `now` for ever with a stale
+    // badge beside it.
+    const at = "2026-08-17T11:15:00.000Z";
+    const r = store.beginRun({
+      lane: ACTIONS_LANE,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: at,
+    });
+    store.recordObservations(r, at, [confirmation()] as never[]);
+    store.finishRun(r, "ok", at);
+    // The row is three hours old and nothing has touched it since.
+    const old = store.beginRun({
+      lane: ACTIONS_LANE,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T09:00:00.000Z",
+    });
+    store.recordObservations(old, "2026-08-17T09:00:00.000Z", [
+      runRow(),
+    ] as never[]);
+    store.finishRun(old, "ok", "2026-08-17T09:00:00.000Z");
+
+    expect(buildQueue(store, NOW, DEPS).items).toEqual([]);
+  });
+
+  it("derives nothing once the confirmation is tombstoned", () => {
+    sweep([confirmation(), runRow()]);
+    expect(buildQueue(store, NOW, DEPS).items).toHaveLength(1);
+
+    // A tombstone is a retracted assertion, and it carries the payload
+    // forward: read without the state guard it still says `workflows: 1`
+    // and still vouches.
+    const r = store.beginRun({
+      lane: ACTIONS_LANE,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: CONFIRMED_AT,
+    });
+    store.recordTombstones(r, CONFIRMED_AT, [
+      { type: "repository_actions" as const, key: "no42-org/twiki" },
+    ]);
+    store.finishRun(r, "ok", CONFIRMED_AT);
+
+    expect(buildQueue(store, NOW, DEPS).items).toEqual([]);
+  });
+
+  it("says the time is unknown rather than never collected on a junk timestamp", () => {
+    // `ageLabel` answers "never collected" for a stamp it cannot parse,
+    // which would be false of a run the sweep plainly collected and would
+    // read `failed never collected` in the rationale.
+    sweep([confirmation(), runRow({ createdAt: "last tuesday" })]);
+
+    expect(
+      buildQueue(store, NOW, DEPS).items.map((i) => i.explanation),
+    ).toEqual(["default branch workflow CI failed at an unknown time"]);
+  });
+
+  it("gives a rerun the same key, so the item does not duplicate", () => {
+    sweep([
+      {
+        ...runRow({ runNumber: 9 }),
+        subject: { type: "workflow_run", key: "WFR_a" },
+      },
+      // The rerun, mid-supersession: a second present row for the same
+      // workflow on the same side of the default-branch line. Keyed so the
+      // store returns the OLDER run first, or holding first-wins would name
+      // the newer one by luck.
+      {
+        ...runRow({ runNumber: 10 }),
+        subject: { type: "workflow_run", key: "WFR_b" },
+      },
+      confirmation(),
+    ]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    expect(items.map((i) => [i.key, i.number])).toEqual([
+      ["no42-org/twiki#workflow:1", 10],
+    ]);
+  });
+
+  it("derives nothing from a run that is not broken, and nothing off the default branch", () => {
+    sweep([
+      confirmation("no42-org/twiki", 4),
+      runRow({ runNumber: 1, workflowId: 1, conclusion: "success" }),
+      // Cancelled is `other`: not a failure of main, and guessing that it is
+      // would invent red builds.
+      runRow({ runNumber: 2, workflowId: 2, conclusion: "cancelled" }),
+      // Failed, on a feature branch: the repository page lists it and the
+      // queue does not.
+      runRow({ runNumber: 3, workflowId: 3, headBranch: "feature/x" }),
+      // Failed, saying `main`, from a fork's pull request (#141).
+      runRow({ runNumber: 4, workflowId: 4, event: "pull_request" }),
+    ]);
+
+    expect(buildQueue(store, NOW, DEPS).items).toEqual([]);
+  });
+
+  it("derives nothing without a fresh confirmation for that repository", () => {
+    // The rows are there and one of them is a red main. What is missing is
+    // the sweep's word that it reached this repository, and absence of an
+    // item must not be read as a green build (AD-28): the CI chip says
+    // `unconfirmed` instead.
+    sweep([runRow()]);
+    expect(buildQueue(store, NOW, DEPS).items).toEqual([]);
+
+    // Reached, and could not read what it found.
+    sweep([confirmation("no42-org/twiki", null), runRow()]);
+    expect(buildQueue(store, NOW, DEPS).items).toEqual([]);
+  });
+
+  it("derives nothing from a confirmation that has gone stale on the hourly cadence", () => {
+    // Three hours old: past the hourly lane's budget, so the last word is a
+    // claim nobody has renewed.
+    sweep([confirmation(), runRow()], "2026-08-17T09:00:00.000Z");
+
+    expect(buildQueue(store, NOW, DEPS).items).toEqual([]);
+  });
+
+  it("judges the branch by the repository's own declared default", () => {
+    sweep([
+      confirmation(),
+      runRow({ runNumber: 9, headBranch: "master" }),
+      runRow({ runNumber: 8, workflowId: 2, headBranch: "main" }),
+    ]);
+
+    // Declared `master`: the master run is the red main and the main one is
+    // a side branch. A resolver stuck on `main` reverses both.
+    expect(
+      buildQueue(store, NOW, {
+        ...DEPS,
+        defaultBranchOf: () => "master",
+      }).items.map((i) => i.number),
+    ).toEqual([9]);
+    expect(buildQueue(store, NOW, DEPS).items.map((i) => i.number)).toEqual([
+      8,
+    ]);
+  });
+
+  it("counts a run row it cannot read as unreadable, and derives no item from it", () => {
+    sweep([
+      confirmation(),
+      {
+        subject: { type: "workflow_run", key: "WFR_bad" },
+        payload: { repo: "no42-org/twiki", workflowId: "one" },
+      },
+    ]);
+
+    const queue = buildQueue(store, NOW, DEPS);
+
+    expect(queue.items).toEqual([]);
+    expect(queue.unreadable).toBe(1);
+  });
+
+  it("outranks a KEV-listed alert in another repository, and every item beside it", () => {
+    sweep([confirmation(), runRow()]);
+    const alerts = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T11:55:00.000Z",
+    });
+    store.recordObservations(alerts, "2026-08-17T11:55:00.000Z", [
+      {
+        subject: KEV_SUBJECT,
+        payload: {
+          version: "v",
+          released: "r",
+          cveIds: ["CVE-2021-44228"],
+        },
+      },
+      normalise(
+        makeAlert({
+          number: 1,
+          repo: { owner: "no42-org", name: "other" },
+          cveId: "CVE-2021-44228",
+          severity: "critical",
+          epssPercentage: 0.9,
+        }),
+      ),
+    ]);
+    store.finishRun(alerts, "ok", "2026-08-17T11:55:00.000Z");
+
+    // The chain is lexicographic and `broken` leads it, so no sum of the
+    // terms below can overturn a red main.
+    expect(buildQueue(store, NOW, DEPS).items.map((i) => i.kind)).toEqual([
+      "ci_failure",
+      "alert",
+    ]);
+  });
+});
+
 describe("the queue page", () => {
   let dir: string;
   let store: SqliteStore;
@@ -941,12 +1356,63 @@ describe("the queue page", () => {
     );
   });
 
+  it("renders a CI failure under its own topic, filtered by it", async () => {
+    // The CI tile links here, so this is the page a reader lands on from a
+    // red main. The row must carry the topic word, the workflow's name and
+    // the same sentence the overview's rationale reads.
+    const actions = store.beginRun({
+      lane: "rest-actions-runs",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T11:55:00.000Z",
+    });
+    store.recordObservations(actions, "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: 1, failing: 1 },
+      },
+      {
+        subject: { type: "workflow_run", key: "WFR_9" },
+        payload: {
+          repo: "no42-org/twiki",
+          workflowId: 1,
+          workflowName: "CI",
+          runNumber: 9,
+          status: "completed",
+          conclusion: "failure",
+          headBranch: "main",
+          event: "push",
+          htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+          createdAt: "2026-08-17T10:00:00.000Z",
+        },
+      },
+    ] as never[]);
+    store.finishRun(actions, "ok", "2026-08-17T11:55:00.000Z");
+
+    const html = await (await app().request("/queue?topic=ci")).text();
+
+    expect(html).toContain(
+      '<td class="topic" role="cell"><span class="lbl hid">Topic</span>ci</td>',
+    );
+    // The badge, because a run number renders exactly like an issue or a
+    // pull request number and the rationale beside it calls it a workflow
+    // run.
+    expect(html).toContain(
+      '<span class="badge">run</span> <a href="https://github.com/no42-org/twiki/actions/runs/9" target="_blank" rel="noopener noreferrer">no42-org/twiki#9<span class="ext" aria-hidden="true">\u202F\u2197</span><span class="sr-only">, opens GitHub in a new tab</span></a> · CI',
+    );
+    expect(html).toContain("0 open alerts · 1 broken builds · 0 update PRs");
+    expect(html).toContain(
+      '<div class="why-rank">default branch workflow CI failed 2h ago</div>',
+    );
+    expect(html).toContain("CI items · 1 shown");
+  });
+
   it("labels the ordering a local policy, never SSVC (AD-20)", async () => {
     const html = await (await app().request("/queue")).text();
     expect(html).toContain("local policy");
     // The whole note, as the page's footer outside main.
     expect(html).toContain(
-      '</main><footer class="policy-note">Ordering is a local policy: CISA KEV listing, then EPSS, then severity, then update size. It is not SSVC and not any published standard.</footer>',
+      '</main><footer class="policy-note">Ordering is a local policy: a broken default branch, then CISA KEV listing, then EPSS, then severity, then update size, then whether GitHub could prepare the update. It is not SSVC and not any published standard.</footer>',
     );
     expect(html).toContain("not SSVC");
   });
@@ -1131,7 +1597,7 @@ describe("the queue page", () => {
       ),
     ).toHaveLength(7);
     expect(html).not.toContain("Topic</span>security</td>");
-    expect(html).toContain("1 open alerts · 7 update PRs");
+    expect(html).toContain("1 open alerts · 0 broken builds · 7 update PRs");
   });
 
   it("matches the repository by folded slug, with the topic", async () => {
@@ -1265,7 +1731,9 @@ describe("the queue page", () => {
     );
     // Two watched repositories, one de-listed: the summary counts the
     // watched estate, not the filter and not the de-listed PR.
-    expect(html).toContain("2 open alerts · 1 update PRs · 0 untriaged issues");
+    expect(html).toContain(
+      "2 open alerts · 0 broken builds · 1 update PRs · 0 untriaged issues",
+    );
     expect(html).not.toContain("no42-org/other#2");
     // The de-listed item is omitted under a filter, heading and all.
     expect(html).not.toContain("no42-org/gone");
@@ -1299,7 +1767,9 @@ describe("the queue page", () => {
 
     const html = await (await app().request("/queue")).text();
 
-    expect(html).toContain("0 open alerts · 0 update PRs · 0 untriaged issues");
+    expect(html).toContain(
+      "0 open alerts · 0 broken builds · 0 update PRs · 0 untriaged issues",
+    );
     expect(html).toContain(
       '<section id="list" aria-label="queue"><p class="none">Nothing needs attention in watched repositories.</p></section><h2>no longer watched</h2>',
     );
@@ -1336,7 +1806,9 @@ describe("the queue page", () => {
 
     const html = await (await app().request("/queue")).text();
 
-    expect(html).toContain("1 open alerts · 0 update PRs · 0 untriaged issues");
+    expect(html).toContain(
+      "1 open alerts · 0 broken builds · 0 update PRs · 0 untriaged issues",
+    );
     expect(html).toContain(bar("all"));
     expect(html).not.toContain('class="filter-state"');
     // The watched row ranks 1 in its list; the de-listed rows rank 1 and 2

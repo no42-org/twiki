@@ -14,7 +14,7 @@ import type { ReasonTable } from "./rank.js";
 // live here too, so a tile, a chip, a column header and a queue filter cannot
 // disagree about what a topic is called or which items belong to it.
 
-export type QueueKind = "alert" | "update_pr" | "issue";
+export type QueueKind = "alert" | "ci_failure" | "update_pr" | "issue";
 
 /** The six topics, in the order every surface shows them. */
 export type Topic =
@@ -36,38 +36,59 @@ export interface TopicSpec {
    */
   readonly noun: string;
   /**
+   * The same noun in the MIDDLE of a sentence (`No pull request items
+   * open`). Not derivable by lowercasing `noun`: `CI` is an acronym and is
+   * spelled the same in both positions, so the rule is per topic. It was a
+   * per-letter heuristic for one commit, which also uppercased whatever a
+   * reader had typed into `?topic=`.
+   */
+  readonly sentenceNoun: string;
+  /**
    * The `topic=` value on the queue, or null for Reviews, which is not in the
    * queue at all: review requests are collected estate-wide and have their
    * own page.
    */
   readonly query: string | null;
   /**
-   * The queue kinds that count under this topic. Empty for CI and Pull
-   * requests until their lanes exist, and permanently empty for Reviews,
-   * which is never in the queue.
+   * The queue kinds that count under this topic. Empty for Pull requests
+   * until its lane exists, and permanently empty for Reviews, which is never
+   * in the queue.
    */
   readonly kinds: readonly QueueKind[];
 }
 
 /**
- * CI and Pull requests have no queue kind until Epics 2 and 3. Their entries
- * stay in the table so every surface already has the column, and their empty
- * `kinds` is what makes a tile or chip read `unconfirmed` rather than `0`
- * (AD-28): no sweep has confirmed anything about them.
+ * Pull requests has no queue kind until Epic 3. Its entry stays in the table
+ * so every surface already has the column, and its empty `kinds` is what
+ * makes a tile or chip read `unconfirmed` rather than `0` (AD-28): no sweep
+ * has confirmed anything about it.
+ *
+ * CI's emptiness ended with Story 2.3. It now carries `ci_failure`, and its
+ * absences are told apart the way Security's are: by whether the Actions
+ * lane confirmed this repository, not by whether a kind exists.
  */
 export const TOPICS: readonly TopicSpec[] = [
   {
     topic: "security",
     label: "Security",
     noun: "Security",
+    sentenceNoun: "security",
     query: "security",
     kinds: ["alert"],
   },
-  { topic: "ci", label: "CI", noun: "CI", query: "ci", kinds: [] },
+  {
+    topic: "ci",
+    label: "CI",
+    noun: "CI",
+    sentenceNoun: "CI",
+    query: "ci",
+    kinds: ["ci_failure"],
+  },
   {
     topic: "dependencies",
     label: "Dependencies",
     noun: "Dependency",
+    sentenceNoun: "dependency",
     query: "dependencies",
     kinds: ["update_pr"],
   },
@@ -75,6 +96,7 @@ export const TOPICS: readonly TopicSpec[] = [
     topic: "pulls",
     label: "Pull requests",
     noun: "Pull request",
+    sentenceNoun: "pull request",
     query: "pulls",
     kinds: [],
   },
@@ -82,6 +104,7 @@ export const TOPICS: readonly TopicSpec[] = [
     topic: "issues",
     label: "Issues",
     noun: "Issue",
+    sentenceNoun: "issue",
     query: "issues",
     kinds: ["issue"],
   },
@@ -89,6 +112,7 @@ export const TOPICS: readonly TopicSpec[] = [
     topic: "reviews",
     label: "Reviews",
     noun: "Review",
+    sentenceNoun: "review",
     query: null,
     kinds: [],
   },
@@ -127,6 +151,18 @@ export function topicOf(kind: QueueKind): Topic {
  */
 export const KIND_REASONS: Readonly<Record<QueueKind, ReasonTable>> = {
   alert: {},
+  // A broken build is not an advisory either, and the one thing worth saying
+  // about it is said by the `broken` term, whose wording the queue builder
+  // supplies per item so the sentence carries the run's own verdict and age.
+  // The five security terms are silenced rather than reworded: reciting five
+  // absences would bury the sentence a reader came for.
+  ci_failure: {
+    kev: { na: "" },
+    epss: { na: "" },
+    severity: { na: "" },
+    bump: { na: "" },
+    stuck: { na: "" },
+  },
   update_pr: {},
   issue: {
     kev: { na: "untriaged issue" },

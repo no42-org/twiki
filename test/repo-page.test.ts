@@ -24,7 +24,12 @@ import { makeAlert, primaryNav } from "./fakes.js";
 const NOW = new Date("2026-08-20T12:00:00.000Z");
 const SWEEP = { cadenceMs: 15 * 60_000 };
 const REPO = { owner: "no42-org", name: "twiki" };
-const DEPS = { policy: SWEEP };
+const HOURLY = { cadenceMs: 60 * 60_000 };
+const DEPS = {
+  policy: SWEEP,
+  actionsPolicy: HOURLY,
+  defaultBranch: "main",
+};
 
 describe("the per-repository view (CAP-7)", () => {
   let dir: string;
@@ -159,10 +164,7 @@ describe("the per-repository view (CAP-7)", () => {
       },
     ] as never[]);
 
-    const view = buildRepoView(store, REPO, NOW, {
-      policy: SWEEP,
-      actionsPolicy: { cadenceMs: 60 * 60_000 },
-    });
+    const view = buildRepoView(store, REPO, NOW, DEPS);
 
     expect(view.actionsSection.attested).toBe(false);
   });
@@ -598,6 +600,149 @@ describe("the per-repository view (CAP-7)", () => {
     ]);
   });
 
+  it("puts a broken run first within its bucket, under the default-branch rule", () => {
+    // Two terms, and their order matters. Within one bucket the run that did
+    // not go green is the one a reader came for, so it leads; but the term
+    // sits BELOW the default-branch rule, so a failed feature branch stays
+    // under a green main rather than climbing over it.
+    const row = (over: Record<string, unknown>) => ({
+      subject: { type: "workflow_run", key: `WFR_${over.runNumber}` },
+      payload: {
+        repo: "no42-org/twiki",
+        workflowId: 1,
+        workflowName: "CI",
+        status: "completed",
+        conclusion: "success",
+        headBranch: "main",
+        event: "push",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/1",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        ...over,
+      },
+    });
+    seed("rest-actions-runs", [
+      // A rerun of main that passed, newer than the failure it has not
+      // replaced: the run number alone would bury the red one.
+      row({ runNumber: 11 }),
+      row({ runNumber: 10, conclusion: "failure" }),
+      // A hung run on main, judged by age against the two-hour threshold and
+      // broken though it never said `failure`. Newest of the three, so this
+      // also pins that broken-ness is read before the run number.
+      row({
+        runNumber: 12,
+        status: "in_progress",
+        conclusion: null,
+        createdAt: "2026-08-20T00:00:00.000Z",
+      }),
+      // Failed, on a feature branch. Below every main row whatever it says.
+      row({ runNumber: 20, headBranch: "feature/x", conclusion: "failure" }),
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, {
+      ...DEPS,
+      defaultBranch: "main",
+    });
+
+    expect(
+      view.runs.map((r) => [r.headBranch, r.runNumber, r.verdict]),
+    ).toEqual([
+      ["main", 12, "hung"],
+      ["main", 10, "failed"],
+      ["main", 11, "passed"],
+      ["feature/x", 20, "failed"],
+    ]);
+  });
+
+  it("derives the header tier from the repository's DECLARED branch", () => {
+    // The page's tier now comes from a queue that reads the branch, not just
+    // from alerts. With the resolver silently answering `main`, a repository
+    // that declares `master` read `quiet` on its own page while the overview
+    // read `now` from the very same rows.
+    const run = (over: Record<string, unknown>) => ({
+      subject: { type: "workflow_run", key: `WFR_${over.runNumber}` },
+      payload: {
+        repo: "no42-org/twiki",
+        workflowId: 1,
+        workflowName: "CI",
+        status: "completed",
+        conclusion: "failure",
+        event: "push",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+        createdAt: "2026-08-20T10:00:00.000Z",
+        ...over,
+      },
+    });
+    seed("rest-actions-runs", [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: 1, failing: 1 },
+      },
+      run({ runNumber: 9, headBranch: "master" }),
+    ] as never[]);
+
+    const declared = buildRepoView(store, REPO, NOW, {
+      ...DEPS,
+      defaultBranch: "master",
+    });
+
+    expect(declared.summary.tier).toBe("now");
+    expect(declared.summary.tierReason).toBe(
+      "workflow run #9: default branch workflow CI failed 2h ago",
+    );
+
+    // On `main` the very same row is a side branch and gives no item, and a
+    // resolver that could not say at all must reach the same answer rather
+    // than guessing `main` was right.
+    for (const branch of ["main", null]) {
+      const other = buildRepoView(store, REPO, NOW, {
+        ...DEPS,
+        defaultBranch: branch,
+      });
+      expect([other.summary.tier, other.summary.tierReason]).toEqual([
+        "quiet",
+        "no open items",
+      ]);
+    }
+  });
+
+  it("keeps a failed feature branch off the tier and out of the queue (#141)", () => {
+    // The repository page lists it, because a reader looking at this
+    // repository wants to see it. Nothing else does: it is not a statement
+    // about main, so it gives no item and no tier.
+    seed("rest-actions-runs", [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: 1, failing: 0 },
+      },
+      {
+        subject: { type: "workflow_run", key: "WFR_20" },
+        payload: {
+          repo: "no42-org/twiki",
+          workflowId: 1,
+          workflowName: "CI",
+          runNumber: 20,
+          status: "completed",
+          conclusion: "failure",
+          headBranch: "feature/x",
+          event: "push",
+          htmlUrl: "https://github.com/no42-org/twiki/actions/runs/20",
+          createdAt: "2026-08-20T10:00:00.000Z",
+        },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, {
+      ...DEPS,
+      defaultBranch: "main",
+    });
+
+    expect(view.runs.map((r) => [r.headBranch, r.verdict])).toEqual([
+      ["feature/x", "failed"],
+    ]);
+    expect(view.summary.tier).toBe("quiet");
+    expect(view.summary.tierReason).toBe("no open items");
+  });
+
   it("sorts a fork's pull request below the genuine default-branch run (#141)", () => {
     // Driven through buildRepoView rather than by handing compareRunRows a
     // predicate the test wrote: the thing that can regress is the wiring in
@@ -764,7 +909,7 @@ describe("the per-repository view (CAP-7)", () => {
     ] as never[]);
 
     const view = buildRepoView(store, REPO, NOW, {
-      policy: SWEEP,
+      ...DEPS,
       coveragePolicy: { cadenceMs: 24 * 60 * 60_000 },
     });
 

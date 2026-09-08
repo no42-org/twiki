@@ -23,6 +23,10 @@ const P = DEFAULT_RANK_POLICY;
 
 /** A deliberately unremarkable item, so each test varies exactly one signal. */
 const BASE: RankInput = {
+  // n/a rather than false, because that is what every kind but a CI failure
+  // passes, and it keeps the baseline's explanation the one these tests were
+  // written against: an n/a `broken` is worded as nothing at all.
+  broken: NOT_APPLICABLE,
   kev: false,
   epss: 0.001,
   severity: "low",
@@ -362,11 +366,66 @@ describe("the ranking chain (AD-20)", () => {
 
     it("keeps the terms in chain order so the key is positional", () => {
       expect(rank(item(), P).terms.map((t) => t.name)).toEqual([
+        // The array in rank.ts IS the order, and this is the assertion that
+        // says so. `broken` leads: nothing ships from a red default branch.
+        "broken",
         "kev",
         "epss",
         "severity",
         "bump",
         "stuck",
+      ]);
+    });
+
+    it("puts a red default branch above everything, KEV included", () => {
+      // Story 2.3's whole premise: nothing ships from a repository whose
+      // main is broken, whatever is open on it.
+      const red = item({
+        broken: true,
+        kev: false,
+        epss: 0.0,
+        severity: "low",
+        bump: "patch",
+        stuck: false,
+      });
+      const kev = item({
+        broken: NOT_APPLICABLE,
+        kev: true,
+        epss: 0.99,
+        severity: "critical",
+        bump: "major",
+        stuck: true,
+      });
+      expect(moreUrgent(red, kev)).toBe(true);
+    });
+
+    it("adds a leading term that moves nothing already ranked", () => {
+      // The property the whole story turns on. `n/a` is LEAST_KNOWN, and
+      // every kind but a CI failure passes it, so each existing key merely
+      // gains a leading zero and their relative order is untouched. A
+      // default of `false` would rank the same and still print a sentence
+      // about builds into every alert's explanation, which is why the term
+      // says nothing at all here.
+      const inputs = [
+        item({ kev: true }),
+        item({ epss: 0.42 }),
+        item({ severity: "critical" }),
+        item({ kev: null, epss: null, severity: null }),
+      ];
+      for (const input of inputs) {
+        const r = rank(input, P);
+        expect(r.key[0]).toBe(0);
+        expect(r.terms[0]).toEqual({ name: "broken", rank: 0, reason: "" });
+        // The explanation reads exactly as it did before the term existed:
+        // KEV still opens the sentence, and the new term adds no words.
+        expect(r.explanation.split(", ")[0]).toBe(r.terms[1]?.reason);
+        expect(r.explanation).not.toContain("default branch");
+      }
+      expect(order(inputs)).toEqual([
+        inputs[0],
+        inputs[3],
+        inputs[1],
+        inputs[2],
       ]);
     });
 
@@ -430,6 +489,27 @@ describe("the ranking chain (AD-20)", () => {
       ).toBe("B, F, H, J, L");
     });
 
+    it("has a word for every state of the broken term, including the unreached ones", () => {
+      // Three of these four are unreachable from production today: only a CI
+      // failure passes anything but `n/a`, and it always supplies its own
+      // wording for `true`. Pinned rather than deleted because the term is a
+      // `Signal<boolean>` like KEV, so `false` and `null` are states the type
+      // permits and the next caller may pass; an unasserted default is one
+      // that reaches a reader for the first time in production.
+      const words = (broken: RankInput["broken"]) =>
+        rank(item({ broken }), P).terms[0]?.reason;
+
+      expect(words(NOT_APPLICABLE)).toBe("");
+      expect(words(null)).toBe("build state unknown");
+      expect(words(true)).toBe("default branch build is broken");
+      expect(words(false)).toBe("default branch build is green");
+      // And every one of them is overridable per kind, like the rest.
+      expect(
+        rank(item({ broken: true }), P, { broken: { broken: "Z" } }).terms[0]
+          ?.reason,
+      ).toBe("Z");
+    });
+
     it("drops a term worded as empty, leaving no stray comma", () => {
       const r = rank(
         item({
@@ -443,8 +523,10 @@ describe("the ranking chain (AD-20)", () => {
         { epss: { na: "" }, bump: { na: "" }, stuck: { na: "" } },
       );
       expect(r.explanation).toBe("no CVE to check against KEV, severity high");
-      // The term is still on the chain; only its words are gone.
-      expect(r.terms).toHaveLength(5);
+      // The term is still on the chain; only its words are gone. Six, not
+      // five: `broken` is one of them, and its n/a is worded as nothing by
+      // default, which is the same mechanism this test is about.
+      expect(r.terms).toHaveLength(6);
     });
   });
 
