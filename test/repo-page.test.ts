@@ -1055,11 +1055,16 @@ describe("the per-repository page", () => {
     store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
       {
         subject: { type: "repository_actions", key: "no42-org/twiki" },
-        payload: { repo: "no42-org/twiki", workflows: 2, failing: 1 },
+        // What the lane would have written over exactly these four rows:
+        // four distinct workflows, and two default-branch rows whose verdict
+        // is broken - Build's `failure` and CI's hang. Release is broken too
+        // and is not counted, because it ran on a tag rather than on main.
+        payload: { repo: "no42-org/twiki", workflows: 4, failing: 2 },
       },
       run({
         workflowName: "Release",
         runNumber: 3,
+        workflowId: 3,
         status: "completed",
         // Broken without saying `failure`. Read as a bare conclusion this
         // rendered in normal weight while the lane counted it as failing.
@@ -1070,6 +1075,7 @@ describe("the per-repository page", () => {
       run({
         workflowName: "CI",
         runNumber: 9,
+        workflowId: 2,
         status: "in_progress",
         conclusion: null,
         // Started twelve hours before the render, against a two-hour
@@ -1080,11 +1086,22 @@ describe("the per-repository page", () => {
       run({
         workflowName: "Docs",
         runNumber: 4,
+        workflowId: 4,
         status: "in_progress",
         conclusion: null,
         // Started ten minutes ago: still going, not hung, not painted.
         createdAt: "2026-08-20T11:50:00.000Z",
         htmlUrl: "https://github.com/no42-org/twiki/actions/runs/4",
+      }),
+      run({
+        workflowName: "Build",
+        runNumber: 2,
+        workflowId: 1,
+        status: "completed",
+        // The plain case, here so the assertion below covers all four
+        // wordings at once: GitHub's own `failure`, which the cell keeps.
+        conclusion: "failure",
+        htmlUrl: "https://github.com/no42-org/twiki/actions/runs/2",
       }),
     ] as never[]);
     store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
@@ -1096,13 +1113,21 @@ describe("the per-repository page", () => {
     const fresh =
       '<td role="cell"><span class="lbl hid">Last confirmed</span><span class="badge fresh" title="5m ago">fresh · 5m ago</span></td>';
     expect(html).toContain(
-      '<h2 id="ci">CI <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">3 shown</span></h2>' +
+      '<h2 id="ci">CI <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">4 shown</span></h2>' +
         '<table class="cards" role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Workflow</th><th scope="col" role="columnheader">Result</th><th scope="col" role="columnheader">Branch</th><th scope="col" role="columnheader">Last confirmed</th></tr></thead><tbody role="rowgroup">' +
         // Workflows in name order. A run still going says so rather than
         // passing, and the painting follows the VERDICT: the hung run and
         // the timed-out one are both critical though neither says
         // `failure`, and the ten-minute-old run is not.
-        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(9, "CI")}</td><td class="crit" role="cell"><span class="lbl">Result</span>in_progress, no result yet</td><td role="cell"><span class="lbl">Branch</span>main</td>${fresh}</tr>` +
+        //
+        // Every row here says in words what it says in colour (#144). The
+        // hung run reads `hung`, not `in_progress, no result yet`, which is
+        // the one place where the two used to contradict each other: red,
+        // beside a sentence asserting that nothing was known. The Docs row
+        // below is the control - same status, same missing conclusion, not
+        // hung, and still worded as unfinished.
+        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(2, "Build")}</td><td class="crit" role="cell"><span class="lbl">Result</span>failure</td><td role="cell"><span class="lbl">Branch</span>main</td>${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(9, "CI")}</td><td class="crit" role="cell"><span class="lbl">Result</span>hung</td><td role="cell"><span class="lbl">Branch</span>main</td>${fresh}</tr>` +
         `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(4, "Docs")}</td><td role="cell"><span class="lbl">Result</span>in_progress, no result yet</td><td role="cell"><span class="lbl">Branch</span>main</td>${fresh}</tr>` +
         `<tr role="row"><td role="cell"><span class="lbl hid">Workflow</span>${link(3, "Release")}</td><td class="crit" role="cell"><span class="lbl">Result</span>timed_out</td><td role="cell"><span class="lbl">Branch</span>v1.2.0</td>${fresh}</tr>` +
         "</tbody></table>",

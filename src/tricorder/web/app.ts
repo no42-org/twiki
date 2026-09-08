@@ -28,6 +28,24 @@ import { buildReviewView } from "./review-view.js";
 // Routes read through StorePort only: no SQL, no table name, no predicate
 // composed here (AD-27). No GitHub call happens on the request path (AD-3).
 
+/**
+ * What the web role is handed.
+ *
+ * Five of these are optional, and that is deliberate: the many tests that
+ * construct an app legitimately want the defaults, and making a field
+ * required costs every one of those call sites. The production wiring proves
+ * it supplies all of them anyway, by returning `Required<AppDeps>` from
+ * `buildWebDeps` in `src/tricorder.ts`, so a binding dropped there is a build
+ * failure rather than a default nobody notices (#143).
+ *
+ * The note for whoever adds the next optional field, which is who this is
+ * written for: adding it here makes the wiring fail to compile until it
+ * supplies it, and that is the whole protection. It reaches exactly as far as
+ * this list does. A value that SHOULD have been a dependency and never became
+ * one - read straight from the environment somewhere downstream, or defaulted
+ * in a helper - is invisible to it, and no amount of `Required<>` will find
+ * it.
+ */
 export interface AppDeps {
   store: StorePort;
   watched: readonly RepoRef[];

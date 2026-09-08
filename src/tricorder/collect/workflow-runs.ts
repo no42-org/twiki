@@ -120,6 +120,12 @@ export interface ActionsRepoObservation {
    * exists to say whether main is broken, and folding a failing feature
    * branch into it would make a healthy repository read red. Nothing renders
    * it yet; Story 2.3 decides where a failing count belongs.
+   *
+   * Judged at the sweep's own clock, and so not a function of the listing
+   * alone: `hung` counts here, and a run becomes hung by ageing rather than
+   * by anything GitHub sends. This number can therefore move between two
+   * sweeps that were told the listing had not changed, which is correct - the
+   * page ages the same run the same way, off the same verdict.
    */
   failing: number | null;
 }
@@ -252,7 +258,7 @@ interface RetainedRow {
 }
 
 /**
- * Distinct workflows among the rows retained, not the row count: two buckets
+ * Distinct workflows among the rows held, not the row count: two buckets
  * of one workflow are one workflow, and reporting two would put a count on
  * the page that nothing on it explains.
  */
@@ -506,6 +512,16 @@ export async function collectWorkflowRuns(
             subject: actionsSubject(repo),
             payload: {
               repo: slug,
+              // Over the rows the store HOLDS, judged at this sweep's clock -
+              // the same set, by the same rule, as the 200 path below (#142).
+              //
+              // Not carried forward from the last confirmation, though a 304
+              // does mean the listing has not changed: `failing` counts hung
+              // runs, and a run becomes hung by the clock rather than by the
+              // listing. A run ageing past the threshold while GitHub keeps
+              // answering 304 would be painted red by the page and never
+              // counted here, which is the disagreement between the lane and
+              // the page that this whole change exists to remove.
               workflows: countWorkflows(stored),
               failing: countFailing(stored),
             } satisfies ActionsRepoObservation,
@@ -536,10 +552,16 @@ export async function collectWorkflowRuns(
         // nothing at all.
         const windowFrom = oldestCreatedAt(page.runs);
 
-        // What this repository holds after the sweep AND this sweep can
-        // vouch for: the rows just observed, plus the carried rows the page
-        // was actually able to see the absence of.
-        const retained: RetainedRow[] = latest.map((l) => ({
+        // What this repository HOLDS after the sweep: the rows just
+        // observed, plus every carried row that survives supersession below.
+        //
+        // The rows held, not the narrower set this sweep can vouch the
+        // freshness of. The two are different questions with different
+        // answers, and counting the narrow one made the count depend on
+        // which way GitHub answered (#142). It is the held set the page
+        // renders from, so counting it is what makes the lane and the page
+        // agree about a repository by construction.
+        const held: RetainedRow[] = latest.map((l) => ({
           workflowId: l.run.workflowId,
           onDefaultBranch: l.onDefaultBranch,
           verdict: runVerdict(l.run, sweptAt, deps.hungAfterMs),
@@ -571,9 +593,14 @@ export async function collectWorkflowRuns(
             // So a row the window cannot cover is left entirely alone. It
             // stays present, it ages into stale, and the page says so - the
             // honest reading of "we did not look far enough back".
+            //
+            // Held either way: the window decides whether this sweep may
+            // touch the row's freshness, not whether the store still has it.
+            // The page shows the row whatever the window said, so the count
+            // includes it whatever the window said.
+            held.push(s);
             if (!coveredBy(s.createdAt, windowFrom)) continue;
             confirmed.push({ type: "workflow_run", key: s.key });
-            retained.push(s);
           }
         }
 
@@ -588,8 +615,8 @@ export async function collectWorkflowRuns(
             page.unreadable === 0
               ? {
                   repo: slug,
-                  workflows: countWorkflows(retained),
-                  failing: countFailing(retained),
+                  workflows: countWorkflows(held),
+                  failing: countFailing(held),
                 }
               : { repo: slug, workflows: null, failing: null },
         });
