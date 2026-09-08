@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { isDefaultBranchRef } from "../../core/branch.js";
+import { isDefaultBranchRun } from "../../core/branch.js";
 import { safeLog } from "../../core/log.js";
 import { redact } from "../../core/redact.js";
 import {
@@ -80,6 +80,9 @@ export function readWorkflowRun(
   if (r.headBranch !== null && typeof r.headBranch !== "string") return null;
   if (typeof r.htmlUrl !== "string") return null;
   if (typeof r.createdAt !== "string") return null;
+  // The bucket reads it, so the guard checks it: same rule that brought
+  // `workflowId` and `createdAt` here when the verdict started reading them.
+  if (typeof r.event !== "string") return null;
   return r;
 }
 
@@ -239,9 +242,11 @@ export function latestPerBucket(
   const seen = new Set<string>();
   const latest: RetainedRun[] = [];
   for (const run of runs) {
-    // Through isDefaultBranchRef, never a bare === : the lane and the rank
-    // chain must decide "is this a build of main" the same way (AD-33).
-    const onDefaultBranch = isDefaultBranchRef(run.headBranch, defaultBranch);
+    // Through the shared predicate, never a bare === : the lane and the rank
+    // chain must decide "is this a build of main" the same way (AD-33). It
+    // reads the EVENT as well as the branch, because a pull request from a
+    // fork's own `main` reports `head_branch: "main"` here (#141).
+    const onDefaultBranch = isDefaultBranchRun(run, defaultBranch);
     const key = retentionKey(run.workflowId, onDefaultBranch);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -485,10 +490,10 @@ export async function collectWorkflowRuns(
           key: s.key,
           workflowId: s.payload.workflowId,
           createdAt: s.payload.createdAt,
-          onDefaultBranch: isDefaultBranchRef(
-            s.payload.headBranch,
-            defaultBranch,
-          ),
+          // The same predicate as the page's runs, over the payload's own
+          // event, so a row stored under the old branch-only rule moves to
+          // the bucket it belongs in on the first sweep that reads it (#141).
+          onDefaultBranch: isDefaultBranchRun(s.payload, defaultBranch),
           verdict: runVerdict(s.payload, sweptAt, deps.hungAfterMs),
         }));
         const page = await deps.github.listRepoWorkflowRuns(

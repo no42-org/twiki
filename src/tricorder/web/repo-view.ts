@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { isDefaultBranchRef } from "../../core/branch.js";
+import { isDefaultBranchRun } from "../../core/branch.js";
 import type { CoverageState } from "../../core/coverage.js";
 import { coverageReason, isCovered } from "../../core/coverage.js";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
@@ -116,6 +116,13 @@ export interface RepoRunRow {
    */
   verdict: RunVerdict;
   headBranch: string | null;
+  /**
+   * The trigger GitHub reported, carried because the ordering asks whether
+   * this run built the default branch and a branch name alone cannot say: a
+   * pull request from a fork's own `main` reports `main` here too (#141).
+   * Not rendered.
+   */
+  event: string;
   htmlUrl: string | null;
   freshness: Freshness;
   age: string;
@@ -535,8 +542,8 @@ export function buildRepoView(
     readWorkflowRun,
   );
   const defaultBranch = deps.defaultBranch ?? DEFAULT_POLICY.defaultBranch;
-  const onDefaultBranch = (row: { headBranch: string | null }): boolean =>
-    isDefaultBranchRef(row.headBranch, defaultBranch);
+  const onDefaultBranch = (row: RepoRunRow): boolean =>
+    isDefaultBranchRun(row, defaultBranch);
   unattributable += runResult.unattributable;
   const hungAfterMs = deps.hungAfterMs ?? DEFAULT_HUNG_AFTER_MS;
   const runs = runResult.rows
@@ -548,6 +555,7 @@ export function buildRepoView(
       conclusion: payload.conclusion,
       verdict: runVerdict(payload, now, hungAfterMs),
       headBranch: payload.headBranch,
+      event: payload.event,
       htmlUrl: safeUrl(payload.htmlUrl),
       freshness: freshness(value.verifiedAt, now, deps.policy),
       age: ageLabel(value.verifiedAt, now),
