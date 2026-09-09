@@ -337,8 +337,12 @@ export function buildBoard(
   // daily run in flight past the sweep cadence would read stalled.
   const health = buildCollectionHealth(store, now, deps.policy, {
     ...deps.lanePolicies,
-    [COVERAGE_LANE]:
-      deps.coveragePolicy ?? deps.lanePolicies?.[COVERAGE_LANE] ?? deps.policy,
+    // The same two terms the chip's own read uses below, and no third: the
+    // web wiring binds `coveragePolicy` unconditionally now (`boardDeps`
+    // returns `Required<BoardDeps>`, #154), so the map lookup that used to
+    // sit between these two answered for nothing in production, and
+    // `deps.policy` is what the tests that build this board directly fall to.
+    [COVERAGE_LANE]: deps.coveragePolicy ?? deps.policy,
     // The Actions lane is hourly, and its cadence is a REQUIRED dependency
     // rather than an optional map entry, because the queue derives every CI
     // item under it. Overridden here for the same reason coverage is: the

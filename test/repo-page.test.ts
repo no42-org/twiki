@@ -536,6 +536,80 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.runs[0]?.status).toBe("in_progress");
   });
 
+  /** One completed run of CI on main, written by the sweep at `at`. */
+  const actionsSweepAt = (at: string) =>
+    seedAt("rest-actions-runs", at, [
+      {
+        subject: { type: "repository_actions", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", workflows: 1, failing: 0 },
+      },
+      {
+        subject: { type: "workflow_run", key: "WFR_9" },
+        payload: {
+          repo: "no42-org/twiki",
+          workflowId: 1,
+          workflowName: "CI",
+          runNumber: 9,
+          status: "completed",
+          conclusion: "success",
+          headBranch: "main",
+          event: "push",
+          htmlUrl: "https://github.com/no42-org/twiki/actions/runs/9",
+          createdAt: "2026-08-20T00:00:00.000Z",
+        },
+      },
+    ] as never[]);
+
+  it("judges a run row on the Actions cadence, like the section above it", () => {
+    // Row and section come out of the SAME hourly sweep, so they cannot be
+    // allowed to disagree about it. Judged on the fifteen-minute sweep budget
+    // the row went stale after thirty minutes beneath a heading still
+    // vouching for that very sweep, and beneath a queue that ranked it (#154).
+    //
+    // Forty-five minutes, not the twenty minutes the issue quotes: twenty is
+    // inside BOTH budgets, so a test at that age reads fresh whichever policy
+    // the row uses and could never have caught this.
+    actionsSweepAt("2026-08-20T11:15:00.000Z");
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.runs.map((r) => [r.key, r.freshness, r.age])).toEqual([
+      ["WFR_9", "fresh", "45m ago"],
+    ]);
+    expect(view.actionsSection).toEqual({
+      attested: true,
+      freshness: "fresh",
+      age: "45m ago",
+    });
+  });
+
+  it("calls a run row stale on the Actions cadence while the sweep budget is still fresh", () => {
+    // The other half, and it has to be the other DIRECTION, not merely an
+    // older row: with the Actions lane the slower of the two, any age that
+    // is stale hourly is stale on the sweep budget as well, so the test
+    // passes whichever policy the row reads. Here the Actions cadence is the
+    // TIGHTER one - five minutes against the sweep's fifteen - and the row is
+    // twenty minutes old: past the hourly lane's two cadences, still inside
+    // the sweep's. The row must read stale, which it can only do by taking
+    // the Actions budget rather than the sweep budget or the looser of the
+    // two.
+    actionsSweepAt("2026-08-20T11:40:00.000Z");
+
+    const view = buildRepoView(store, REPO, NOW, {
+      ...DEPS,
+      actionsPolicy: { cadenceMs: 5 * 60_000 },
+    });
+
+    expect(view.runs.map((r) => [r.key, r.freshness, r.age])).toEqual([
+      ["WFR_9", "stale", "20m ago"],
+    ]);
+    expect(view.actionsSection).toEqual({
+      attested: false,
+      freshness: "stale",
+      age: "20m ago",
+    });
+  });
+
   it("orders the run list totally: workflow, then main, then run number", () => {
     // The lane retains up to two rows per workflow now, so a sort on the
     // workflow name alone ties and leaves the two halves in whatever order

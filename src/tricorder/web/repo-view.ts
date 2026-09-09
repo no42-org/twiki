@@ -350,6 +350,41 @@ export function buildRepoView(
   let unreadable = 0;
   let unattributable = 0;
 
+  // Every optional dependency resolved ONCE, here, and read by name below.
+  // The fallbacks are for the tests that build this view directly; production
+  // supplies all of them, and `repoViewDeps` in app.ts fails to compile if it
+  // stops. Resolved in one place because the tier hop below carried its own
+  // copies of three of these fallbacks and the coverage read a fourth: a copy
+  // that drifted from this one, or from the resolver in app.ts, would show up
+  // as nothing louder than direct-builder tests disagreeing with the app.
+  const coveragePolicy = deps.coveragePolicy ?? deps.policy;
+  const kevPolicy = deps.kevPolicy ?? deps.policy;
+  const rankPolicy = deps.rankPolicy ?? DEFAULT_RANK_POLICY;
+  const cutRank = deps.cutRank ?? defaultCutRank(rankPolicy);
+  const reviewBudgetDays = deps.reviewBudgetDays ?? DEFAULT_REVIEW_BUDGET_DAYS;
+  const hungAfterMs = deps.hungAfterMs ?? DEFAULT_HUNG_AFTER_MS;
+  const { actionsPolicy, defaultBranch } = deps;
+
+  // Each lane's freshness budget, named where the page reads it: a row and
+  // the heading above it must take the same value from the same name.
+  //
+  // The run rows did not. They were judged on `deps.policy`, the
+  // fifteen-minute sweep budget, while their own section and the queue judged
+  // the same rows on the Actions lane's hourly cadence, so within fifteen
+  // minutes of a successful sweep every run row badged stale beneath a
+  // heading that called itself fresh (#154).
+  //
+  // The other four lanes really are judged on the sweep budget, and these
+  // names document that single budget rather than providing a seam for
+  // changing it: `RepoViewDeps` carries no lane map, so giving one of them a
+  // cadence of its own means a new dependency on the type and a binding in
+  // `repoViewDeps`, exactly as `actionsPolicy` has.
+  const alertPolicy = deps.policy;
+  const updatePrPolicy = deps.policy;
+  const issuePolicy = deps.policy;
+  const reviewPolicy = deps.policy;
+  const runPolicy = actionsPolicy;
+
   const confirmation = store
     .currentByType("repository")
     .find((v) => v.state === "present" && v.subject.key === slug);
@@ -363,11 +398,7 @@ export function buildRepoView(
   // `covered` badging a confident zero (AD-28).
   const coverageFresh =
     coverageValue !== undefined &&
-    freshness(
-      coverageValue.verifiedAt,
-      now,
-      deps.coveragePolicy ?? deps.policy,
-    ) === "fresh";
+    freshness(coverageValue.verifiedAt, now, coveragePolicy) === "fresh";
   const features =
     coverageValue && coverageFresh
       ? coverageFeatures(coverageValue.payload as CoverageObservation)
@@ -388,20 +419,17 @@ export function buildRepoView(
   // from the rows it lists; it reads this result. Coverage is decided first
   // and handed in, so a repository this page refuses to count alerts for is
   // not at the same time judged `now` by one of them.
-  const rankPolicy = deps.rankPolicy ?? DEFAULT_RANK_POLICY;
-  const { actionsPolicy, defaultBranch } = deps;
-  const hungAfterMs = deps.hungAfterMs ?? DEFAULT_HUNG_AFTER_MS;
   const attention = repoAttention(
     store,
     repo,
     now,
     {
-      policy: deps.policy,
-      kevPolicy: deps.kevPolicy ?? deps.policy,
+      policy: alertPolicy,
+      kevPolicy,
       actionsPolicy,
       rankPolicy,
-      cutRank: deps.cutRank ?? defaultCutRank(rankPolicy),
-      reviewBudgetDays: deps.reviewBudgetDays ?? DEFAULT_REVIEW_BUDGET_DAYS,
+      cutRank,
+      reviewBudgetDays,
       hungAfterMs,
       // One repository's page, so one branch: `repoAttention` keeps only this
       // repository's items and discards the rest, so a run in some other
@@ -452,7 +480,7 @@ export function buildRepoView(
       advisory: alert.cveId ?? alert.ghsaId ?? null,
       packageName: alert.packageName ?? null,
       htmlUrl: safeUrl(alert.htmlUrl),
-      freshness: freshness(value.verifiedAt, now, deps.policy),
+      freshness: freshness(value.verifiedAt, now, alertPolicy),
       age: ageLabel(value.verifiedAt, now),
     });
   }
@@ -506,7 +534,7 @@ export function buildRepoView(
         (a, b) => a - b,
       ),
       htmlUrl: safeUrl(payload.htmlUrl),
-      freshness: freshness(value.verifiedAt, now, deps.policy),
+      freshness: freshness(value.verifiedAt, now, updatePrPolicy),
       age: ageLabel(value.verifiedAt, now),
     }))
     .sort((a, b) => a.number - b.number);
@@ -519,7 +547,7 @@ export function buildRepoView(
       title: payload.title,
       author: payload.author,
       htmlUrl: safeUrl(payload.htmlUrl),
-      freshness: freshness(value.verifiedAt, now, deps.policy),
+      freshness: freshness(value.verifiedAt, now, issuePolicy),
       age: ageLabel(value.verifiedAt, now),
     }))
     .sort((a, b) => a.number - b.number);
@@ -555,7 +583,7 @@ export function buildRepoView(
       waiting: Number.isNaN(new Date(payload.createdAt).getTime())
         ? "unknown"
         : ageLabel(payload.createdAt, now),
-      freshness: freshness(value.verifiedAt, now, deps.policy),
+      freshness: freshness(value.verifiedAt, now, reviewPolicy),
       age: ageLabel(value.verifiedAt, now),
     }));
 
@@ -592,7 +620,7 @@ export function buildRepoView(
       headBranch: payload.headBranch,
       event: payload.event,
       htmlUrl: safeUrl(payload.htmlUrl),
-      freshness: freshness(value.verifiedAt, now, deps.policy),
+      freshness: freshness(value.verifiedAt, now, runPolicy),
       age: ageLabel(value.verifiedAt, now),
     }))
     // Total by its own terms; see compareRunRows. A sort on the workflow name
@@ -620,7 +648,7 @@ export function buildRepoView(
           ? attention.worstSeverity
           : (summaryPayload?.worstSeverity ?? null),
       attested: confirmation !== undefined,
-      freshness: freshness(confirmation?.verifiedAt ?? null, now, deps.policy),
+      freshness: freshness(confirmation?.verifiedAt ?? null, now, alertPolicy),
       age: ageLabel(confirmation?.verifiedAt ?? null, now),
     },
     alerts,
@@ -630,7 +658,7 @@ export function buildRepoView(
       UPDATE_PR_LANE,
       installation,
       now,
-      deps.policy,
+      updatePrPolicy,
     ),
     pulls: [],
     // No lane, no run rows, nothing to attest. Spelled out rather than read
@@ -647,7 +675,7 @@ export function buildRepoView(
       ISSUE_LANE,
       installation,
       now,
-      deps.policy,
+      issuePolicy,
     ),
     runs,
     // This repository's OWN attestation, not the lane's. A bounded sweep
@@ -680,7 +708,7 @@ export function buildRepoView(
       // repository's owner: its search is global.
       REVIEWS_INSTALLATION,
       now,
-      deps.policy,
+      reviewPolicy,
     ),
     unreadable,
     unattributable,
