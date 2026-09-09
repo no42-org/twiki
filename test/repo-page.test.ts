@@ -913,8 +913,8 @@ describe("the per-repository view (CAP-7)", () => {
       coveragePolicy: { cadenceMs: 24 * 60 * 60_000 },
     });
 
-    expect(view.coverage).toBe("unknown");
     expect(view.notCovered).toBe(false);
+    expect(view.coverageReasons).toEqual([]);
     expect(view.summary.openAlerts).toBe(3);
   });
 
@@ -958,6 +958,137 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.unreadable).toBe(1);
   });
 
+  it("keeps the alert count when a SCANNER is off, and says what is off", () => {
+    // The renegotiated rule (#152): secret scanning off, code scanning
+    // answering `no analysis found`, Dependabot covered. The alert count is
+    // Dependabot's, so a scanner may not withdraw it - it rides beside it as
+    // a caveat. The same one fact the overview keys on, so the two agree.
+    const body = "Secret scanning is disabled on this repository.";
+    seed("coverage", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "covered",
+          codeScanning: { state: "unknown", reason: "no analysis found" },
+          secretScanning: { state: "feature_off", reason: body },
+        },
+      },
+    ] as never[]);
+    seed("rest-org-dependabot", [
+      normalise(makeAlert({ number: 7, epssPercentage: 0.9 })),
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          openAlerts: 3,
+          worstSeverity: "high",
+        },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.notCovered).toBe(false);
+    expect(view.summary.openAlerts).toBe(1);
+    // The tier the alerts earned survives. Withdrawing the count would have
+    // taken this with it, hiding a repository that needs attention behind a
+    // feature nothing collects findings for yet.
+    expect(view.summary.tier).toBe("now");
+    // What GitHub said about each scanner, neither dropped, and nothing
+    // invented for the one it did not say was disabled.
+    expect(view.coverageReasons).toEqual([
+      `secret scanning: ${body}`,
+      "code scanning: no analysis found",
+    ]);
+  });
+
+  it("withdraws the count and the tier when DEPENDABOT is off", () => {
+    // The other half of the renegotiated rule, so the pair pins which fact
+    // decides: Dependabot off suppresses its own alerts before tiering.
+    seed("coverage", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "alerts_disabled",
+          codeScanning: { state: "covered", reason: null },
+          secretScanning: { state: "covered", reason: null },
+        },
+      },
+    ] as never[]);
+    seed("rest-org-dependabot", [
+      normalise(makeAlert({ number: 7, epssPercentage: 0.9 })),
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          openAlerts: 3,
+          worstSeverity: "high",
+        },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.notCovered).toBe(true);
+    expect(view.summary.openAlerts).toBeNull();
+    // Suppressed before tiering, so the alert gives no tier either. The same
+    // alert reads `now` in the sibling case above.
+    expect(view.summary.tier).toBe("quiet");
+  });
+
+  it("keeps both reasons when two features are off for different ones", () => {
+    // Neither may be dropped, and each is named because the two disagree.
+    const body = "Secret scanning is disabled on this repository.";
+    seed("coverage", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "alerts_disabled",
+          codeScanning: { state: "covered", reason: null },
+          secretScanning: { state: "feature_off", reason: body },
+        },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.notCovered).toBe(true);
+    expect(view.coverageReasons).toEqual([
+      "Dependabot alerts: switched off for this repository",
+      `secret scanning: ${body}`,
+    ]);
+  });
+
+  it("reads a row written before the scanners were probed as covered, never off", () => {
+    // The compatibility rule (#152): the two absent fields read `unknown`,
+    // and `unknown` is not evidence that anything was switched off.
+    seed("coverage", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", state: "covered" },
+      },
+    ] as never[]);
+    seed("rest-org-dependabot", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          openAlerts: 3,
+          worstSeverity: "high",
+        },
+      },
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.notCovered).toBe(false);
+    expect(view.coverageReasons).toEqual([]);
+    expect(view.summary.openAlerts).toBe(3);
+  });
+
   it("suppresses the alert count for a repository that is not covered", () => {
     seed("coverage", [
       {
@@ -975,7 +1106,7 @@ describe("the per-repository view (CAP-7)", () => {
     const view = buildRepoView(store, REPO, NOW, DEPS);
 
     // A zero beside "not covered" invites the reader to believe it (AD-28).
-    expect(view.coverage).toBe("alerts_disabled");
+    expect(view.notCovered).toBe(true);
     expect(view.summary.openAlerts).toBeNull();
   });
 });
@@ -1131,11 +1262,78 @@ describe("the per-repository page", () => {
     // no table follows it.
     expect(html).toContain(
       '<h2 id="security">Security <span class="badge unknown" title="never collected">never collected</span></h2>' +
-        '<p class="attest">Dependabot alerts are switched off for this repository</p>' +
+        '<p class="attest">Dependabot alerts: switched off for this repository</p>' +
         '<h2 id="ci">',
     );
     // The stale row is not listed beneath the suppression.
     expect(html).not.toContain("#7");
+  });
+
+  it("gives both reasons when two features are off for different ones", async () => {
+    // Both must reach the page, in the section note AND in the header
+    // sub-line: a page that named one and dropped the other would have
+    // invented the standing of the feature it kept (#152).
+    const body = "Secret scanning is disabled on this repository.";
+    const r = store.beginRun({
+      lane: "coverage",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "alerts_disabled",
+          codeScanning: { state: "covered", reason: null },
+          secretScanning: { state: "feature_off", reason: body },
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const html = await (await app().request("/repo/no42-org/twiki")).text();
+
+    const both =
+      "Dependabot alerts: switched off for this repository" +
+      ` \u00B7 secret scanning: ${body}`;
+    expect(html).toContain(
+      '<h2 id="security">Security <span class="badge unknown" title="never collected">never collected</span></h2>' +
+        `<p class="attest">${both}</p>`,
+    );
+    expect(html).toContain(
+      `<span class="uncovered">not covered: ${both}</span>`,
+    );
+  });
+
+  it("puts what a scanner said in the sentence, not only in a title", async () => {
+    // The renderer's own rule: a title is never the sole carrier. The count
+    // stands and the caveat rides beside it in the sub-line (#152).
+    const body = "Secret scanning is disabled on this repository.";
+    const r = store.beginRun({
+      lane: "coverage",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "covered",
+          codeScanning: { state: "covered", reason: null },
+          secretScanning: { state: "feature_off", reason: body },
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const html = await (await app().request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain(`secret scanning: ${body}`);
+    expect(html).not.toContain("not covered");
   });
 
   it("does not claim never-collected over rows it is showing", async () => {

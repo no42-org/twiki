@@ -4,8 +4,7 @@
  */
 
 import { isDefaultBranchRun } from "../../core/branch.js";
-import type { CoverageState } from "../../core/coverage.js";
-import { coverageReason, isCovered } from "../../core/coverage.js";
+import { coverageNotes, isOff } from "../../core/coverage.js";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import {
   DEFAULT_HUNG_AFTER_MS,
@@ -41,7 +40,10 @@ import {
   readWorkflowRun,
 } from "../attention/payloads.js";
 import { repoAttention } from "../attention/tiers.js";
-import type { CoverageObservation } from "../collect/coverage.js";
+import {
+  type CoverageObservation,
+  coverageFeatures,
+} from "../collect/coverage.js";
 import type { RepoObservation } from "../collect/dependabot-alerts.js";
 import { LANE as ISSUE_LANE } from "../collect/issues.js";
 import {
@@ -184,13 +186,25 @@ export function compareRunRows(
 
 export interface RepoView {
   slug: string;
-  coverage: CoverageState | null;
-  coverageReason: string | null;
   /**
-   * GitHub is positively known not to be watching this repository, so it has
-   * no count to be fresh or stale about and none is rendered (AD-28). False
-   * for `unknown`, which means the coverage attestation went stale rather
-   * than that coverage was withdrawn.
+   * Everything the coverage row says: why each feature that is off is off,
+   * then what GitHub answered for each it did not settle.
+   *
+   * A list rather than the single string it was: two features can be off for
+   * different reasons, and the page must give both rather than name one and
+   * invent nothing for the other (#152). Empty when all three are covered.
+   */
+  coverageReasons: readonly string[];
+  /**
+   * DEPENDABOT is positively known not to be watching this repository, so its
+   * alert count is not a real number and none is rendered (AD-28).
+   *
+   * Dependabot alone, because the count this withdraws is Dependabot's: a
+   * scanner being off says nothing about whether the alert count is real, and
+   * withdrawing on it would hide live alerts behind an unrelated feature. What
+   * the scanners said still reaches the reader, through `coverageReasons`.
+   * False for `unknown`, which means GitHub gave no answer rather than that
+   * anything was switched off.
    */
   notCovered: boolean;
   /**
@@ -347,22 +361,27 @@ export function buildRepoView(
   // Coverage is trusted only while its own attestation is fresh, exactly as
   // on the overview: a dead coverage lane must not keep a cached
   // `covered` badging a confident zero (AD-28).
-  const coverage = coverageValue
-    ? freshness(
-        coverageValue.verifiedAt,
-        now,
-        deps.coveragePolicy ?? deps.policy,
-      ) === "fresh"
-      ? (coverageValue.payload as CoverageObservation).state
-      : "unknown"
-    : null;
-  // Positive evidence of non-coverage, and nothing else. `unknown` is not
-  // such evidence: it is what a stale coverage attestation degrades to, and
+  const coverageFresh =
+    coverageValue !== undefined &&
+    freshness(
+      coverageValue.verifiedAt,
+      now,
+      deps.coveragePolicy ?? deps.policy,
+    ) === "fresh";
+  const features =
+    coverageValue && coverageFresh
+      ? coverageFeatures(coverageValue.payload as CoverageObservation)
+      : null;
+  // Positive evidence that DEPENDABOT is not covered, and nothing else - the
+  // same one fact the overview keys on, so the two surfaces agree by
+  // construction rather than by two people remembering the same rule (#152).
+  // `unknown` is not such evidence: it is what a stale coverage attestation
+  // degrades to and what a feature nobody has asked GitHub about reads as, and
   // blanking on it would let one dead coverage lane wipe correct counts off
   // every page in the estate (AD-28). Decided here, once, so the renderer
   // cannot reach a different conclusion from the same data.
-  const notCovered =
-    coverage !== null && !isCovered(coverage) && coverage !== "unknown";
+  const notCovered = features !== null && isOff(features.dependabot.state);
+  const coverageReasons = features === null ? [] : coverageNotes(features);
   const known = !notCovered;
 
   // The one tier computation (AD-34). Nothing on this page derives a tier
@@ -583,8 +602,7 @@ export function buildRepoView(
 
   return {
     slug,
-    coverage,
-    coverageReason: coverage === null ? null : coverageReason(coverage),
+    coverageReasons,
     notCovered,
     summary: {
       tier: attention.tier,

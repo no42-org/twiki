@@ -22,6 +22,7 @@ import type {
 } from "../src/enrich/port.js";
 import type {
   DependabotAccess,
+  FeatureProbe,
   FileAtRef,
   GitHubPort,
   GitHubReadPort,
@@ -297,6 +298,13 @@ export class FakeEnrichmentPort implements EnrichmentPort {
   }
 }
 
+/** What a 200 from either security-feature probe looks like. */
+const COVERED_FEATURE: FeatureProbe = {
+  state: "covered",
+  reason: null,
+  answered: true,
+};
+
 /** Read half, usable on its own by a consumer that holds only GitHubReadPort. */
 export class FakeGitHubReadPort implements GitHubReadPort {
   /** Org-level alerts, keyed by org login. */
@@ -428,6 +436,10 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   orgRepos = new Map<string, RawRepoMeta[]>();
   /** Probe answers per `owner/name`; anything unset reads as covered. */
   access = new Map<string, DependabotAccess>();
+  /** Code scanning probe answers per `owner/name`; unset reads as covered. */
+  codeScanning = new Map<string, FeatureProbe>();
+  /** Secret scanning probe answers per `owner/name`; unset reads as covered. */
+  secretScanning = new Map<string, FeatureProbe>();
 
   async listOrgRepos(org: string): Promise<RawRepoMeta[]> {
     return this.orgRepos.get(org) ?? [];
@@ -435,6 +447,18 @@ export class FakeGitHubReadPort implements GitHubReadPort {
 
   async probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess> {
     return this.access.get(repoSlug(repo).toLowerCase()) ?? "covered";
+  }
+
+  async probeCodeScanning(repo: RepoRef): Promise<FeatureProbe> {
+    return (
+      this.codeScanning.get(repoSlug(repo).toLowerCase()) ?? COVERED_FEATURE
+    );
+  }
+
+  async probeSecretScanning(repo: RepoRef): Promise<FeatureProbe> {
+    return (
+      this.secretScanning.get(repoSlug(repo).toLowerCase()) ?? COVERED_FEATURE
+    );
   }
 
   /** Orgs whose next conditional read answers 304. Unconditional still 200s. */

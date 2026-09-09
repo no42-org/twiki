@@ -6,6 +6,7 @@
 /* biome-ignore-all lint/a11y/noRedundantRoles: the table roles are implied by the elements at desktop width only; the phone cards restyle them to `display: block`, and a browser then drops the implied role. Stating it survives that (EXPERIENCE.md Accessibility Floor). */
 
 import type { Child, FC, PropsWithChildren } from "hono/jsx";
+import { joinNotes } from "../../core/coverage.js";
 import { isBrokenVerdict, type RunVerdict } from "../../core/run-verdict.js";
 import { safeUrl } from "../../core/safe-url.js";
 import { foldSlug } from "../../core/slug.js";
@@ -635,10 +636,16 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
                 <span class="why">
                   {row.reason}
                   {/* The reason is on the chip's title too, but a title is
-                      never the sole carrier; the sentence says it. */}
+                      never the sole carrier; the sentence says it. Same for
+                      the caveat: what the scanners said about a repository
+                      whose count still stands reaches the reader here, not
+                      only on hover. */}
                   {row.chips.security.state === "not-covered"
                     ? ` · security not covered: ${row.chips.security.reason}`
                     : ""}
+                  {row.chips.security.caveat === null
+                    ? ""
+                    : ` · ${row.chips.security.caveat}`}
                   <SignalsRest rest={row.signalsRest} />
                 </span>
               </Td>
@@ -1083,7 +1090,12 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
         <Section
           topic={topic}
           state={view.summary}
-          suppressed={view.coverageReason ?? "not covered"}
+          // Every reason, not the first: two features can be off for
+          // different reasons, and dropping either leaves the section
+          // explaining the one it kept and silent about the other (#152).
+          // Never empty here: this branch needs Dependabot off, which always
+          // has a note.
+          suppressed={joinNotes(view.coverageReasons)}
         />
       ) : (
         <Section
@@ -1347,7 +1359,7 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
       <p class="sub">
         {view.notCovered ? (
           <span class="uncovered">
-            not covered{view.coverageReason ? `: ${view.coverageReason}` : ""}
+            not covered: {joinNotes(view.coverageReasons)}
           </span>
         ) : (
           <>
@@ -1363,6 +1375,13 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
             {view.summary.worstSeverity
               ? `, worst ${view.summary.worstSeverity}`
               : ""}
+            {/* What the count does NOT speak for. Beside the number, never
+                instead of it: nothing collects the scanners' findings yet, so
+                withholding the Dependabot count over a scanner's state would
+                hide live alerts behind an unrelated feature (#152). */}
+            {view.coverageReasons.length === 0
+              ? ""
+              : ` · ${joinNotes(view.coverageReasons)}`}
           </>
         )}
         {view.notCovered ? null : (

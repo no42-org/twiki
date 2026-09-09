@@ -69,13 +69,17 @@ const hoursAgo = (hours: number): string =>
 const NO_COLLECTOR = "no collector for this topic yet";
 const NO_SWEEP = "not confirmed by any completed sweep";
 
-const absent = (reason: string): Chip => ({
+const absent = (reason: string, caveat: string | null = null): Chip => ({
   state: "unconfirmed",
   count: 0,
   severity: null,
   href: null,
   reason,
+  caveat,
 });
+/** The Dependabot probe reached no answer, spelled rather than imported. */
+const NO_ALERT_ANSWER =
+  "GitHub did not say whether Dependabot alerts are readable";
 /** A topic that has no collector yet: Pull requests. */
 const NO_LANE = absent(NO_COLLECTOR);
 /** A topic whose lane has not completed a current sweep here. */
@@ -86,12 +90,14 @@ const ZERO: Chip = {
   severity: null,
   href: null,
   reason: null,
+  caveat: null,
 };
 const linked = (
   count: number,
   href: string,
   severity: Chip["severity"] = null,
-): Chip => ({ state: "count", count, severity, href, reason: null });
+  caveat: string | null = null,
+): Chip => ({ state: "count", count, severity, href, reason: null, caveat });
 const SECURITY = "/queue?repo=no42-org%2Ftwiki&topic=security";
 
 /** The five topics beyond Security, in order, as `signalsRest` lists them. */
@@ -218,13 +224,37 @@ describe("buildBoard (AD-32, AD-35)", () => {
   const soonAlert = (repo: RepoRef, number: number) =>
     makeAlert({ number, repo, epssPercentage: 0.02, severity: "high" });
 
-  const cov = (repo: RepoRef, state: string) => ({
+  /**
+   * A coverage row as the lane writes one since #152: the Dependabot state,
+   * plus a state and GitHub's own reason for each of the two scanners. The
+   * scanners default to covered so a case about one feature says so by naming
+   * only that feature.
+   */
+  const cov = (
+    repo: RepoRef,
+    state: string,
+    scanners: {
+      codeScanning?: { state: string; reason: string | null };
+      secretScanning?: { state: string; reason: string | null };
+    } = {},
+  ) => ({
     subject: coverageSubject(repo),
     payload: {
       repo: `${repo.owner}/${repo.name}`.toLowerCase(),
       state,
       archived: false,
+      codeScanning: scanners.codeScanning ?? { state: "covered", reason: null },
+      secretScanning: scanners.secretScanning ?? {
+        state: "covered",
+        reason: null,
+      },
     },
+  });
+
+  /** A row written before the two scanners were probed at all. */
+  const oldCov = (repo: RepoRef, state: string) => ({
+    subject: coverageSubject(repo),
+    payload: { repo: `${repo.owner}/${repo.name}`.toLowerCase(), state },
   });
 
   beforeEach(() => {
@@ -727,7 +757,8 @@ describe("buildBoard (AD-32, AD-35)", () => {
               count: 0,
               severity: null,
               href: null,
-              reason: "Dependabot alerts are switched off for this repository",
+              reason: "Dependabot alerts: switched off for this repository",
+              caveat: null,
             }),
             reviews: linked(1, "/reviews"),
           },
@@ -753,6 +784,21 @@ describe("buildBoard (AD-32, AD-35)", () => {
         quiet: 1,
         unconfirmed: 0,
       });
+    });
+
+    it("never puts `not covered` on a topic other than Security", () => {
+      // AD-35. A `not covered` on CI, Pull requests or Issues would claim
+      // GitHub answered about a feature nothing here probes.
+      sweep([{ repo: REPO, alerts: [makeAlert({ number: 1, repo: REPO })] }]);
+      seed("coverage", "no42-org", [cov(REPO, "alerts_disabled")]);
+      lift();
+
+      const [row] = buildBoard(store, [REPO], NOW, DEPS).rows;
+
+      for (const [topic, chip] of Object.entries(row?.chips ?? {})) {
+        if (topic === "security") continue;
+        expect(chip.state, topic).not.toBe("not-covered");
+      }
     });
 
     it("counts the alerts of a repository coverage says is covered", () => {
@@ -963,10 +1009,96 @@ describe("buildBoard (AD-32, AD-35)", () => {
       ).toEqual([["no42-org/twiki", linked(1, SECURITY, "high"), "fresh"]]);
     });
 
-    it("does not blank a count merely because the coverage probe failed", () => {
-      // `unknown` is not positive evidence of non-coverage (AD-28).
+    it("reads unconfirmed, not `not covered`, when the ALERT probe failed", () => {
+      // `unknown` is not positive evidence of non-coverage (AD-28), so the
+      // chip does not accuse anyone of switching anything off. Nor does it
+      // offer the count: GitHub did not say whether anything is watching.
       sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
       seed("coverage", "no42-org", [cov(REPO, "unknown")]);
+
+      const [row] = buildBoard(store, [REPO], NOW, DEPS).rows;
+
+      expect(row?.chips.security).toEqual(absent(NO_ALERT_ANSWER));
+    });
+
+    it("keeps the count and the tier when a SCANNER is off, and says so", () => {
+      // The renegotiated rule (#152). Nothing collects secret scanning
+      // findings yet, so the number is the Dependabot alert count and a
+      // scanner cannot withdraw it: the whole row, because withdrawing it
+      // would also have taken the tier the alert earned.
+      const body = "Secret scanning is disabled on this repository.";
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      seed("coverage", "no42-org", [
+        cov(REPO, "covered", {
+          secretScanning: { state: "feature_off", reason: body },
+        }),
+      ]);
+
+      const board = buildBoard(store, [REPO], NOW, DEPS);
+
+      expect(board.rows).toEqual([
+        {
+          slug: "no42-org/twiki",
+          tier: "soon",
+          reason:
+            "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+          chips: alertsOnly(
+            linked(1, SECURITY, "high", `secret scanning: ${body}`),
+          ),
+          signals: [{ topic: "security", text: "Security 1 high" }],
+          signalsRest: { zero: [], unconfirmed: REST_TOPICS },
+          freshness: "fresh",
+          age: "5m ago",
+        },
+      ]);
+      // The alert still reaches the queue and the tile, which it would not
+      // if the scanner had suppressed it before tiering.
+      expect(board.tiles[0]).toEqual(tile("security", 1));
+    });
+
+    it("keeps the count when a scanner answered `no analysis found`", () => {
+      // Permanent on a healthy repository: four of seven probed answer this.
+      // Withdrawing the count on it would never give the count back.
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      seed("coverage", "no42-org", [
+        cov(REPO, "covered", {
+          codeScanning: { state: "unknown", reason: "no analysis found" },
+        }),
+      ]);
+
+      const [row] = buildBoard(store, [REPO], NOW, DEPS).rows;
+
+      expect(row?.chips.security).toEqual(
+        linked(1, SECURITY, "high", "code scanning: no analysis found"),
+      );
+      expect(row?.tier).toBe("soon");
+    });
+
+    it("carries both reasons when two features are off for different ones", () => {
+      // Dependabot off decides the chip; the scanner's reason must still
+      // reach the reader rather than being dropped for the one that won.
+      const body = "Secret scanning is disabled on this repository.";
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      seed("coverage", "no42-org", [
+        cov(REPO, "alerts_disabled", {
+          secretScanning: { state: "feature_off", reason: body },
+        }),
+      ]);
+      lift();
+
+      const [row] = buildBoard(store, [REPO], NOW, DEPS).rows;
+
+      expect(row?.chips.security.reason).toBe(
+        "Dependabot alerts: switched off for this repository" +
+          ` · secret scanning: ${body}`,
+      );
+    });
+
+    it("counts a row written before the scanners were probed, unchanged", () => {
+      // Both new features read `unknown`, never off (#152), and neither may
+      // touch the Dependabot count: an old row must read exactly as it did.
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      seed("coverage", "no42-org", [oldCov(REPO, "covered")]);
 
       const [row] = buildBoard(store, [REPO], NOW, DEPS).rows;
 
@@ -1016,7 +1148,8 @@ describe("buildBoard (AD-32, AD-35)", () => {
         count: 0,
         severity: null,
         href: null,
-        reason: "Dependabot alerts are switched off for this repository",
+        reason: "Dependabot alerts: switched off for this repository",
+        caveat: null,
       });
     });
 

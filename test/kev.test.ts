@@ -729,6 +729,17 @@ describe("the real schedule table", () => {
     expect(lane("kev")?.retryAfterMs).toBeLessThan(KEV_CADENCE_MS);
   });
 
+  it("gives coverage the same daily cadence and one-hour retry", () => {
+    // A probe that fails leaves that feature `unknown`, which reads
+    // `unconfirmed` on every page until a run answers for it (#152). Waiting
+    // a full day to try again would hold the whole estate there on one bad
+    // hour, so a partial run is retried within it.
+    // Literals on both halves: comparing the schedule against the constant it
+    // was built from is a test that cannot fail.
+    expect(lane("coverage")?.cadenceMs).toBe(24 * 60 * 60_000);
+    expect(lane("coverage")?.retryAfterMs).toBe(60 * 60_000);
+  });
+
   it("declares the scope it actually runs at", () => {
     // If the declared scope and the executed scope disagree, the due-ness key
     // never matches the run row and the lane re-fetches on every tick.

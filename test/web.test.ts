@@ -1502,6 +1502,46 @@ describe("issues found in review (round 2)", () => {
       expect(kevRow.slice(0, 200)).not.toContain("stale");
     });
 
+    it("puts a scanner's answer in the rationale sentence, not only in a title", async () => {
+      // The renderer's own rule: a title is never the sole carrier. The
+      // Dependabot count stands - a scanner cannot withdraw it (#152) - and
+      // what GitHub said about the scanner rides beside it in the sentence.
+      const body = "Secret scanning is disabled on this repository.";
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        summariseRepo(REPO, []),
+        {
+          subject: coverageSubject(REPO),
+          payload: {
+            repo: "no42-org/twiki",
+            state: "covered",
+            codeScanning: { state: "covered", reason: null },
+            secretScanning: { state: "feature_off", reason: body },
+          },
+        },
+        normaliseReviewRequest(
+          makeReviewRequest({
+            repo: REPO,
+            number: 4,
+            createdAt: "2026-08-07T12:00:00.000Z",
+          }),
+        ),
+      ] as never[]);
+      complete();
+
+      const html = await (
+        await createApp({
+          defaultBranchOf: () => "main",
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      expect(html).toContain(`\u00B7 secret scanning: ${body}`);
+      expect(html).not.toContain("not covered");
+    });
+
     it("judges the coverage attestation on the lane's own cadence through createApp", async () => {
       // The repo rows used to get their coverage cadence from a separate
       // coveragePolicy field while the health table read lanePolicies. Two
@@ -1547,7 +1587,7 @@ describe("issues found in review (round 2)", () => {
       // cadence the attestation would be stale, coverage unknown, and the
       // chip a plain unconfirmed. On the daily cadence it is the real state.
       expect(html).toContain(
-        '<span class="chip uncovered" title="Dependabot alerts are switched off for this repository">not covered</span>',
+        '<span class="chip uncovered" title="Dependabot alerts: switched off for this repository">not covered</span>',
       );
     });
 

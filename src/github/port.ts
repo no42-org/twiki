@@ -144,6 +144,23 @@ export interface GitHubRepoReadPort {
   probeDependabotAccess(repo: RepoRef): Promise<DependabotAccess>;
 
   /**
+   * Has code scanning analysed this repository? One call.
+   *
+   * Not "is it enabled": that is the question GitHub declines to answer to a
+   * read-only App. `security_and_analysis` on the repository payload names
+   * every feature's state and would settle this with no extra call, but
+   * GitHub sends that block only to callers with admin rights. Verified
+   * absent, live on 2026-09-09, from both the organisation listing and the
+   * single-repository read. The recorded fixture carries a populated block
+   * because it was captured with an admin token, so an implementation
+   * reading it passes every test here and sees nothing in production.
+   */
+  probeCodeScanning(repo: RepoRef): Promise<FeatureProbe>;
+
+  /** Is secret scanning switched on for this repository? One call. */
+  probeSecretScanning(repo: RepoRef): Promise<FeatureProbe>;
+
+  /**
    * What dependabotUpdate reports per open alert of one repository.
    *
    * GraphQL-only: the REST alert payload carries no link to the update PR and
@@ -653,3 +670,39 @@ export type DependabotAccess =
   | "alerts_disabled"
   | "unreachable"
   | "unknown";
+
+/**
+ * What one per-repository security-feature probe told us (#152).
+ *
+ * The two scanners do NOT answer symmetrically, and a mapping that assumed
+ * they did would be wrong for half the estate. Measured 2026-09-09, and
+ * recorded in test/fixtures/github/{code,secret}-scanning-404.json:
+ *
+ *   secret scanning off  404  "Secret scanning is disabled on this
+ *                              repository."          -> off, unambiguous
+ *   code scanning        404  "no analysis found"    -> unknown, NOT off
+ *   either, enabled      200                         -> covered
+ *
+ * The second line is the one to get right: a repository that has code
+ * scanning configured but has never completed a run answers exactly like one
+ * that never configured it, and four of seven public repositories probed
+ * answered that way. Reading it as off would put `not covered` on a
+ * repository that is scanned.
+ *
+ * `reason` is GitHub's own message, redacted and bounded, so a page can quote
+ * it instead of inventing one per state.
+ *
+ * `answered` says whether GitHub replied at all - NOT whether we recognised
+ * what it said. An unmeasured body is an answer: it is stable, it is stored
+ * with the body as its reason, and retrying it hourly for ever would return
+ * the same words. Only a request that reached no answer - a transport failure,
+ * a 5xx, an empty body, a token that could not be minted - degrades the lane's
+ * run, which is what the retry hint exists for. Getting this backwards is how
+ * one private repository without Advanced Security would hold a daily lane
+ * permanently partial.
+ */
+export interface FeatureProbe {
+  state: "covered" | "feature_off" | "unreachable" | "unknown";
+  reason: string | null;
+  answered: boolean;
+}
