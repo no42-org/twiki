@@ -869,11 +869,17 @@ export const QueuePage: FC<{
     >
       <h1>What to deal with next</h1>
       <p class="sub">
-        {filtered.counted.filter((i) => i.kind === "alert").length} open alerts
+        {/* The TOPIC, not the kind: Security holds two kinds now and will
+            hold three, and a kind listed in the table and missing here reads
+            as zeros above the row a reader came for - which is what this
+            line did to the first red main it ever showed, and did again to
+            the first code scanning finding. Derived the way tiers.ts derives
+            its own security count, so a kind joins this sentence by being
+            filed under a topic rather than by anyone editing this line. */}
+        {filtered.counted.filter((i) => topicOf(i.kind) === "security").length}{" "}
+        open alerts
         {" · "}
-        {/* One count per queue kind. A kind listed in the table and missing
-            here reads as three zeros above the row a reader came for, which
-            is what this line did to the first red main it ever showed. */}
+        {/* One count per remaining kind; each of these topics holds one. */}
         {filtered.counted.filter((i) => i.kind === "ci_failure").length} broken
         builds
         {" · "}
@@ -1106,6 +1112,36 @@ const VERDICT_WORDS: Record<RunVerdict, string | null> = {
   other: null,
 };
 
+/**
+ * The Security section lists two kinds, and either can be withdrawn on its
+ * own, so what it may claim about an empty section depends on which of them
+ * it was allowed to look at.
+ *
+ * "No open alerts or code scanning findings" over rows we deliberately
+ * dropped is a measured empty asserted over a withheld one, which is the
+ * confident zero this page exists to refuse (AD-28). With both withdrawn
+ * there is nothing measured at all - the whole-section suppression does not
+ * fire, because a third feature may still be confirmed on - so the sentence
+ * says that rather than a zero.
+ */
+function securityEmpty(view: RepoView): string {
+  const shown = [
+    view.alertsWithdrawn ? null : "open alerts",
+    view.codeScanningWithdrawn ? null : "code scanning findings",
+  ].filter((kind): kind is string => kind !== null);
+  return shown.length === 0
+    ? "nothing here is counted: every kind this section lists is switched off"
+    : `no ${shown.join(" or ")} in this repository`;
+}
+
+/** What the section is not listing, named. Empty when it lists both kinds. */
+function securityWithheld(view: RepoView): string[] {
+  return [
+    view.alertsWithdrawn ? "Dependabot alerts" : null,
+    view.codeScanningWithdrawn ? "code scanning findings" : null,
+  ].filter((kind): kind is string => kind !== null);
+}
+
 const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
   switch (topic) {
     case "security":
@@ -1134,7 +1170,7 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
             count={view.alerts.length + view.codeScanning.length}
             // The Dependabot rows only: the heading's badge is that lane's.
             attestedCount={view.alerts.length}
-            empty="no open alerts or code scanning findings in this repository"
+            empty={securityEmpty(view)}
           >
             <table class="cards" role="table">
               <thead role="rowgroup">
@@ -1227,6 +1263,29 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
               </table>
             )}
           </Section>
+          {/* A feature confirmed off has its rows dropped from the tables
+            above, exactly as the chip drops them from its count. Saying so
+            is the difference between a row that is absent and one we
+            withheld; the reason itself is in the header's sub-line, where
+            every coverage answer for this repository already is. */}
+          {securityWithheld(view).length === 0 ? null : (
+            <p class="attest">
+              {securityWithheld(view).join(" and ")} not listed: the feature is
+              switched off
+            </p>
+          )}
+          {/* The heading counts the rows shown; the header counts the items
+            the queue RANKS, and a finding off the default branch is one and
+            not the other. Without this the page reads `1 open alerts` above
+            `4 shown` and neither number is wrong (#156). */}
+          {view.codeScanning.filter((c) => !c.onDefaultBranch).length ===
+          0 ? null : (
+            <p class="attest">
+              {view.codeScanning.filter((c) => !c.onDefaultBranch).length} of
+              these are not on the default branch, so the queue does not rank
+              them and the count above does not include them
+            </p>
+          )}
           {/* The section's heading attests the Dependabot lane alone, which is
             deliberate (#156). This is what stops that heading speaking for a
             lane it never ran: with no `repository_code_scanning`

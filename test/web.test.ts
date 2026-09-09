@@ -1495,6 +1495,52 @@ describe("issues found in review (round 2)", () => {
       );
       expect(html).not.toContain("not collected");
     });
+
+    it("names a feature nothing confirmed either way beside the count it does not speak for", async () => {
+      // The generalised standing counts as soon as ONE feature is confirmed
+      // on, so a Dependabot answer we could not read no longer withholds the
+      // number. Without this note it would withhold nothing and say nothing:
+      // a bare `1 high` for a topic one of its features has no standing in.
+      //
+      // The sentence is about OUR knowledge, not GitHub's answer, so it is
+      // true both of a probe that came back unrecognised and of a row
+      // written before the feature was probed at all.
+      const alerts = [makeAlert({ number: 1, repo: REPO, severity: "high" })];
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        ...alerts.map(normalise),
+        summariseRepo(REPO, alerts),
+        {
+          subject: coverageSubject(REPO),
+          payload: {
+            repo: "no42-org/twiki",
+            state: "unknown",
+            codeScanning: { state: "covered", reason: null },
+            secretScanning: { state: "covered", reason: null },
+          },
+        },
+      ] as never[]);
+      complete();
+
+      const html = await (
+        await createApp({
+          defaultBranchOf: () => "main",
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      // The count stands, and the caveat rides beside it in the sentence a
+      // reader meets, never only in a title.
+      expect(html).toContain(
+        '<a class="chip high" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">1 high</a>',
+      );
+      expect(html).toContain(
+        "severity high, not an update, stuck state unknown" +
+          " \u00B7 Dependabot alerts: not confirmed on or off",
+      );
+    });
   });
 
   describe("per-lane cadences reach the rendered page", () => {

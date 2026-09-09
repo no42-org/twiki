@@ -1519,6 +1519,178 @@ describe("the code scanning rows on the repository page (#156)", () => {
     expect(html).not.toContain("code scanning: not confirmed");
   });
 
+  it("does not assert a measured empty over rows it withheld", async () => {
+    // Dependabot confirmed off, code scanning on and finding nothing. The
+    // section is no longer suppressed - a feature is still confirmed on - so
+    // the empty sentence must say what it actually looked at. "No open
+    // alerts" here would assert a zero over rows the page dropped.
+    const r = store.beginRun({
+      lane: "coverage",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "alerts_disabled",
+          codeScanning: { state: "covered", reason: null },
+          secretScanning: { state: "covered", reason: null },
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+    // The alert lane's own confirmation, so the section is attested and the
+    // empty sentence is the one the reader meets.
+    const a = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(a, "2026-08-20T11:55:00.000Z", [
+      normalise(makeAlert({ number: 7 })),
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          openAlerts: 1,
+          worstSeverity: "high",
+        },
+      },
+    ] as never[]);
+    store.finishRun(a, "ok", "2026-08-20T11:55:00.000Z");
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+
+    const html = await (await app.request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain(
+      '<p class="attest">no code scanning findings in this repository</p>',
+    );
+    expect(html).not.toContain("no open alerts or code scanning findings");
+    // And the withheld kind is named, rather than its rows simply vanishing.
+    expect(html).toContain(
+      '<p class="attest">Dependabot alerts not listed: the feature is switched off</p>',
+    );
+    // The alert really was dropped, so the sentence is about a withheld row
+    // and not a repository that happens to have none.
+    expect(html).not.toContain("#7");
+  });
+
+  it("names the code scanning findings it withheld when that feature is off", async () => {
+    // The mirror, and the one `codeScanningWithdrawn` exists for: the org
+    // sweep still writes a confirmation for this repository, so the
+    // `not confirmed by any completed sweep` paragraph does not fire and the
+    // rows would otherwise vanish with no sentence at all.
+    seedScans([{ number: 21 }]);
+    const r = store.beginRun({
+      lane: "coverage",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "covered",
+          codeScanning: { state: "unreachable", reason: NOT_ACCESSIBLE },
+          secretScanning: { state: "covered", reason: null },
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+    const a = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(a, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", openAlerts: 0, worstSeverity: null },
+      },
+    ] as never[]);
+    store.finishRun(a, "ok", "2026-08-20T11:55:00.000Z");
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+
+    const html = await (await app.request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain(
+      '<p class="attest">code scanning findings not listed: the feature is switched off</p>',
+    );
+    expect(html).toContain(
+      '<p class="attest">no open alerts in this repository</p>',
+    );
+    expect(html).not.toContain("Code scanning</th>");
+  });
+
+  it("says how many listed findings the queue does not rank", async () => {
+    // The header counts the items the queue RANKS and the heading counts the
+    // rows shown, so a finding off the default branch makes them differ.
+    // Without this sentence the page read `1 open alerts` above `4 shown`
+    // and neither number was wrong.
+    const r = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      normalise(makeAlert({ number: 7 })),
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          openAlerts: 1,
+          worstSeverity: "high",
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+    seedScans([
+      { number: 21, ref: "refs/pull/1/merge" },
+      { number: 22, ref: "refs/pull/2/merge" },
+      { number: 23, ref: "refs/pull/3/merge" },
+    ]);
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+
+    const html = await (await app.request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain('<span class="shown">4 shown</span>');
+    expect(html).toContain("1 open alerts");
+    expect(html).toContain(
+      '<p class="attest">3 of these are not on the default branch,' +
+        " so the queue does not rank them and the count above does not" +
+        " include them</p>",
+    );
+  });
+
   it("badges an unconfirmed finding as unconfirmed, never with a freshness word", async () => {
     seedScans([{ number: 21 }], false);
     const app = createApp({

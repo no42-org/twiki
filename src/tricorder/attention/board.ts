@@ -7,9 +7,12 @@ import type { CoverageFeatures } from "../../core/coverage.js";
 import {
   coverageNotes,
   FEATURE_LABELS,
+  isCovered,
   isOff,
   joinNotes,
+  offNotes,
   securityStanding,
+  unconfirmedNotes,
 } from "../../core/coverage.js";
 import { compareRankings } from "../../core/rank.js";
 import type { SeverityReading } from "../../core/severity.js";
@@ -546,17 +549,15 @@ export function buildBoard(
 
     const features = coverage.get(slug);
     const confirmation = confirmations.get(slug);
-    // Precedence per AD-35. The number now counts every security-topic item
-    // of every feature GitHub confirmed is on, so only ALL of them being off
-    // withdraws it: `not covered` needs both Dependabot and code scanning
-    // off, a Dependabot answer we could not read still reads `unconfirmed`,
-    // and each off feature's own reason rides along as a note beside the
-    // count rather than replacing it (#156). Deciding it here, once, is what
-    // makes this chip and the repository page agree by construction.
-    // Everything the row says, in one list. Under `not covered` it IS the
-    // reason, so it is not repeated as a caveat; anywhere else it is the
-    // caveat, and there it holds only what a feature actually said, because a
-    // covered feature contributes no note.
+    // Precedence per AD-35, generalised over every feature (#156). The
+    // number counts every security-topic item, so ONE feature confirmed on
+    // is enough for there to be a number: `not covered` needs every feature
+    // off, and `unconfirmed` needs none on and at least one unknown. A
+    // Dependabot answer we could not read therefore no longer withholds the
+    // count while another feature is confirmed on - it becomes a note beside
+    // it, exactly as an off feature's reason does. Deciding it here, once,
+    // is what makes this chip and the repository page agree by construction.
+    //
     // What coverage says about each feature. Under `not covered` this IS the
     // reason, so it is not repeated as a caveat; anywhere else it is one.
     const notes = features === undefined ? [] : coverageNotes(features);
@@ -567,8 +568,24 @@ export function buildBoard(
     // confident total. Withheld when coverage says code scanning is off,
     // because its own reason is already in `notes`.
     const countNotes = [
-      ...notes,
-      ...(sweptForCodeScanning.has(slug) || codeScanningOff.has(slug)
+      ...(features === undefined
+        ? []
+        : // Every feature that is off, then every feature nothing confirmed
+          // either way. The second half is wider than `coverageNotes`'s,
+          // which quotes only the unknowns that came back with a body: since
+          // the standing rule counts as soon as ONE feature is confirmed on,
+          // a Dependabot answer we could not read no longer withholds the
+          // number, and without this note it would withhold nothing at all
+          // and say nothing either.
+          [...offNotes(features), ...unconfirmedNotes(features)]),
+      // The LANE's silence, which is a different fact from the FEATURE's:
+      // coverage says whether GitHub is scanning at all, this says whether
+      // anything of ours has looked. Withheld once coverage has already said
+      // the feature is not confirmed on, because the reader then knows the
+      // number does not speak for it and two notes about one feature is
+      // noise, not honesty.
+      ...(sweptForCodeScanning.has(slug) ||
+      (features !== undefined && !isCovered(features.code_scanning.state))
         ? []
         : [`${FEATURE_LABELS.code_scanning}: ${NO_SWEEP}`]),
     ];

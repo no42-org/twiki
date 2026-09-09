@@ -246,6 +246,38 @@ export function unansweredNotes(features: CoverageFeatures): string[] {
 }
 
 /**
+ * The neutral phrase for a feature nothing has confirmed either way.
+ *
+ * It must be true of BOTH `unknown` states, which is why it describes our
+ * knowledge rather than GitHub's answer: a probe that came back with words we
+ * do not recognise, and a row written before the feature was probed at all,
+ * are the same fact from a reader's side and only one of them involved a call.
+ * `coverageReason`'s "GitHub's answer was not one we recognise" would claim a
+ * call we never made over the second.
+ */
+export const NOT_CONFIRMED = "not confirmed on or off";
+
+/**
+ * Every feature that is neither covered nor off, each named, with GitHub's
+ * own words where the probe stored any.
+ *
+ * Wider than `unansweredNotes`, which names only the ones that DID come back
+ * with a body. A count stands beside a feature nobody confirmed just as much
+ * as beside one that answered something odd, and a chip that said nothing
+ * about it would present a number for a topic one of its features has no
+ * standing in (AD-28).
+ */
+export function unconfirmedNotes(features: CoverageFeatures): string[] {
+  return COVERAGE_FEATURES.filter(
+    (feature) =>
+      !isCovered(features[feature].state) && !isOff(features[feature].state),
+  ).map(
+    (feature) =>
+      `${FEATURE_LABELS[feature]}: ${features[feature].reason ?? NOT_CONFIRMED}`,
+  );
+}
+
+/**
  * Why a feature is not covered, for the reader, where GitHub gave no words of
  * its own.
  *

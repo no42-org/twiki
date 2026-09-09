@@ -1599,6 +1599,25 @@ describe("the queue page", () => {
     expect(html).toContain("CI items · 1 shown");
   });
 
+  it("counts a code scanning finding in the summary line, not only in the table", async () => {
+    // The summary counts the TOPIC, not one kind of it. With the Dependabot
+    // alerts all closed, a per-kind line read `0 open alerts` directly above
+    // a table of scanner findings - the same failure it once had over the
+    // first red main it ever showed.
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      normaliseScan(makeCodeScanningAlert({ number: 21 })),
+    ]);
+
+    const html = await (await app().request("/queue")).text();
+
+    expect(html).toContain(
+      "1 open alerts · 0 broken builds · 0 update PRs · 0 untriaged issues",
+    );
+    // And it really is in the table below, so the count is not a zero of a
+    // different kind that happens to read 1.
+    expect(html).toContain('<span class="badge">scan</span>');
+  });
+
   it("labels the ordering a local policy, never SSVC (AD-20)", async () => {
     const html = await (await app().request("/queue")).text();
     expect(html).toContain("local policy");

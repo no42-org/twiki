@@ -134,6 +134,14 @@ const NOT_ACCESSIBLE = "Resource not accessible by integration";
  */
 const CODE_SCANNING_UNSWEPT =
   "code scanning: not confirmed by any completed sweep";
+/**
+ * What the caveat says about a feature nothing confirmed either way.
+ *
+ * Worded about OUR knowledge, not GitHub's answer, because it has to be true
+ * of both unknowns: a probe that came back with words we do not recognise,
+ * and a row written before the feature was probed at all.
+ */
+const notConfirmed = (label: string) => `${label}: not confirmed on or off`;
 
 /** The five topics beyond Security, in order, as `signalsRest` lists them. */
 const REST_TOPICS: Topic[] = [
@@ -1157,7 +1165,12 @@ describe("buildBoard (AD-32, AD-35)", () => {
 
       const [row] = buildBoard(store, [REPO], NOW, DEPS).rows;
 
-      expect(row?.chips.security).toEqual(linked(2, SECURITY, "high"));
+      // The count stands, and the feature nothing confirmed either way is
+      // named beside it. Before this note the chip rendered a bare number
+      // for a topic one of its features had no standing in.
+      expect(row?.chips.security).toEqual(
+        linked(2, SECURITY, "high", notConfirmed("Dependabot alerts")),
+      );
     });
 
     it("keeps the count and the tier when a SCANNER is off, and says so", () => {
@@ -1217,7 +1230,10 @@ describe("buildBoard (AD-32, AD-35)", () => {
           1,
           SECURITY,
           "high",
-          `code scanning: ${NO_ANALYSIS} \u00B7 ${CODE_SCANNING_UNSWEPT}`,
+          // One note about code scanning, not two: coverage has already said
+          // the feature is not confirmed on, so the lane's separate silence
+          // adds nothing the reader can act on.
+          `code scanning: ${NO_ANALYSIS}`,
         ),
       );
       expect(row?.tier).toBe("soon");
@@ -1357,8 +1373,16 @@ describe("buildBoard (AD-32, AD-35)", () => {
 
       const [row] = buildBoard(store, [REPO], NOW, DEPS).rows;
 
+      // Both scanners read `unknown` on an old row, and the note says only
+      // that they are not confirmed - never that GitHub answered something
+      // odd, which would claim a call nobody made.
       expect(row?.chips.security).toEqual(
-        linked(1, SECURITY, "high", CODE_SCANNING_UNSWEPT),
+        linked(
+          1,
+          SECURITY,
+          "high",
+          `${notConfirmed("code scanning")} \u00B7 ${notConfirmed("secret scanning")}`,
+        ),
       );
     });
 
