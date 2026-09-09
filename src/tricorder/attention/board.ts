@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { CoverageState } from "../../core/coverage.js";
-import { coverageReason, isCovered } from "../../core/coverage.js";
+import type { CoverageFeatures } from "../../core/coverage.js";
+import { coverageNotes, isOff, joinNotes } from "../../core/coverage.js";
 import { compareRankings } from "../../core/rank.js";
 import type { SeverityReading } from "../../core/severity.js";
 import { watchKey } from "../../core/slug.js";
@@ -14,6 +14,7 @@ import type { RepoRef } from "../../core/types.js";
 import {
   LANE as COVERAGE_LANE,
   type CoverageObservation,
+  coverageFeatures,
 } from "../collect/coverage.js";
 import { LANE as ISSUE_LANE } from "../collect/issues.js";
 import {
@@ -76,12 +77,23 @@ export interface Chip {
   /** Where the chip leads. Null for zero, unconfirmed and not covered. */
   href: string | null;
   /**
-   * Why there is no count: the coverage reason for `not-covered`, and for
-   * `unconfirmed` which of the two absences it is (no collector for the
-   * topic yet, or a lane that has not completed a current sweep here).
+   * Why there is no count: for `not-covered`, what GitHub said about the
+   * feature that is off; for `unconfirmed`, which absence it is (no collector
+   * for the topic yet, or a lane that has not completed a current sweep here).
    * Null when there is a count.
    */
   reason: string | null;
+  /**
+   * What this count does NOT speak for, on Security only; null everywhere else.
+   *
+   * Nothing collects code scanning or secret scanning findings yet, so the
+   * Security number is the Dependabot alert count and only the Dependabot
+   * feature can withdraw it. A scanner that is off, or that GitHub gave no
+   * answer for, is a caveat carried BESIDE the number - never a reason to
+   * withhold it, which would hide real alerts behind an unrelated feature's
+   * state and, since `no analysis found` is permanent, never give them back.
+   */
+  caveat: string | null;
 }
 
 export interface Tile {
@@ -187,10 +199,22 @@ export const NO_SWEEP = "not confirmed by any completed sweep";
  * what is missing is a fact about our own configuration.
  */
 export const NO_BRANCH = "the default branch could not be resolved";
+/**
+ * The Dependabot probe reached no answer, so nothing here may present its
+ * alert count as a real number. Its own absence rather than NO_SWEEP: a sweep
+ * may well have confirmed the repository, and what is missing is GitHub's
+ * word on whether anything is watching it (#152).
+ */
+export const NO_ALERT_ANSWER =
+  "GitHub did not say whether Dependabot alerts are readable";
 
 /** A chip with no count behind it. */
-function absent(state: "unconfirmed" | "not-covered", reason: string): Chip {
-  return { state, count: 0, severity: null, href: null, reason };
+function absent(
+  state: "unconfirmed" | "not-covered",
+  reason: string,
+  caveat: string | null = null,
+): Chip {
+  return { state, count: 0, severity: null, href: null, reason, caveat };
 }
 
 /** A confirmed count: `zero` when nothing is open, linked otherwise. */
@@ -198,10 +222,18 @@ function counted(
   count: number,
   severity: SeverityReading | null,
   href: string,
+  caveat: string | null = null,
 ): Chip {
   return count === 0
-    ? { state: "zero", count: 0, severity: null, href: null, reason: null }
-    : { state: "count", count, severity, href, reason: null };
+    ? {
+        state: "zero",
+        count: 0,
+        severity: null,
+        href: null,
+        reason: null,
+        caveat,
+      }
+    : { state: "count", count, severity, href, reason: null, caveat };
 }
 
 const confirmed = (chip: Chip): boolean =>
@@ -351,7 +383,13 @@ export function buildBoard(
   // Coverage is trusted only while its own attestation is fresh. If the
   // coverage lane dies and somebody then switches Dependabot off, a cached
   // `covered` would keep the page showing a confident zero (AD-28).
-  const coverage = new Map<string, CoverageState>();
+  //
+  // A stale attestation is dropped rather than degraded to `unknown`: it is no
+  // information at all, and this page already has a rule for that, which is
+  // the alert lane's own confirmation carrying the count. Degrading it into a
+  // row of unknown features would instead let one dead coverage lane blank
+  // every correct count in the estate, which is the failure AD-28 names.
+  const coverage = new Map<string, CoverageFeatures>();
   for (const value of store.currentByType("repository_coverage")) {
     if (value.state !== "present") continue;
     const attested = freshness(
@@ -359,20 +397,25 @@ export function buildBoard(
       now,
       deps.coveragePolicy ?? deps.policy,
     );
+    if (attested !== "fresh") continue;
     coverage.set(
       value.subject.key,
-      attested === "fresh"
-        ? (value.payload as CoverageObservation).state
-        : "unknown",
+      coverageFeatures(value.payload as CoverageObservation),
     );
   }
-  // Suppressed only on POSITIVE evidence of non-coverage. `unknown` is not
-  // such evidence: blanking on it would let one rate-limited probe wipe
-  // correct counts off the page (AD-28). Decided before tiering, so the
-  // alert nobody may count cannot also be the reason a row is `now`.
+  // Suppressed on POSITIVE evidence that DEPENDABOT is not covered, and
+  // nothing else. The alerts this drops are Dependabot's, so only Dependabot's
+  // own state may drop them: a scanner being off says nothing about whether
+  // the alert count is real, and suppressing on it would hide live alerts, and
+  // the tier they earned, behind an unrelated feature (#152).
+  //
+  // `unknown` is not such evidence either: blanking on it would let one
+  // rate-limited probe wipe correct counts off the page (AD-28). Decided
+  // before tiering, so the alert nobody may count cannot also be the reason a
+  // row is `now`.
   const notCovered = new Set<string>();
-  for (const [slug, state] of coverage) {
-    if (!isCovered(state) && state !== "unknown") notCovered.add(slug);
+  for (const [slug, features] of coverage) {
+    if (isOff(features.dependabot.state)) notCovered.add(slug);
   }
 
   const { byRepo, queue } = attentionByRepo(
@@ -477,11 +520,28 @@ export function buildBoard(
       return counted(count, null, topicPath(topic, repo));
     };
 
-    const covered = coverage.get(slug);
+    const features = coverage.get(slug);
     const confirmation = confirmations.get(slug);
+    // Precedence per AD-35, keyed on Dependabot alone. The number is the
+    // Dependabot alert count until Stories 3.3 and 3.4 collect the scanners'
+    // findings, so only Dependabot's state can withdraw it: off reads `not
+    // covered`, an answer we could not read reads `unconfirmed`, and anything
+    // the scanners said rides along as a caveat beside the count (#152).
+    // Keying on one fact is also what makes this chip and the repository page
+    // agree by construction.
+    // Everything the row says, in one list. Under `not covered` it IS the
+    // reason, so it is not repeated as a caveat; anywhere else it is the
+    // caveat, and there it holds only what the scanners said, because a
+    // covered Dependabot contributes no note.
+    const notes = features === undefined ? [] : coverageNotes(features);
+    const caveat = notes.length === 0 ? null : joinNotes(notes);
     let security: Chip;
-    if (notCovered.has(slug) && covered !== undefined) {
-      security = absent("not-covered", coverageReason(covered) ?? NO_SWEEP);
+    if (notCovered.has(slug) && features !== undefined) {
+      security = absent("not-covered", joinNotes(notes));
+    } else if (features?.dependabot.state === "unknown") {
+      // The Dependabot union carries no message of its own, so there is never
+      // a body to quote here; the constant is the whole reason.
+      security = absent("unconfirmed", NO_ALERT_ANSWER, caveat);
     } else if (confirmation !== undefined) {
       sources.push({
         verifiedAt: confirmation.verifiedAt,
@@ -491,9 +551,10 @@ export function buildBoard(
         attention.openAlerts,
         attention.worstSeverity,
         topicPath("security", repo),
+        caveat,
       );
     } else {
-      security = absent("unconfirmed", NO_SWEEP);
+      security = absent("unconfirmed", NO_SWEEP, caveat);
     }
 
     // This repository's OWN confirmation, judged on the Actions lane's own

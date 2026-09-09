@@ -222,7 +222,7 @@ Set `TRICORDER_ONCE` to run a single cycle and exit, for cron.
 | `TRICORDER_REVIEW_BUDGET_DAYS` | Days a review request may wait before its repository is at least `soon`, measured from the pull request's creation. A positive integer; anything else refuses to start. | `3` |
 | `TRICORDER_BASE_URL` | Where the dashboard is reachable from outside, used to build absolute links for notifications. Optional. `https` only, no query or fragment; a path prefix is kept. Anything else refuses to start, for both roles. | unset |
 | `TRICORDER_KEV_URL` | Where to fetch the CISA KEV catalogue. Point it at a mirror or proxy in an egress-restricted deployment. | CISA's public feed |
-| `TRICORDER_VERBOSE` | Print Octokit's own request logging. Off by default because the coverage lane expects a 403 per repository with Dependabot switched off, and those would otherwise look like errors on a healthy run. | unset |
+| `TRICORDER_VERBOSE` | Print Octokit's own request logging. Off by default because the coverage lane expects a 403 or 404 per repository per security feature that is switched off or has analysed nothing, and those would otherwise look like errors on a healthy run. | unset |
 
 Both retention windows are off by default and a malformed value refuses to start rather than falling back to a default, because silently ignoring a typo in the one setting that deletes data is not a recoverable mistake.
 

@@ -97,6 +97,24 @@ export const COVERAGE_CADENCE_MS = 24 * 60 * 60_000;
 export const KEV_CADENCE_MS = 24 * 60 * 60_000;
 /** After a failed or partial run, retry sooner than a full day. */
 export const KEV_RETRY_MS = 60 * 60_000;
+/**
+ * The same rule for coverage, which now has a second way to run `partial`.
+ *
+ * A probe that reaches no answer leaves that feature `unknown`, and an unknown
+ * Dependabot feature reads `unconfirmed` on every page until a run answers for
+ * it. Waiting a full day to try again would hold the whole estate's Security
+ * chips there on one bad hour.
+ *
+ * BOUNDED at the source rather than here, because the cost is an estate-wide
+ * re-sweep at three calls per repository: only a request that reached no
+ * answer degrades the run - a transport failure, a 5xx, a token that could not
+ * be minted - and every one of those is transient. A body GitHub sends
+ * steadily, including the unmeasured 403 a private repository without Advanced
+ * Security answers with, is an ANSWER: it is stored with its words, the run
+ * stays `ok`, and this retry never fires for it. Without that rule one such
+ * repository would turn this daily lane into an hourly one for ever.
+ */
+export const COVERAGE_RETRY_MS = 60 * 60_000;
 
 /**
  * The Actions lane's own cadence, and the bound on one sweep.
@@ -301,6 +319,7 @@ export function buildSchedules(deps: {
       lane: COVERAGE_LANE,
       scope: "full",
       cadenceMs: COVERAGE_CADENCE_MS,
+      retryAfterMs: COVERAGE_RETRY_MS,
       installations: deps.installations,
       run: deps.coverage,
     },

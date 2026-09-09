@@ -5,6 +5,7 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { redact } from "../core/redact.js";
 import { newestStableTag, parseDependency } from "../core/semver.js";
 import type {
   BranchProtection,
@@ -25,6 +26,7 @@ import type {
   AccountKind,
   AppIdentity,
   DependabotAccess,
+  FeatureProbe,
   FileAtRef,
   GitHubAppPort,
   GitHubPort,
@@ -634,6 +636,63 @@ export class OctokitGitHub implements GitHubPort {
       return "covered";
     } catch (err) {
       return translateDependabotProbe(err);
+    }
+  }
+
+  async probeCodeScanning(repo: RepoRef): Promise<FeatureProbe> {
+    return this.probeSecurityFeature(
+      repo,
+      (gh) =>
+        gh.request("GET /repos/{owner}/{repo}/code-scanning/alerts", {
+          owner: repo.owner,
+          repo: repo.name,
+          per_page: 1,
+        }),
+      translateCodeScanningProbe,
+    );
+  }
+
+  async probeSecretScanning(repo: RepoRef): Promise<FeatureProbe> {
+    return this.probeSecurityFeature(
+      repo,
+      (gh) =>
+        gh.request("GET /repos/{owner}/{repo}/secret-scanning/alerts", {
+          owner: repo.owner,
+          repo: repo.name,
+          per_page: 1,
+        }),
+      translateSecretScanningProbe,
+    );
+  }
+
+  /**
+   * One security-feature probe: a 200 is coverage, anything else is the
+   * feature's own translation of what GitHub said.
+   *
+   * The request is a callback rather than a route string so each call site
+   * keeps its literal route and Octokit's typing of it; a `string` parameter
+   * would type-erase both.
+   */
+  private async probeSecurityFeature(
+    repo: RepoRef,
+    request: (gh: Octokit) => Promise<unknown>,
+    translate: (err: unknown) => FeatureProbe,
+  ): Promise<FeatureProbe> {
+    let client: Octokit;
+    try {
+      client = await this.client(repo);
+    } catch {
+      // The same rule probeDependabotAccess states above: this catch also sees
+      // the allowlist guard and any transient token-mint failure, and neither
+      // is GitHub saying a feature is off. GitHub answered nothing, so the
+      // lane's run degrades to partial rather than reporting a settled answer.
+      return { state: "unknown", reason: null, answered: false };
+    }
+    try {
+      await request(client);
+      return { state: "covered", reason: null, answered: true };
+    } catch (err) {
+      return translate(err);
     }
   }
 
@@ -1752,6 +1811,163 @@ export function translateDependabotProbe(err: unknown): DependabotAccess {
   // 404 is how GitHub hides a repository the caller may not see at all.
   if (e.status === 404) return "unreachable";
   return "unknown";
+}
+
+/**
+ * The measured bodies, lowercased for comparison (2026-09-09, live estate;
+ * recorded in test/fixtures/github/{code,secret}-scanning-404.json).
+ *
+ * Named rather than inlined because each is the ENTIRE evidence for one
+ * mapping, and the two mappings they feed are opposites: one says the feature
+ * is off, the other says GitHub has not answered. A literal buried in an `if`
+ * invites a sibling being added by pattern rather than by measurement.
+ */
+export const SECRET_SCANNING_OFF_BODY =
+  "secret scanning is disabled on this repository";
+export const CODE_SCANNING_NO_ANALYSIS_BODY = "no analysis found";
+/** The body GitHub sends when the App may not read an endpoint at all. */
+export const NOT_ACCESSIBLE_BODY = "not accessible by integration";
+
+/**
+ * The longest reason we store.
+ *
+ * The reason is rendered in a chip title and in a page sentence, and its
+ * source is a string GitHub chose. Two hundred characters is longer than
+ * every measured body and short enough that an unexpected one cannot turn one
+ * row into a page of prose.
+ */
+export const MAX_REASON_CHARS = 200;
+
+/**
+ * Strip the documentation URL the client appends to every error message.
+ *
+ * `@octokit/request` builds the message as `${body.message} - ${
+ * body.documentation_url}`, so the raw message ends in a hundred-character
+ * link to REST reference documentation. What GitHub said ABOUT THIS
+ * REPOSITORY is the part before it; the link is the client's own annotation
+ * and reads the same for every repository. It is dropped so the sentence the
+ * reader sees is the sentence GitHub wrote, which is also the `message` field
+ * of the recorded fixtures.
+ */
+function githubBody(message: string): string {
+  const suffix = message.indexOf(" - https://");
+  return (suffix === -1 ? message : message.slice(0, suffix)).trim();
+}
+
+/**
+ * The status and the message of a failed probe, RAW.
+ *
+ * Raw, because classification below matches on it: redacting first would let
+ * a future redaction rule rewrite a measured body and silently reclassify it
+ * as one we have never seen. Redaction happens once, on the way to storage.
+ *
+ * Aborted requests can surface a null rejection. Dereferencing it would throw
+ * inside a catch block and escape the probe, exactly as
+ * translateDependabotProbe guards against above.
+ */
+function probeFailure(err: unknown): {
+  status: number | null;
+  message: string | null;
+} {
+  if (typeof err !== "object" || err === null) {
+    return { status: null, message: null };
+  }
+  const e = err as { status?: unknown; message?: unknown };
+  const body = typeof e.message === "string" ? githubBody(e.message) : "";
+  return {
+    status: typeof e.status === "number" ? e.status : null,
+    message: body === "" ? null : body,
+  };
+}
+
+/** The stored form of one of GitHub's messages: redacted and bounded. */
+function storedReason(message: string): string {
+  return redact(message).slice(0, MAX_REASON_CHARS);
+}
+
+/**
+ * The tail both translators share: an unmeasured answer, or no answer at all.
+ *
+ * `answered` is about whether GitHub replied, NOT whether we recognised the
+ * reply. A 4xx with words is an answer even when the words are new to us: it
+ * is stable, so retrying it hourly returns the same words for ever. Only a
+ * request that reached no answer - no status, a 5xx, an empty body - degrades
+ * the lane's run. Getting that backwards is how one private repository
+ * without Advanced Security holds a daily lane permanently partial and, with
+ * the lane's write rule, freezes its row.
+ */
+function unmeasured(
+  status: number | null,
+  message: string | null,
+): FeatureProbe {
+  // 403 "Resource not accessible by integration" is measured, on the sibling
+  // Dependabot probe: GitHub refusing the endpoint rather than reporting
+  // anything about the feature. Without it a permissions problem and a
+  // switched-off feature read the same on the page.
+  if (
+    status === 403 &&
+    message !== null &&
+    message.toLowerCase().includes(NOT_ACCESSIBLE_BODY)
+  ) {
+    return {
+      state: "unreachable",
+      reason: storedReason(message),
+      answered: true,
+    };
+  }
+  return {
+    state: "unknown",
+    // Null, not an empty string: a rejection carrying no words is
+    // indistinguishable on the page from a feature nobody has probed, and the
+    // page has a sentence for exactly that.
+    reason: message === null ? null : storedReason(message),
+    answered: status !== null && status < 500 && message !== null,
+  };
+}
+
+/**
+ * Translate a code scanning probe on measured bodies only.
+ *
+ * There is no mapping to `feature_off` here, and its absence is the point.
+ * The one feature failure measured on the estate is `404 "no analysis
+ * found"`, which a repository with code scanning enabled and nothing analysed
+ * yet answers identically to one that never configured it. GitHub did not say
+ * the feature is disabled, so neither does this.
+ */
+export function translateCodeScanningProbe(err: unknown): FeatureProbe {
+  const { status, message } = probeFailure(err);
+  if (
+    status === 404 &&
+    message !== null &&
+    message.toLowerCase().includes(CODE_SCANNING_NO_ANALYSIS_BODY)
+  ) {
+    return { state: "unknown", reason: storedReason(message), answered: true };
+  }
+  return unmeasured(status, message);
+}
+
+/**
+ * Translate a secret scanning probe on measured bodies only.
+ *
+ * The one measured failure names itself: `404 "Secret scanning is disabled on
+ * this repository."`. Status AND body, as with the Dependabot probe: matching
+ * the body alone would let a future status change read as a switched-off
+ * feature, and a false `off` is the direction this dashboard exists to refuse.
+ */
+export function translateSecretScanningProbe(err: unknown): FeatureProbe {
+  const { status, message } = probeFailure(err);
+  if (
+    status === 404 &&
+    message !== null &&
+    message.toLowerCase().includes(SECRET_SCANNING_OFF_BODY)
+  ) {
+    return {
+      state: "feature_off",
+      reason: storedReason(message),
+      answered: true,
+    };
+  }
+  return unmeasured(status, message);
 }
 
 /**

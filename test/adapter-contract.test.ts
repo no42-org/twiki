@@ -9,8 +9,10 @@ import { join } from "node:path";
 import type { Octokit } from "@octokit/rest";
 import { describe, expect, it } from "vitest";
 import {
+  CODE_SCANNING_NO_ANALYSIS_BODY,
   createTricorderAppFromEnv,
   OctokitGitHub,
+  SECRET_SCANNING_OFF_BODY,
 } from "../src/github/octokit-adapter.js";
 
 // The contract between the fakes and the real adapter.
@@ -370,6 +372,124 @@ describe("repository metadata maps field for field", () => {
 
     expect(metas[0]?.archived).toBe(true);
     expect(metas[0]?.disabled).toBe(true);
+  });
+});
+
+describe("the security-feature probes, end to end through the adapter", () => {
+  // The two pure translators are tested in test/coverage.test.ts. Nothing
+  // there executes the ADAPTER: the 200 path, and the binding of each probe to
+  // its own translator, live only here. Both were measured to be untested -
+  // turning a 200 into `feature_off` and swapping the two translator
+  // arguments each left the whole suite green, and either would have marked
+  // every healthy repository `not covered` and blanked every Dependabot count
+  // in the estate.
+
+  /** The error shape @octokit/request throws, built FROM the recording. */
+  interface Recorded404 {
+    message: string;
+    documentation_url: string;
+    status: string;
+  }
+  const thrown = (fixture: Recorded404) => ({
+    // `@octokit/request` builds the message as `${message} - ${
+    // documentation_url}` and the status as a number; the recording stores
+    // the status as a string, which is why it is converted here rather than
+    // asserted through. Building the error from the fixture's own fields is
+    // the point: a constant pinned against a second copy of the same string,
+    // typed in the same commit, pins nothing.
+    status: Number(fixture.status),
+    message: `${fixture.message} - ${fixture.documentation_url}`,
+  });
+
+  /** An Octokit whose every REST read rejects with one error. */
+  const failingStub = (err: unknown) =>
+    ({
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw err;
+      },
+    }) as unknown as Octokit;
+
+  const REPO = { owner: "no42-org", name: "twiki" };
+
+  it("reads a 200 from either endpoint as covered", async () => {
+    // The success path, which no other test reaches. A mapping that read a
+    // 200 as anything else would withdraw the Security count estate-wide.
+    const adapter = adapterFor(restStub([]), "organization");
+
+    expect(await adapter.probeCodeScanning(REPO)).toEqual({
+      state: "covered",
+      reason: null,
+      answered: true,
+    });
+    expect(await adapter.probeSecretScanning(REPO)).toEqual({
+      state: "covered",
+      reason: null,
+      answered: true,
+    });
+  });
+
+  it("reads the recorded secret scanning 404 as the feature being off", async () => {
+    const raw = recorded<Recorded404>("secret-scanning-404.json");
+    const adapter = adapterFor(failingStub(thrown(raw)), "organization");
+
+    expect(await adapter.probeSecretScanning(REPO)).toEqual({
+      state: "feature_off",
+      // The message GitHub wrote, without the documentation link the client
+      // appends. This exact string is the chip's title and the sentence on
+      // the repository page.
+      reason: raw.message,
+      answered: true,
+    });
+  });
+
+  it("reads the recorded code scanning 404 as unknown, never as off", async () => {
+    const raw = recorded<Recorded404>("code-scanning-404.json");
+    const adapter = adapterFor(failingStub(thrown(raw)), "organization");
+
+    expect(await adapter.probeCodeScanning(REPO)).toEqual({
+      state: "unknown",
+      reason: raw.message,
+      answered: true,
+    });
+  });
+
+  it("binds each probe to its OWN translator", async () => {
+    // Swapping the two translator arguments ships green without this. Secret
+    // scanning would never be reported off, which is the entire motivating
+    // case, and code scanning's measured body would come back unmeasured.
+    // Each endpoint is driven with the OTHER's recorded body, which its own
+    // translator must not recognise.
+    const secret = recorded<Recorded404>("secret-scanning-404.json");
+    const code = recorded<Recorded404>("code-scanning-404.json");
+
+    const codeGivenSecretsBody = await adapterFor(
+      failingStub(thrown(secret)),
+      "organization",
+    ).probeCodeScanning(REPO);
+    const secretGivenCodesBody = await adapterFor(
+      failingStub(thrown(code)),
+      "organization",
+    ).probeSecretScanning(REPO);
+
+    // The wrong translator would return `feature_off` for the first.
+    expect(codeGivenSecretsBody.state).toBe("unknown");
+    expect(secretGivenCodesBody.state).toBe("unknown");
+    // Both still ANSWERED: an unmeasured body is a stable answer, and
+    // treating it as a failure is what holds the daily lane partial.
+    expect(codeGivenSecretsBody.answered).toBe(true);
+    expect(secretGivenCodesBody.answered).toBe(true);
+  });
+
+  it("keeps the constants pinned to the recordings", () => {
+    // The constants the translators match on, checked against the bodies the
+    // live API actually sent rather than against a second copy typed here.
+    expect(
+      recorded<Recorded404>("secret-scanning-404.json").message.toLowerCase(),
+    ).toContain(SECRET_SCANNING_OFF_BODY);
+    expect(
+      recorded<Recorded404>("code-scanning-404.json").message.toLowerCase(),
+    ).toContain(CODE_SCANNING_NO_ANALYSIS_BODY);
   });
 });
 
