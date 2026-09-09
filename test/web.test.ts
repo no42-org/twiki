@@ -1497,9 +1497,21 @@ describe("issues found in review (round 2)", () => {
         }).request("/")
       ).text();
 
-      const kevRow = html.slice(html.indexOf("kev"));
-      expect(kevRow).toContain("fresh");
-      expect(kevRow.slice(0, 200)).not.toContain("stale");
+      // The lane's own health row, matched as markup. This used to slice the
+      // document from the first "kev" it could find, which was the `kev-hit`
+      // class inside the inline stylesheet: the assertion then ran over CSS
+      // text and everything after it, and stayed green with the lane cadences
+      // dropped from the board route entirely - the very wiring it pins.
+      expect(html).toContain(
+        '<tr role="row">' +
+          '<td role="cell"><span class="lbl">Lane</span>kev</td>' +
+          '<td role="cell"><span class="lbl">Installation</span>cisa</td>' +
+          '<td role="cell"><span class="lbl">Scope</span>full</td>' +
+          '<td class="ok" role="cell"><span class="lbl">Outcome</span>ok</td>' +
+          '<td role="cell"><span class="lbl">Last run</span>' +
+          '<span class="badge fresh" title="6h ago">fresh \u00B7 6h ago</span></td>' +
+          "</tr>",
+      );
     });
 
     it("puts a scanner's answer in the rationale sentence, not only in a title", async () => {
@@ -1611,7 +1623,20 @@ describe("issues found in review (round 2)", () => {
         }).request("/")
       ).text();
 
-      expect(html).toContain("stale");
+      // This lane has no entry, so it is judged on the sweep budget and six
+      // hours is stale. Asserted as the whole row: a bare `toContain("stale")`
+      // was satisfied by any badge anywhere on the page, including one this
+      // test never seeded.
+      expect(html).toContain(
+        '<tr role="row">' +
+          '<td role="cell"><span class="lbl">Lane</span>rest-org-dependabot</td>' +
+          '<td role="cell"><span class="lbl">Installation</span>no42-org</td>' +
+          '<td role="cell"><span class="lbl">Scope</span>full</td>' +
+          '<td class="ok" role="cell"><span class="lbl">Outcome</span>ok</td>' +
+          '<td role="cell"><span class="lbl">Last run</span>' +
+          '<span class="badge stale" title="6h ago">stale \u00B7 6h ago</span></td>' +
+          "</tr>",
+      );
     });
   });
 });
