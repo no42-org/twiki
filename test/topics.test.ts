@@ -30,7 +30,10 @@ describe("TOPICS", () => {
 
   it("gives every queue kind exactly one topic, and the lane-less topics none", () => {
     expect(TOPICS.map((t) => [t.topic, [...t.kinds]])).toEqual([
-      ["security", ["alert"]],
+      // Two kinds under Security: a Dependabot alert and a code scanning
+      // finding are both "something GitHub found here", and the topic is
+      // what makes the chips, tiles and filters count them as one number.
+      ["security", ["alert", "code_scanning"]],
       ["ci", ["ci_failure"]],
       ["dependencies", ["update_pr"]],
       // Pull requests has no lane until Epic 3; Reviews never joins the queue.
@@ -39,6 +42,7 @@ describe("TOPICS", () => {
       ["reviews", []],
     ]);
     expect(topicOf("alert")).toBe("security");
+    expect(topicOf("code_scanning")).toBe("security");
     expect(topicOf("ci_failure")).toBe("ci");
     expect(topicOf("update_pr")).toBe("dependencies");
     expect(topicOf("issue")).toBe("issues");
@@ -77,16 +81,20 @@ describe("kevListedFor", () => {
     // A build is not an advisory: its KEV term is n/a by construction, so
     // the page never gets a chance to shout about it.
     ["ci_failure", false],
+    // Nor is a static-analysis finding. It has no CVE to look up, so its KEV
+    // term is n/a and no page may shout `in CISA KEV` over it.
+    ["code_scanning", false],
   ] as const)("%s: %s", (kind, expected) => {
     expect(kevListedFor(kind)).toBe(expected);
   });
 });
 
 describe("KIND_REASONS", () => {
-  it("has a table for every kind; only the issue and the CI failure reword the chain", () => {
+  it("has a table for every kind; only the alert and the update PR keep the chain's own words", () => {
     expect(Object.keys(KIND_REASONS).sort()).toEqual([
       "alert",
       "ci_failure",
+      "code_scanning",
       "issue",
       "update_pr",
     ]);
@@ -100,6 +108,19 @@ describe("KIND_REASONS", () => {
       epss: { na: "" },
       severity: { na: "" },
       bump: { na: "" },
+      stuck: { na: "" },
+    });
+    // Four terms silenced and two worded. `severity` says what is missing is
+    // a GRADE, not an advisory - the alert IS the finding. `bump` carries the
+    // branch phrase because the chain prints its terms in order and the
+    // sentence a reader wants is `Trivy, severity high, on the default
+    // branch`; `broken` is absent here because the tool name is supplied per
+    // item, as the CI failure's verdict is.
+    expect(KIND_REASONS.code_scanning).toEqual({
+      kev: { na: "" },
+      epss: { na: "" },
+      severity: { na: "no severity from the tool" },
+      bump: { na: "on the default branch" },
       stuck: { na: "" },
     });
   });

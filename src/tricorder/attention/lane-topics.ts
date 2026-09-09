@@ -4,6 +4,7 @@
  */
 
 import type { Topic } from "../../core/topics.js";
+import { LANE as CODE_SCANNING_LANE } from "../collect/code-scanning.js";
 import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
 import { LANE as ALERTS_LANE } from "../collect/dependabot-alerts.js";
 import { LANE as ISSUES_LANE } from "../collect/issues.js";
@@ -50,6 +51,10 @@ export const LANE_TOPIC: ReadonlyMap<string, LaneTopic> = new Map<
   LaneTopic
 >([
   [ALERTS_LANE, { topic: "security", word: "alerts", installation: null }],
+  [
+    CODE_SCANNING_LANE,
+    { topic: "security", word: "code scanning", installation: null },
+  ],
   [
     UPDATE_PRS_LANE,
     { topic: "dependencies", word: "update PRs", installation: null },

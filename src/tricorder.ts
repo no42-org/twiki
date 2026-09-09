@@ -25,6 +25,10 @@ import {
   createTricorderReadPort,
 } from "./github/octokit-adapter.js";
 import {
+  LANE as CODE_SCANNING_LANE,
+  collectOrgCodeScanning,
+} from "./tricorder/collect/code-scanning.js";
+import {
   LANE as COVERAGE_LANE,
   collectCoverage,
 } from "./tricorder/collect/coverage.js";
@@ -222,6 +226,8 @@ export function parseTickSeconds(
 export function buildSchedules(deps: {
   installations: readonly string[];
   alerts: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  /** Code scanning findings, on the alert cadence and the same installations. */
+  codeScanning: (installation: string) => Promise<{ outcome: RunOutcome }>;
   coverage: (installation: string) => Promise<{ outcome: RunOutcome }>;
   kev: (scope: RunScope) => Promise<{ outcome: RunOutcome }>;
   /** Null when no bot actors are configured: the lane is absent, loudly. */
@@ -260,6 +266,19 @@ export function buildSchedules(deps: {
       cadenceMs: ALERT_CADENCE_MS,
       installations: deps.installations,
       run: deps.alerts,
+    },
+    // The same cadence as the alert lane, deliberately: both are one org-level
+    // call per installation, both feed the Security topic, and a scanner
+    // finding that ranked on a slower clock than the Dependabot alert beside
+    // it would read stale on a page that called the other fresh (AD-11). It
+    // therefore needs no `lanePolicies` entry: `policy` already is this
+    // cadence.
+    {
+      lane: CODE_SCANNING_LANE,
+      scope: "full",
+      cadenceMs: ALERT_CADENCE_MS,
+      installations: deps.installations,
+      run: deps.codeScanning,
     },
     ...(deps.updatePrs === null
       ? []
@@ -728,6 +747,8 @@ async function main(): Promise<void> {
       installations,
       alerts: (installation) =>
         collectOrgAlerts(laneDeps, installation, "full"),
+      codeScanning: (installation) =>
+        collectOrgCodeScanning(laneDeps, installation, "full"),
       coverage: (installation) =>
         collectCoverage(laneDeps, installation, "full"),
       kev: (scope) =>

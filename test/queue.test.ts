@@ -7,18 +7,24 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
+import {
+  DEFAULT_RANK_POLICY,
+  epssRank,
+  type Ranking,
+} from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
+import { DEFAULT_NOW_EPSS, tier } from "../src/core/tier.js";
 import {
   buildQueue,
   type DefaultBranchRun,
   newerRun,
 } from "../src/tricorder/attention/queue.js";
+import { normalise as normaliseScan } from "../src/tricorder/collect/code-scanning.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
 import type { UpdatePrObservation } from "../src/tricorder/collect/update-prs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
-import { makeAlert, primaryNav } from "./fakes.js";
+import { makeAlert, makeCodeScanningAlert, primaryNav } from "./fakes.js";
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 const SWEEP = { cadenceMs: 15 * 60_000 };
@@ -32,6 +38,8 @@ const DEPS = {
   hungAfterMs: 2 * 60 * 60_000,
   defaultBranchOf: () => "main",
 };
+/** The `now` cut as a term rank, so a tier assertion reads ranks, not bands. */
+const CUT = epssRank(DEFAULT_NOW_EPSS, DEFAULT_RANK_POLICY.epssBands);
 
 describe("the ranked queue (CAP-6)", () => {
   let dir: string;
@@ -56,6 +64,17 @@ describe("the ranked queue (CAP-6)", () => {
     );
   };
 
+  const seedScans = (
+    alerts: Parameters<typeof makeCodeScanningAlert>[0][],
+    at = "2026-08-17T11:55:00.000Z",
+  ) => {
+    store.recordObservations(
+      run(),
+      at,
+      alerts.map((a) => normaliseScan(makeCodeScanningAlert(a))),
+    );
+  };
+
   const seedKev = (cveIds: string[], at = "2026-08-17T11:00:00.000Z") => {
     store.recordObservations(run(), at, [
       {
@@ -73,6 +92,179 @@ describe("the ranked queue (CAP-6)", () => {
   afterEach(() => {
     store.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  describe("code scanning findings (#156)", () => {
+    it("ranks a critical finding soon, never now, and names the tool", () => {
+      // Every term but severity is a fact of absence: no CVE to look up, no
+      // EPSS to score, no update to bump, no fix being prepared. `now` needs
+      // a broken branch, a KEV listing or an EPSS band, and this kind carries
+      // none of the three, so the estate's one critical Trivy finding reaches
+      // soon and stops there.
+      seedScans([
+        {
+          number: 21,
+          securitySeverity: "critical",
+          tool: "Trivy",
+          ruleId: "CVE-2026-31789",
+        },
+      ]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      // The WHOLE item, ranking included: a toMatchObject here left the
+      // link, the freshness, the age and every term of the chain unbound.
+      expect(queue.items).toEqual([
+        {
+          kind: "code_scanning",
+          // NOT the stored row's key, which is `no42-org/twiki#21` and is
+          // shared with a Dependabot alert of the same number: the type that
+          // tells the two subjects apart lives outside the key.
+          key: "no42-org/twiki#code-scanning:21",
+          repo: "no42-org/twiki",
+          number: 21,
+          packageName: null,
+          title: "CVE-2026-31789",
+          // A rule id is not an advisory record: Trivy names a CVE, Scorecard
+          // and zizmor never do, so the column stays empty rather than
+          // meaning two different things per tool.
+          advisory: null,
+          htmlUrl:
+            "https://github.com/no42-org/twiki/security/code-scanning/21",
+          explanation: "Trivy, severity critical, on the default branch",
+          kevListed: false,
+          displaySeverity: "critical",
+          ranking: {
+            // Every term but severity is a fact of absence, so the key is a
+            // run of least-known ranks with one graded severity in it. That
+            // is what makes `now` unreachable for this kind: `now` needs the
+            // broken, KEV or EPSS term, and all three are least-known here.
+            key: [0, 0, 0, 4, 0, 0],
+            terms: [
+              { name: "broken", rank: 0, reason: "Trivy" },
+              { name: "kev", rank: 0, reason: "" },
+              { name: "epss", rank: 0, reason: "" },
+              { name: "severity", rank: 4, reason: "severity critical" },
+              { name: "bump", rank: 0, reason: "on the default branch" },
+              { name: "stuck", rank: 0, reason: "" },
+            ],
+            explanation: "Trivy, severity critical, on the default branch",
+          },
+          freshness: "fresh",
+          age: "5m ago",
+        },
+      ]);
+      expect(tier(queue.items[0]?.ranking as Ranking, CUT)).toBe("soon");
+    });
+
+    it("refuses a javascript: href on a finding, as it does on an alert", () => {
+      // The first store-derived href of this kind, and hono/jsx renders a
+      // `javascript:` scheme verbatim. A row carrying one is a corrupted or
+      // foreign row, and the item drops the link rather than the row.
+      seedScans([
+        { number: 21, htmlUrl: "javascript:alert(1)" as unknown as string },
+      ]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(queue.items[0]?.htmlUrl).toBeNull();
+      expect(queue.items[0]?.number).toBe(21);
+    });
+
+    it("keeps an ungraded finding in the queue, below every graded one", () => {
+      // `n/a`, not unknown: the tool grades nothing, which is a fact, and it
+      // must not float above findings we did measure.
+      seedScans([
+        { number: 46, securitySeverity: "n/a", tool: "zizmor" },
+        { number: 21, securitySeverity: "high", tool: "Trivy" },
+      ]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(queue.items.map((i) => i.number)).toEqual([21, 46]);
+      // The signal as it stands, not a null: `n/a` says the tool grades
+      // nothing, where null would say we failed to read a grade, and the
+      // repository's worst severity reads the difference.
+      expect(queue.items[1]?.displaySeverity).toBe("n/a");
+      expect(queue.items[1]?.explanation).toBe(
+        "zizmor, no severity from the tool, on the default branch",
+      );
+    });
+
+    it("leaves a finding off the default branch out of the queue entirely", () => {
+      // Stored by the lane regardless of ref; the condition is applied here
+      // and only here. `refs/pull/7/merge` is not a branch, so the shared
+      // predicate answers false rather than parsing a name out of it.
+      seedScans([
+        { number: 7, ref: "refs/pull/7/merge" },
+        { number: 8, ref: "refs/heads/main" },
+      ]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(queue.items.map((i) => i.number)).toEqual([8]);
+      // Not an unreadable row: we read it perfectly well and it is simply
+      // not a claim about the shipped branch.
+      expect(queue.unreadable).toBe(0);
+    });
+
+    it("honours a repository whose default branch is not main", () => {
+      seedScans([{ number: 8, ref: "refs/heads/master" }]);
+
+      expect(buildQueue(store, NOW, DEPS).items).toEqual([]);
+      expect(
+        buildQueue(store, NOW, {
+          ...DEPS,
+          defaultBranchOf: () => "master",
+        }).items.map((i) => i.number),
+      ).toEqual([8]);
+    });
+
+    it("derives nothing when the default branch could not be resolved", () => {
+      // A guard turning a broken configuration into a measured zero is the
+      // failure this whole line of work exists to prevent (AD-33).
+      seedScans([{ number: 8 }]);
+
+      const queue = buildQueue(store, NOW, {
+        ...DEPS,
+        defaultBranchOf: () => null,
+      });
+
+      expect(queue.items).toEqual([]);
+      expect(queue.unreadable).toBe(0);
+    });
+
+    it("counts a row it cannot read and never renders it as an item", () => {
+      store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+        {
+          subject: { type: "code_scanning_alert", key: "no42-org/twiki#9" },
+          payload: { number: 9, repo: "no42-org/twiki", severity: 3 },
+        },
+      ] as never[]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(queue.items).toEqual([]);
+      expect(queue.unreadable).toBe(1);
+    });
+
+    it("keeps a code scanning alert and a Dependabot alert of the same number apart", () => {
+      // Two subject types over one key space: alert 21 and code scanning
+      // alert 21 in one repository are two items, not one contested row.
+      seedAlerts([{ number: 21, epssPercentage: 0.02, severity: "high" }]);
+      seedScans([{ number: 21, securitySeverity: "high" }]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      // The KEYS, not just the kinds: `alertSubject` puts the type outside
+      // the key, so both rows are stored under `no42-org/twiki#21` and the
+      // items would collide as render keys, tie the queue's final tiebreak,
+      // and in Epic 4 have one finding suppress the other's notification.
+      expect(queue.items.map((i) => [i.kind, i.key])).toEqual([
+        ["alert", "no42-org/twiki#21"],
+        ["code_scanning", "no42-org/twiki#code-scanning:21"],
+      ]);
+    });
   });
 
   it("sorts a KEV-listed alert above a higher-EPSS one with no listing", () => {

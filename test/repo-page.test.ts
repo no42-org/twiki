@@ -10,6 +10,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isDefaultBranchRun } from "../src/core/branch.js";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
+import {
+  normalise as normaliseScan,
+  summariseRepo as summariseScanRepo,
+} from "../src/tricorder/collect/code-scanning.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
 import { LANE as KEV_LANE } from "../src/tricorder/collect/kev.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
@@ -19,11 +23,15 @@ import {
   compareRunRows,
   type RepoRunRow,
 } from "../src/tricorder/web/repo-view.js";
-import { makeAlert, primaryNav } from "./fakes.js";
+import { makeAlert, makeCodeScanningAlert, primaryNav } from "./fakes.js";
 
 const NOW = new Date("2026-08-20T12:00:00.000Z");
 const SWEEP = { cadenceMs: 15 * 60_000 };
 const REPO = { owner: "no42-org", name: "twiki" };
+/** What the endpoint answers when the App may not read it at all (#152). */
+const NOT_ACCESSIBLE = "Resource not accessible by integration";
+/** GitHub's measured body when secret scanning is switched off (#152). */
+const SECRETS_OFF = "Secret scanning is disabled on this repository.";
 const HOURLY = { cadenceMs: 60 * 60_000 };
 const DEPS = {
   policy: SWEEP,
@@ -1086,8 +1094,11 @@ describe("the per-repository view (CAP-7)", () => {
         payload: {
           repo: "no42-org/twiki",
           state: "alerts_disabled",
-          codeScanning: { state: "covered", reason: null },
-          secretScanning: { state: "covered", reason: null },
+          // Every feature confirmed off, in the states a real probe reaches:
+          // code scanning has no `feature_off` mapping at all, so GitHub
+          // refusing the endpoint is what an off scanner looks like here.
+          codeScanning: { state: "unreachable", reason: NOT_ACCESSIBLE },
+          secretScanning: { state: "feature_off", reason: SECRETS_OFF },
         },
       },
     ] as never[]);
@@ -1112,8 +1123,106 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.summary.tier).toBe("quiet");
   });
 
+  it("withdraws Dependabot's alerts alone when only Dependabot is off", () => {
+    // The first of the two mixed cases. Swapping the suppression arguments
+    // changed no test while every case that switched Dependabot off also
+    // switched code scanning off, so each of these fixes one feature ON.
+    //
+    // Dependabot off: its alert is neither listed nor counted and cannot give
+    // the tier, though it would be `now` on its own. Code scanning is on, so
+    // its finding is counted, listed, and takes the tier to `soon`.
+    seed("coverage", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "alerts_disabled",
+          codeScanning: { state: "covered", reason: null },
+          secretScanning: { state: "covered", reason: null },
+        },
+      },
+    ] as never[]);
+    seed("rest-org-dependabot", [
+      normalise(makeAlert({ number: 7, epssPercentage: 0.9 })),
+    ] as never[]);
+    seed("rest-org-code-scanning", [
+      normaliseScan(makeCodeScanningAlert({ number: 21 })),
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.notCovered).toBe(false);
+    expect(view.summary.openAlerts).toBe(1);
+    expect(view.summary.tier).toBe("soon");
+    expect(view.alerts).toEqual([]);
+    expect(view.codeScanning.map((c) => c.number)).toEqual([21]);
+  });
+
+  it("withdraws the code scanning findings alone when only the scanner is off", () => {
+    // The mirror. Code scanning off: its finding is neither listed nor
+    // counted. Dependabot is on, and its high-EPSS alert still takes the
+    // repository to `now` - which is what proves the two sets are not one.
+    seed("coverage", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "covered",
+          codeScanning: { state: "unreachable", reason: NOT_ACCESSIBLE },
+          secretScanning: { state: "covered", reason: null },
+        },
+      },
+    ] as never[]);
+    seed("rest-org-dependabot", [
+      normalise(makeAlert({ number: 7, epssPercentage: 0.9 })),
+    ] as never[]);
+    seed("rest-org-code-scanning", [
+      normaliseScan(makeCodeScanningAlert({ number: 21 })),
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.notCovered).toBe(false);
+    expect(view.summary.openAlerts).toBe(1);
+    expect(view.summary.tier).toBe("now");
+    expect(view.alerts.map((a) => a.number)).toEqual([7]);
+    expect(view.codeScanning).toEqual([]);
+  });
+
+  it("falls back to BOTH lanes' confirmations when no item survives", () => {
+    // Every finding is off the default branch, so the queue derives none and
+    // the header falls back to what the lanes confirmed. Reading the
+    // Dependabot confirmation alone reported `0` above a table listing three.
+    seed("rest-org-dependabot", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", openAlerts: 0, worstSeverity: null },
+      },
+    ] as never[]);
+    seed("rest-org-code-scanning", [
+      ...[7, 8, 9].map((number) =>
+        normaliseScan(
+          makeCodeScanningAlert({ number, ref: "refs/pull/1/merge" }),
+        ),
+      ),
+      summariseScanRepo(REPO, [
+        makeCodeScanningAlert({ number: 7, ref: "refs/pull/1/merge" }),
+        makeCodeScanningAlert({ number: 8, ref: "refs/pull/1/merge" }),
+        makeCodeScanningAlert({ number: 9, ref: "refs/pull/1/merge" }),
+      ]),
+    ] as never[]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.codeScanning).toHaveLength(3);
+    expect(view.summary.openAlerts).toBe(3);
+    expect(view.summary.worstSeverity).toBe("high");
+  });
+
   it("keeps both reasons when two features are off for different ones", () => {
     // Neither may be dropped, and each is named because the two disagree.
+    // The section is NOT suppressed here: code scanning is still on, so
+    // there is a number to give, and the two reasons ride beside it (#156).
     const body = "Secret scanning is disabled on this repository.";
     seed("coverage", [
       {
@@ -1129,7 +1238,7 @@ describe("the per-repository view (CAP-7)", () => {
 
     const view = buildRepoView(store, REPO, NOW, DEPS);
 
-    expect(view.notCovered).toBe(true);
+    expect(view.notCovered).toBe(false);
     expect(view.coverageReasons).toEqual([
       "Dependabot alerts: switched off for this repository",
       `secret scanning: ${body}`,
@@ -1167,7 +1276,15 @@ describe("the per-repository view (CAP-7)", () => {
     seed("coverage", [
       {
         subject: { type: "repository_coverage", key: "no42-org/twiki" },
-        payload: { repo: "no42-org/twiki", state: "alerts_disabled" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "alerts_disabled",
+          // Every feature confirmed off, in the states a real probe reaches:
+          // code scanning has no `feature_off` mapping at all, so GitHub
+          // refusing the endpoint is what an off scanner looks like here.
+          codeScanning: { state: "unreachable", reason: NOT_ACCESSIBLE },
+          secretScanning: { state: "feature_off", reason: SECRETS_OFF },
+        },
       },
     ] as never[]);
     seed("rest-org-dependabot", [
@@ -1182,6 +1299,243 @@ describe("the per-repository view (CAP-7)", () => {
     // A zero beside "not covered" invites the reader to believe it (AD-28).
     expect(view.notCovered).toBe(true);
     expect(view.summary.openAlerts).toBeNull();
+  });
+});
+
+describe("the code scanning rows on the repository page (#156)", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const seedScans = (
+    alerts: Parameters<typeof makeCodeScanningAlert>[0][],
+    withConfirmation = true,
+  ) => {
+    const built = alerts.map((a) => makeCodeScanningAlert(a));
+    const r = store.beginRun({
+      lane: "rest-org-code-scanning",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      ...built.map(normaliseScan),
+      ...(withConfirmation ? [summariseScanRepo(REPO, built)] : []),
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "scan-page-"));
+    store = SqliteStore.openForWrite(join(dir, "p.db"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("lists every stored finding with its ref, including the ones the queue declines", () => {
+    // The whole list, not one cell of it. The queue ranks only the
+    // default-branch finding; this page lists both, and the ref is what says
+    // why one of them is not in the queue.
+    seedScans([
+      { number: 7, ref: "refs/pull/7/merge", tool: "Trivy" },
+      {
+        number: 21,
+        ref: "refs/heads/main",
+        tool: "Trivy",
+        securitySeverity: "critical",
+        ruleId: "CVE-2026-31789",
+      },
+    ]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.codeScanning).toEqual([
+      {
+        number: 7,
+        severity: "high",
+        tool: "Trivy",
+        ruleId: "CVE-2026-0002",
+        ref: "refs/pull/7/merge",
+        onDefaultBranch: false,
+        htmlUrl: "https://github.com/no42-org/twiki/security/code-scanning/7",
+        freshness: "fresh",
+        age: "5m ago",
+      },
+      {
+        number: 21,
+        severity: "critical",
+        tool: "Trivy",
+        ruleId: "CVE-2026-31789",
+        ref: "refs/heads/main",
+        onDefaultBranch: true,
+        htmlUrl: "https://github.com/no42-org/twiki/security/code-scanning/21",
+        freshness: "fresh",
+        age: "5m ago",
+      },
+    ]);
+    expect(view.codeScanningAttested).toBe(true);
+    // Only the default-branch one reached the queue, so only it counts.
+    expect(view.summary.openAlerts).toBe(1);
+  });
+
+  it("says a finding is unattested while nothing has confirmed the repository", () => {
+    // Rows without a confirmation: a partial sweep stored them and vouched
+    // for nothing. The badge must not claim an attestation nobody made.
+    seedScans([{ number: 21 }], false);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.codeScanning).toHaveLength(1);
+    expect(view.codeScanningAttested).toBe(false);
+  });
+
+  it("counts a stored row it cannot read rather than dropping it", () => {
+    const r = store.beginRun({
+      lane: "rest-org-code-scanning",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "code_scanning_alert", key: "no42-org/twiki#9" },
+        payload: { number: 9, repo: "no42-org/twiki", severity: 3 },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.codeScanning).toEqual([]);
+    expect(view.unreadable).toBe(1);
+  });
+
+  it("renders the findings table under the Security heading, ref and all", async () => {
+    seedScans([
+      {
+        number: 21,
+        ref: "refs/heads/main",
+        tool: "Trivy",
+        securitySeverity: "critical",
+        ruleId: "CVE-2026-31789",
+      },
+      { number: 7, ref: "refs/pull/7/merge", tool: "zizmor" },
+    ]);
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+
+    const html = await (await app.request("/repo/no42-org/twiki")).text();
+
+    const fresh =
+      '<td role="cell"><span class="lbl hid">Last confirmed</span>' +
+      '<span class="badge fresh" title="5m ago">fresh \u00B7 5m ago</span></td>';
+    // The link carries the row's OWN number: a constant href let a renderer
+    // put one row's link on another and pass.
+    const link = (n: number) =>
+      `<a href="https://github.com/no42-org/twiki/security/code-scanning/${n}"` +
+      ' target="_blank" rel="noopener noreferrer">' +
+      `#${n}<span class="ext" aria-hidden="true">\u202F\u2197</span>` +
+      '<span class="sr-only">, opens GitHub in a new tab</span></a>';
+    expect(html).toContain(
+      '<table class="cards" role="table"><thead role="rowgroup"><tr role="row">' +
+        '<th scope="col" role="columnheader">Code scanning</th>' +
+        '<th scope="col" role="columnheader">Severity</th>' +
+        '<th scope="col" role="columnheader">Tool</th>' +
+        '<th scope="col" role="columnheader">Ref</th>' +
+        '<th scope="col" role="columnheader">Last confirmed</th>' +
+        '</tr></thead><tbody role="rowgroup">' +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Code scanning</span>${link(7)} \u00B7 CVE-2026-0002</td>` +
+        '<td role="cell"><span class="lbl">Severity</span>high</td>' +
+        '<td role="cell"><span class="lbl">Tool</span>zizmor</td>' +
+        '<td role="cell"><span class="lbl">Ref</span>refs/pull/7/merge (not ranked)</td>' +
+        `${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Code scanning</span>${link(21)} \u00B7 CVE-2026-31789</td>` +
+        '<td class="crit" role="cell"><span class="lbl">Severity</span>critical</td>' +
+        '<td role="cell"><span class="lbl">Tool</span>Trivy</td>' +
+        '<td role="cell"><span class="lbl">Ref</span>refs/heads/main</td>' +
+        `${fresh}</tr>` +
+        "</tbody></table>",
+    );
+    // One section, one count: the heading speaks for the rows beneath it.
+    expect(html).toContain('<span class="shown">2 shown</span>');
+  });
+
+  it("says code scanning is unconfirmed while nothing has swept it", async () => {
+    // The heading attests the Dependabot lane alone, by design. With no
+    // findings AND no confirmation, an empty Security section would read as
+    // a measured zero for code scanning; this note is what stops it (AD-28).
+    const r = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", openAlerts: 0, worstSeverity: null },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+
+    const html = await (await app.request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain(
+      '<p class="attest">no open alerts or code scanning findings in this repository</p>' +
+        '<p class="attest">code scanning: not confirmed by any completed sweep</p>',
+    );
+  });
+
+  it("drops the note once a sweep has confirmed the repository", async () => {
+    seedScans([]);
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+
+    const html = await (await app.request("/repo/no42-org/twiki")).text();
+
+    // A confirmation and no findings: `0`, and it means zero.
+    expect(html).not.toContain("code scanning: not confirmed");
+  });
+
+  it("badges an unconfirmed finding as unconfirmed, never with a freshness word", async () => {
+    seedScans([{ number: 21 }], false);
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+
+    const html = await (await app.request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain(
+      '<td role="cell"><span class="lbl hid">Last confirmed</span>' +
+        '<span class="badge unknown">unconfirmed</span></td>',
+    );
   });
 });
 
@@ -1320,7 +1674,15 @@ describe("the per-repository page", () => {
     store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
       {
         subject: { type: "repository_coverage", key: "no42-org/twiki" },
-        payload: { repo: "no42-org/twiki", state: "alerts_disabled" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "alerts_disabled",
+          // Every feature confirmed off, in the states a real probe reaches:
+          // code scanning has no `feature_off` mapping at all, so GitHub
+          // refusing the endpoint is what an off scanner looks like here.
+          codeScanning: { state: "unreachable", reason: NOT_ACCESSIBLE },
+          secretScanning: { state: "feature_off", reason: SECRETS_OFF },
+        },
       },
       normalise(makeAlert({ number: 7 })),
     ] as never[]);
@@ -1336,7 +1698,9 @@ describe("the per-repository page", () => {
     // no table follows it.
     expect(html).toContain(
       '<h2 id="security">Security <span class="badge unknown" title="never collected">never collected</span></h2>' +
-        '<p class="attest">Dependabot alerts: switched off for this repository</p>' +
+        '<p class="attest">Dependabot alerts: switched off for this repository' +
+        ` \u00B7 code scanning: ${NOT_ACCESSIBLE}` +
+        ` \u00B7 secret scanning: ${SECRETS_OFF}</p>` +
         '<h2 id="ci">',
     );
     // The stale row is not listed beneath the suppression.
@@ -1360,7 +1724,7 @@ describe("the per-repository page", () => {
         payload: {
           repo: "no42-org/twiki",
           state: "alerts_disabled",
-          codeScanning: { state: "covered", reason: null },
+          codeScanning: { state: "unreachable", reason: NOT_ACCESSIBLE },
           secretScanning: { state: "feature_off", reason: body },
         },
       },
@@ -1369,15 +1733,16 @@ describe("the per-repository page", () => {
 
     const html = await (await app().request("/repo/no42-org/twiki")).text();
 
-    const both =
+    const all =
       "Dependabot alerts: switched off for this repository" +
+      ` \u00B7 code scanning: ${NOT_ACCESSIBLE}` +
       ` \u00B7 secret scanning: ${body}`;
     expect(html).toContain(
       '<h2 id="security">Security <span class="badge unknown" title="never collected">never collected</span></h2>' +
-        `<p class="attest">${both}</p>`,
+        `<p class="attest">${all}</p>`,
     );
     expect(html).toContain(
-      `<span class="uncovered">not covered: ${both}</span>`,
+      `<span class="uncovered">not covered: ${all}</span>`,
     );
   });
 

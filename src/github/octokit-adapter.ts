@@ -5,6 +5,7 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { NOT_APPLICABLE } from "../core/rank.js";
 import { redact } from "../core/redact.js";
 import { newestStableTag, parseDependency } from "../core/semver.js";
 import type {
@@ -25,6 +26,7 @@ import { installationTokenGen, withRequestDiscipline } from "./discipline.js";
 import type {
   AccountKind,
   AppIdentity,
+  CodeScanningAlertPage,
   DependabotAccess,
   FeatureProbe,
   FileAtRef,
@@ -35,6 +37,7 @@ import type {
   InstallationRepo,
   IssuePage,
   OrgAlertPage,
+  RawCodeScanningAlert,
   RawDependabotAlert,
   RawIssue,
   RawPullRequest,
@@ -46,6 +49,7 @@ import type {
   ReleaseState,
   RequestValidator,
   ReviewRequestPage,
+  UnlistedRepo,
   UpdatePrPage,
   WorkflowRunPage,
 } from "./port.js";
@@ -1609,6 +1613,200 @@ export class OctokitGitHub implements GitHubPort {
     };
   }
 
+  /**
+   * The per-repository fallback for code scanning, one call each.
+   *
+   * The failure triage is the whole of it, and the line it draws is
+   * `answered`, not any particular status or body. GitHub's stable refusals
+   * here are several and none of them names a switched-off feature: `404 no
+   * analysis found` is what a repository with code scanning configured and
+   * nothing analysed yet answers, identically to one that never configured
+   * it; `403 Resource not accessible by integration` is the endpoint being
+   * refused outright; a private repository without Advanced Security answers
+   * something else again. Every one of them is an ANSWER - stable, and the
+   * same words next hour - so every one is a skipped repository rather than
+   * a degraded run. Only a request that reached NO answer is unreachable.
+   *
+   * That is the same line the coverage probes draw and for the same reason:
+   * one repository GitHub refuses steadily would otherwise hold this lane
+   * `partial` for ever, and a permanently partial lane writes no
+   * confirmations, reconciles no tombstones and caches no validator for the
+   * whole installation, every sweep.
+   *
+   * A skipped repository gets no rows AND no confirmation, so its Security
+   * section reads `unconfirmed` rather than a confident zero (AD-28). Both
+   * lists carry what GitHub said, so the run detail can quote it.
+   */
+  private async listCodeScanningAlertsPerRepo(
+    repos: readonly RepoRef[],
+  ): Promise<CodeScanningAlertPage> {
+    const alerts: RawCodeScanningAlert[] = [];
+    let unreadable = 0;
+    let truncated = false;
+    const unreachable: UnlistedRepo[] = [];
+    const skipped: UnlistedRepo[] = [];
+    for (const repo of repos) {
+      const slug = repoSlug(repo);
+      let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
+      try {
+        const gh = await this.client(repo);
+        // The same guarded walk the org path uses: the page cap, the origin
+        // check and the array guard all live in it, and gh.paginate has none
+        // of them.
+        walked = await walkLinkedPages(
+          `code scanning listing for ${slug}`,
+          () =>
+            gh.request("GET /repos/{owner}/{repo}/code-scanning/alerts", {
+              owner: repo.owner,
+              repo: repo.name,
+              state: "open",
+              per_page: 100,
+            }),
+          (url) => gh.request(`GET ${url}`),
+        );
+      } catch (err) {
+        // Translated by the probe translator that already owns these bodies,
+        // and read for `answered` alone: WHICH refusal it was decides the
+        // words we quote, never whether the sweep degrades. Requiring a
+        // particular state here is how `403 Resource not accessible by
+        // integration` - which translates to `unreachable`, answered - once
+        // counted as a failure and trapped the whole installation partial.
+        const probe = translateCodeScanningProbe(err);
+        const unlisted = {
+          repo,
+          // GitHub's own words, already redacted and bounded by the
+          // translator, so the run detail quotes what came back rather than
+          // a sentence we invented for it.
+          reason: probe.reason,
+        };
+        (probe.answered ? skipped : unreachable).push(unlisted);
+        continue;
+      }
+      truncated = truncated || walked.truncated;
+      for (const item of walked.items) {
+        // knownRepo, because this payload carries no `repository` key at
+        // all: verified against the recorded per-repository fixture, which
+        // is the shape the Dependabot fan-out once shipped broken on.
+        const alert = toCodeScanningAlert(item, repo);
+        if (alert === null) unreadable++;
+        else alerts.push(alert);
+      }
+    }
+    // No validator: each repository carries its own ETag, and one cached
+    // value cannot describe a set of them.
+    return {
+      alerts,
+      unreadable,
+      unreachable,
+      skipped,
+      notModified: false,
+      truncated,
+      validator: null,
+    };
+  }
+
+  async listCodeScanningAlerts(
+    org: string,
+    repos: readonly RepoRef[] = [],
+    cached: RequestValidator | null = null,
+  ): Promise<CodeScanningAlertPage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listCodeScanningAlerts needs an org resolver; this client was built without one",
+      );
+    }
+    // Resolved before the kind is read, for the reason the Dependabot
+    // listing states: the kind map is filled by this resolver's own lazy
+    // re-resolve, and reading it first routes a new installation to the org
+    // endpoint for ever.
+    const gh = await this.orgOctokitFor(org);
+    if (this.accountKindFor(org) === "user") {
+      return this.listCodeScanningAlertsPerRepo(repos);
+    }
+
+    // AD-25, the same three rules as every other conditional endpoint here.
+    const tokenGen = await installationTokenGen(gh);
+    const send = sendableValidator(cached, tokenGen);
+    const conditionalHeaders = conditionalHeadersFor(send);
+
+    let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
+    try {
+      walked = await walkLinkedPages(
+        `code scanning listing for ${org}`,
+        () =>
+          gh.request("GET /orgs/{org}/code-scanning/alerts", {
+            org,
+            state: "open",
+            per_page: 100,
+            headers: conditionalHeaders,
+          }),
+        (url) => gh.request(`GET ${url}`),
+      );
+    } catch (err) {
+      if ((err as { status?: number }).status === 304) {
+        if (send) {
+          return {
+            alerts: [],
+            unreadable: 0,
+            unreachable: [],
+            skipped: [],
+            notModified: true,
+            truncated: false,
+            validator: { ...send },
+          };
+        }
+        // A broken proxy confirming a validator we never sent, not an empty
+        // page. Same posture and same legible message as the alert listing.
+        throw new Error(
+          `code scanning listing for ${org} answered 304 to an unconditional request`,
+        );
+      }
+      throw err;
+    }
+
+    // Deliberately unfiltered, and deliberately regardless of ref. Which
+    // repositories are watched is AD-10's rule and belongs to the lane;
+    // which alerts are on the default branch is the queue builder's, so the
+    // repository page can list what the queue declines to rank.
+    const alerts: RawCodeScanningAlert[] = [];
+    let unreadable = 0;
+    for (const item of walked.items) {
+      const alert = toCodeScanningAlert(item);
+      if (alert === null) unreadable++;
+      else alerts.push(alert);
+    }
+    const firstEtag =
+      typeof walked.firstPage.headers.etag === "string"
+        ? walked.firstPage.headers.etag
+        : null;
+    const firstLastModified =
+      typeof walked.firstPage.headers["last-modified"] === "string"
+        ? walked.firstPage.headers["last-modified"]
+        : null;
+    return {
+      alerts,
+      unreadable,
+      // The org path reads one listing or none.
+      unreachable: [],
+      skipped: [],
+      notModified: false,
+      truncated: walked.truncated,
+      // Only a single-page, untruncated listing earns a validator: each page
+      // carries its own ETag, and a 304 on page one says nothing about the
+      // pages behind it.
+      validator:
+        walked.pages === 1 && !walked.truncated
+          ? validatorFrom(
+              {
+                etag: firstEtag ?? undefined,
+                "last-modified": firstLastModified ?? undefined,
+              },
+              tokenGen,
+            )
+          : null,
+    };
+  }
+
   async listRepoWorkflowRuns(
     repo: RepoRef,
     cached: RequestValidator | null = null,
@@ -2121,6 +2319,63 @@ function toDependabotAlert(
     epssPercentile: a.security_advisory?.epss?.percentile ?? null,
     relationship: a.dependency?.relationship ?? null,
     scope: a.dependency?.scope ?? null,
+    htmlUrl: a.html_url ?? null,
+    // Null, not "": an empty string reaches core/stamp.ts and throws there
+    // instead of being visibly absent here.
+    createdAt: a.created_at ?? null,
+  };
+}
+
+/**
+ * Maps one code scanning alert payload (#156).
+ *
+ * Defensive in the two places this endpoint is actually awkward, both
+ * measured live on 2026-09-09:
+ *
+ *   `rule.security_severity_level` is ABSENT on some alerts, not null. The
+ *   three zizmor findings carry no such key, and `?? NOT_APPLICABLE` is what
+ *   keeps that from reading as a graded severity downstream. `??` rather than
+ *   a truthiness check, deliberately: an empty string is not a level either,
+ *   but it is also not something GitHub has ever sent, and guessing would
+ *   hide the day it does.
+ *
+ *   `repository` is present on the org listing and ABSENT on the
+ *   per-repository one, exactly as on the Dependabot payload, so the caller's
+ *   own RepoRef is the fallback. Without it every alert from the
+ *   personal-account fan-out fails to map and the lane reports a confident
+ *   zero with a pile of unreadable payloads.
+ */
+function toCodeScanningAlert(
+  raw: unknown,
+  /** The repository the caller asked about, when the payload cannot say. */
+  knownRepo?: RepoRef,
+): RawCodeScanningAlert | null {
+  const a = raw as {
+    number?: number;
+    state?: string | null;
+    html_url?: string;
+    created_at?: string;
+    repository?: { name?: string; owner?: { login?: string } };
+    rule?: { id?: string; security_severity_level?: string | null };
+    tool?: { name?: string };
+    most_recent_instance?: { ref?: string };
+  };
+  const owner = a.repository?.owner?.login ?? knownRepo?.owner;
+  const name = a.repository?.name ?? knownRepo?.name;
+  if (typeof a.number !== "number" || !owner || !name) return null;
+
+  return {
+    number: a.number,
+    repo: { owner, name },
+    // Null stays null: GitHub's schema permits it and a default of "open"
+    // would put a word in GitHub's mouth about the one field this lane
+    // deliberately does not act on.
+    state: a.state ?? null,
+    // Absent and null both land here, which is the whole point.
+    securitySeverity: a.rule?.security_severity_level ?? NOT_APPLICABLE,
+    ruleId: a.rule?.id ?? null,
+    tool: a.tool?.name ?? null,
+    ref: a.most_recent_instance?.ref ?? null,
     htmlUrl: a.html_url ?? null,
     // Null, not "": an empty string reaches core/stamp.ts and throws there
     // instead of being visibly absent here.

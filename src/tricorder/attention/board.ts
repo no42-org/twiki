@@ -4,7 +4,13 @@
  */
 
 import type { CoverageFeatures } from "../../core/coverage.js";
-import { coverageNotes, isOff, joinNotes } from "../../core/coverage.js";
+import {
+  coverageNotes,
+  FEATURE_LABELS,
+  isOff,
+  joinNotes,
+  securityStanding,
+} from "../../core/coverage.js";
 import { compareRankings } from "../../core/rank.js";
 import type { SeverityReading } from "../../core/severity.js";
 import { watchKey } from "../../core/slug.js";
@@ -86,12 +92,13 @@ export interface Chip {
   /**
    * What this count does NOT speak for, on Security only; null everywhere else.
    *
-   * Nothing collects code scanning or secret scanning findings yet, so the
-   * Security number is the Dependabot alert count and only the Dependabot
-   * feature can withdraw it. A scanner that is off, or that GitHub gave no
-   * answer for, is a caveat carried BESIDE the number - never a reason to
-   * withhold it, which would hide real alerts behind an unrelated feature's
-   * state and, since `no analysis found` is permanent, never give them back.
+   * The number counts every security-topic item of every feature GitHub
+   * confirmed is on, so a feature that is off, or that GitHub gave no answer
+   * for, is a caveat carried BESIDE the number - never a reason to withhold
+   * it, which would hide real findings behind an unrelated feature's state
+   * and, since `no analysis found` is permanent, never give them back. Only
+   * all of them being off leaves nothing to count, and that is `not-covered`
+   * rather than a caveat (#152, #156).
    */
   caveat: string | null;
 }
@@ -328,6 +335,16 @@ export function buildBoard(
   // unconfirmed or confirm one the sweep never reached.
   const actions = actionsConfirmations(store);
 
+  // Which repositories the code scanning lane has confirmed. Presence only,
+  // the same question the repository page asks of the same rows, so the chip
+  // and the page cannot disagree about whether anything swept a repository.
+  const sweptForCodeScanning = new Set(
+    store
+      .currentByType("repository_code_scanning")
+      .filter((v) => v.state === "present")
+      .map((v) => v.subject.key),
+  );
+
   // One read of collection health for the whole page: the tile warnings and
   // the table at the foot come from it (#127). A lane whose latest full
   // sweep failed, stalled or came back partial warns on its topic's tile,
@@ -407,19 +424,21 @@ export function buildBoard(
       coverageFeatures(value.payload as CoverageObservation),
     );
   }
-  // Suppressed on POSITIVE evidence that DEPENDABOT is not covered, and
-  // nothing else. The alerts this drops are Dependabot's, so only Dependabot's
-  // own state may drop them: a scanner being off says nothing about whether
-  // the alert count is real, and suppressing on it would hide live alerts, and
-  // the tier they earned, behind an unrelated feature (#152).
+  // Per feature, on POSITIVE evidence about THAT feature and nothing else.
+  // The items each set drops are that feature's own, so only its own state
+  // may drop them: a scanner being off says nothing about whether the
+  // Dependabot count is real, and suppressing on it would hide live alerts,
+  // and the tier they earned, behind an unrelated feature (#152, #156).
   //
   // `unknown` is not such evidence either: blanking on it would let one
   // rate-limited probe wipe correct counts off the page (AD-28). Decided
-  // before tiering, so the alert nobody may count cannot also be the reason a
+  // before tiering, so an item nobody may count cannot also be the reason a
   // row is `now`.
-  const notCovered = new Set<string>();
+  const dependabotOff = new Set<string>();
+  const codeScanningOff = new Set<string>();
   for (const [slug, features] of coverage) {
-    if (isOff(features.dependabot.state)) notCovered.add(slug);
+    if (isOff(features.dependabot.state)) dependabotOff.add(slug);
+    if (isOff(features.code_scanning.state)) codeScanningOff.add(slug);
   }
 
   const { byRepo, queue } = attentionByRepo(
@@ -427,7 +446,8 @@ export function buildBoard(
     watched,
     now,
     deps,
-    notCovered,
+    dependabotOff,
+    codeScanningOff,
   );
 
   // Nothing has ever been collected. No count on this page would be a
@@ -526,26 +546,51 @@ export function buildBoard(
 
     const features = coverage.get(slug);
     const confirmation = confirmations.get(slug);
-    // Precedence per AD-35, keyed on Dependabot alone. The number is the
-    // Dependabot alert count until Stories 3.3 and 3.4 collect the scanners'
-    // findings, so only Dependabot's state can withdraw it: off reads `not
-    // covered`, an answer we could not read reads `unconfirmed`, and anything
-    // the scanners said rides along as a caveat beside the count (#152).
-    // Keying on one fact is also what makes this chip and the repository page
-    // agree by construction.
+    // Precedence per AD-35. The number now counts every security-topic item
+    // of every feature GitHub confirmed is on, so only ALL of them being off
+    // withdraws it: `not covered` needs both Dependabot and code scanning
+    // off, a Dependabot answer we could not read still reads `unconfirmed`,
+    // and each off feature's own reason rides along as a note beside the
+    // count rather than replacing it (#156). Deciding it here, once, is what
+    // makes this chip and the repository page agree by construction.
     // Everything the row says, in one list. Under `not covered` it IS the
     // reason, so it is not repeated as a caveat; anywhere else it is the
-    // caveat, and there it holds only what the scanners said, because a
-    // covered Dependabot contributes no note.
+    // caveat, and there it holds only what a feature actually said, because a
+    // covered feature contributes no note.
+    // What coverage says about each feature. Under `not covered` this IS the
+    // reason, so it is not repeated as a caveat; anywhere else it is one.
     const notes = features === undefined ? [] : coverageNotes(features);
-    const caveat = notes.length === 0 ? null : joinNotes(notes);
+    // What the COUNT does not speak for, which is a different question and
+    // only asked where there is a count. The count spans both kinds while
+    // the confirmation gating it below is the Dependabot lane's alone, so a
+    // repository the code scanning lane never swept would otherwise show a
+    // confident total. Withheld when coverage says code scanning is off,
+    // because its own reason is already in `notes`.
+    const countNotes = [
+      ...notes,
+      ...(sweptForCodeScanning.has(slug) || codeScanningOff.has(slug)
+        ? []
+        : [`${FEATURE_LABELS.code_scanning}: ${NO_SWEEP}`]),
+    ];
+    const caveat = countNotes.length === 0 ? null : joinNotes(countNotes);
+    // Story 3.2's precedence, generalised over every feature (#156): a
+    // feature confirmed on means its items are a real number and every other
+    // feature's answer is a note beside it; nothing on and something unknown
+    // is `unconfirmed`; nothing on and nothing unknown is `not covered`.
+    const coverageStanding =
+      features === undefined ? "counted" : securityStanding(features);
     let security: Chip;
-    if (notCovered.has(slug) && features !== undefined) {
+    if (coverageStanding === "not_covered") {
       security = absent("not-covered", joinNotes(notes));
-    } else if (features?.dependabot.state === "unknown") {
-      // The Dependabot union carries no message of its own, so there is never
-      // a body to quote here; the constant is the whole reason.
-      security = absent("unconfirmed", NO_ALERT_ANSWER, caveat);
+    } else if (coverageStanding === "unconfirmed") {
+      // Whatever GitHub said about the features it did not settle. The
+      // Dependabot union carries no message of its own, so a row whose only
+      // unknown is Dependabot's has no body to quote and falls to the
+      // constant.
+      security = absent(
+        "unconfirmed",
+        notes.length > 0 ? joinNotes(notes) : NO_ALERT_ANSWER,
+      );
     } else if (confirmation !== undefined) {
       sources.push({
         verifiedAt: confirmation.verifiedAt,
@@ -558,7 +603,13 @@ export function buildBoard(
         caveat,
       );
     } else {
-      security = absent("unconfirmed", NO_SWEEP, caveat);
+      // The coverage notes only, never the count's caveat: `caveat` answers
+      // "what does this NUMBER not speak for", and there is no number here.
+      security = absent(
+        "unconfirmed",
+        NO_SWEEP,
+        notes.length === 0 ? null : joinNotes(notes),
+      );
     }
 
     // This repository's OWN confirmation, judged on the Actions lane's own

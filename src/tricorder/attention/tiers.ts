@@ -3,10 +3,12 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { NOT_APPLICABLE } from "../../core/rank.js";
 import type { SeverityReading } from "../../core/severity.js";
-import { worstSeverity } from "../../core/severity.js";
+import { UNKNOWN_SEVERITY, worstSeverity } from "../../core/severity.js";
 import { foldSlug, watchKey } from "../../core/slug.js";
 import { maxTier, type Tier, tier } from "../../core/tier.js";
+import { topicOf } from "../../core/topics.js";
 import type { RepoRef } from "../../core/types.js";
 import type { StorePort } from "../store/port.js";
 import { readReviewRequest } from "./payloads.js";
@@ -47,9 +49,17 @@ export interface RepoAttention {
   overdueReview: { number: number; days: number } | null;
   /** Readable review requests open on this repository. */
   openReviews: number;
-  /** Open alert items in the queue for this repository. */
+  /**
+   * Open SECURITY items in the queue for this repository: Dependabot alerts
+   * and code scanning findings alike (#156).
+   *
+   * Derived from the topic rather than from a list of kinds, so the kind
+   * Story 3.4 adds joins this count by being filed under Security and not by
+   * anyone remembering to edit this line. The name is unchanged because it is
+   * what every surface calls it, and both kinds are alerts.
+   */
   openAlerts: number;
-  /** The worst severity among those alerts, `unknown` when one is unreadable. */
+  /** The worst severity among those items, `unknown` when one is unreadable. */
   worstSeverity: SeverityReading | null;
   /** This repository's queue items, in chain order. */
   items: QueueItem[];
@@ -59,6 +69,11 @@ const DAY_MS = 24 * 60 * 60_000;
 
 const KIND_WORD: Readonly<Record<QueueItem["kind"], string>> = {
   alert: "alert",
+  // Named apart from a Dependabot alert deliberately, even though both count
+  // under Security: the two numbers live in the same repository's `#21` space
+  // and a rationale saying only "alert #21" would send a reader to the wrong
+  // tab.
+  code_scanning: "code scanning alert",
   // The run, not the workflow: the number beside it is the run's, and the
   // workflow's own name is in the explanation the sentence ends with. A kind
   // missing from this table prints `undefined` into the rationale rather
@@ -156,7 +171,7 @@ function judge(
     reason = "no open items";
   }
 
-  const alerts = items.filter((item) => item.kind === "alert");
+  const alerts = items.filter((item) => topicOf(item.kind) === "security");
 
   return {
     tier: repoTier,
@@ -165,11 +180,19 @@ function judge(
     overdueReview: overdue,
     openReviews: reviews.length,
     openAlerts: alerts.length,
-    // A null display severity is one the lane could not recognise, and
-    // worstSeverity already knows what to say about that: `unknown`, never
-    // the lowest word we happen to know (AD-20).
+    // `n/a` first, because it is not a severity at all: worstSeverity reads
+    // any word it does not recognise as `unknown`, so one ungraded code
+    // scanning finding would report a repository holding a real `high` as
+    // `unknown`. The lane's own summariseRepo filters the sentinel out
+    // before this same call, for this same reason.
+    //
+    // A null display survives that filter and still becomes `unknown`: there
+    // IS a severity on that item and we could not read it, which is a gap
+    // and must not read as the lowest word we happen to know (AD-20).
     worstSeverity: worstSeverity(
-      alerts.map((item) => item.displaySeverity ?? "unknown"),
+      alerts
+        .filter((item) => item.displaySeverity !== NOT_APPLICABLE)
+        .map((item) => item.displaySeverity ?? UNKNOWN_SEVERITY),
     ),
     items,
   };
@@ -185,12 +208,18 @@ function judge(
  * count in no tier, no tile and no summary (AD-32). Reads through the store
  * port only; no GitHub call and no write on this path (AD-3).
  *
- * `suppressAlertsFor` names the folded slugs whose alert rows the caller
- * has positive evidence GitHub is no longer watching (AD-28): their alert
- * items are dropped before tiering, so a repository that reads `not
+ * `suppressAlertsFor` names the folded slugs whose DEPENDABOT alert rows the
+ * caller has positive evidence GitHub is no longer watching (AD-28): their
+ * alert items are dropped before tiering, so a repository that reads `not
  * covered` cannot at the same time be `now` because of an alert nobody may
  * count. The update PRs beside them keep the terms they inherited in the
  * queue build; only the alert items go.
+ *
+ * `suppressCodeScanningFor` is the same rule for the same reason, one
+ * feature over (#156). Two sets rather than one, because the two features
+ * are switched off independently: a repository with Dependabot off and code
+ * scanning on still has real findings to count, and a single set would
+ * withdraw both on evidence about either.
  */
 export function attentionByRepo(
   store: StorePort,
@@ -198,6 +227,7 @@ export function attentionByRepo(
   now: Date,
   deps: AttentionDeps,
   suppressAlertsFor: ReadonlySet<string> = new Set(),
+  suppressCodeScanningFor: ReadonlySet<string> = new Set(),
 ): { byRepo: Map<string, RepoAttention>; queue: Queue } {
   const queue = buildQueue(store, now, deps);
 
@@ -206,6 +236,9 @@ export function attentionByRepo(
   for (const item of queue.items) {
     const slug = foldSlug(item.repo);
     if (item.kind === "alert" && suppressAlertsFor.has(slug)) continue;
+    if (item.kind === "code_scanning" && suppressCodeScanningFor.has(slug)) {
+      continue;
+    }
     itemsBySlug.get(slug)?.push(item);
   }
 
@@ -231,6 +264,7 @@ export function repoAttention(
   now: Date,
   deps: AttentionDeps,
   suppressAlertsFor: ReadonlySet<string> = new Set(),
+  suppressCodeScanningFor: ReadonlySet<string> = new Set(),
 ): RepoAttention {
   const { byRepo } = attentionByRepo(
     store,
@@ -238,6 +272,7 @@ export function repoAttention(
     now,
     deps,
     suppressAlertsFor,
+    suppressCodeScanningFor,
   );
   const attention = byRepo.get(watchKey(repo));
   if (attention === undefined) {

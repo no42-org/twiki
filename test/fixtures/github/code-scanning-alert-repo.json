@@ -1,0 +1,55 @@
+{
+  "number": 21,
+  "created_at": "2026-06-19T15:40:13Z",
+  "updated_at": "2026-06-19T22:15:17Z",
+  "url": "https://api.github.com/repos/no42-org/twiki/code-scanning/alerts/21",
+  "html_url": "https://github.com/no42-org/twiki/security/code-scanning/21",
+  "state": "open",
+  "fixed_at": null,
+  "dismissed_by": null,
+  "dismissed_at": null,
+  "dismissed_reason": null,
+  "dismissed_comment": null,
+  "rule": {
+    "id": "CVE-2026-31789",
+    "severity": "error",
+    "description": "openssl: OpenSSL: Heap buffer overflow on 32-bit systems from large X.509 certificate processing",
+    "name": "OsPackageVulnerability",
+    "tags": [
+      "CRITICAL",
+      "security",
+      "vulnerability"
+    ],
+    "full_description": "Issue summary: Converting an excessively large OCTET STRING value to\na hexadecimal string leads to a heap buffer overflow on 32 bit platforms.\n\nImpact summary: A heap buffer overflow may lead to a crash or possibly\nan attacker controlled code execution or other undefined behavior.\n\nIf an attacker can supply a crafted X.509 certificate with an excessively\nlarge OCTET STRING value in extensions such as the Subject Key Identifier\n(SKID) or Authority Key Identifier (AKID) which are being converted to hex,\nthe size of the buffer needed for the result is calculated as multiplication\nof the input length by 3. On 32 bit platforms, this multiplication may overflow\nresulting in the allocation of a smaller buffer and a heap buffer overflow.\n\nApplications and services that print or log contents of untrusted X.509\ncertificates are vulnerable to this issue. As the certificates would have\nto have sizes of over 1 Gigabyte, printing or logging such certificates\nis a fairly unlikely operation and only 32 bit platforms are affe",
+    "help": "**Vulnerability CVE-2026-31789**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|CRITICAL|libssl3|3.0.19-1~deb12u2|[CVE-2026-31789](https://avd.aquasec.com/nvd/cve-2026-31789)|\n\nIssue summary: Converting an excessively large OCTET STRING value to\na hexadecimal string leads to a heap buffer overflow on 32 bit platforms.\n\nImpact summary: A heap buffer overflow may lead to a crash or possibly\nan attacker controlled code execution or other undefined behavior.\n\nIf an attacker can supply a crafted X.509 certificate with an excessively\nlarge OCTET STRING value in extensions such as the Subject Key Identifier\n(SKID) or Authority Key Identifier (AKID) which are being converted to hex,\nthe size of the buffer needed for the result is calculated as multiplication\nof the input length by 3. On 32 bit platforms, this multiplication may overflow\nresulting in the allocation of a smaller buffer and a heap buffer overflow.\n\nApplications and services that print or log contents of untrusted X.509\ncertificates are vulnerable to this issue. As the certificates would have\nto have sizes of over 1 Gigabyte, printing or logging such certificates\nis a fairly unlikely operation and only 32 bit platforms are affected,\nthis issue was assigned Low severity.\n\nThe FIPS modules in 3.6, 3.5, 3.4, 3.3 and 3.0 are not affected by this\nissue, as the affected code is outside the OpenSSL FIPS module boundary.",
+    "help_uri": "https://avd.aquasec.com/nvd/cve-2026-31789",
+    "security_severity_level": "critical"
+  },
+  "tool": {
+    "name": "Trivy",
+    "guid": null,
+    "version": "0.70.0"
+  },
+  "most_recent_instance": {
+    "ref": "refs/heads/main",
+    "analysis_key": ".github/workflows/ci.yml:image-scan",
+    "environment": "{}",
+    "category": ".github/workflows/ci.yml:image-scan",
+    "state": "open",
+    "commit_sha": "8ba910ddaa52d5b484a1dbe53d433b4fc49df1e9",
+    "message": {
+      "text": "Package: libssl3\nInstalled Version: 3.0.18-1~deb12u2\nVulnerability CVE-2026-31789\nSeverity: CRITICAL\nFixed Version: 3.0.19-1~deb12u2\nLink: [CVE-2026-31789](https://avd.aquasec.com/nvd/cve-2026-31789)"
+    },
+    "location": {
+      "path": "library/twiki",
+      "start_line": 1,
+      "end_line": 1,
+      "start_column": 1,
+      "end_column": 1
+    },
+    "classifications": []
+  },
+  "instances_url": "https://api.github.com/repos/no42-org/twiki/code-scanning/alerts/21/instances",
+  "dismissal_approved_by": null,
+  "assignees": []
+}

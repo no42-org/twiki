@@ -89,6 +89,62 @@ export function isOff(state: CoverageState): boolean {
 }
 
 /**
+ * What a Security count may say about a repository, from its coverage row.
+ *
+ * Story 3.2's three-way precedence, generalised from one feature to all of
+ * them (#156):
+ *
+ *   counted        at least one feature is confirmed ON, so its items are a
+ *                  real number, and every other feature's reason rides
+ *                  beside that number as a note rather than replacing it
+ *   unconfirmed    no feature is confirmed on and at least one is unknown,
+ *                  so nothing here is a number and nothing here is a finding
+ *   not_covered    no feature is confirmed on and none is unknown, which
+ *                  leaves every one of them confirmed off
+ *
+ * Read for `covered` rather than for `off`, because the features do NOT answer
+ * symmetrically: code scanning has no mapping to `feature_off` and its absence
+ * is deliberate, because `404 no analysis found` is what a repository with code
+ * scanning configured and nothing analysed yet answers, identically to one that
+ * never configured it. A rule written as "every feature is off" could therefore
+ * never fire, which is exactly what the first form of this rule did.
+ *
+ * Quantified over the features whose findings something actually collects, not
+ * over every feature a coverage row describes. A feature confirmed ON that no
+ * lane sweeps licenses a count it contributes nothing to, which is the same
+ * confident zero one layer over: with secret scanning on, Dependabot off and
+ * code scanning never analysed, "counted" would put a number on a repository
+ * where nothing had looked at anything.
+ */
+export type SecurityStanding = "counted" | "unconfirmed" | "not_covered";
+
+/**
+ * The features a lane sweeps for findings today.
+ *
+ * Secret scanning is absent because nothing collects it yet; Story 3.4 adds
+ * the lane and this list is what it edits. A feature belongs here when its
+ * findings can reach the queue, never merely because coverage describes it.
+ */
+const COUNTED_FEATURES: readonly CoverageFeature[] = [
+  "dependabot",
+  "code_scanning",
+];
+
+export function securityStanding(features: CoverageFeatures): SecurityStanding {
+  if (COUNTED_FEATURES.some((feature) => isCovered(features[feature].state))) {
+    return "counted";
+  }
+  if (
+    COUNTED_FEATURES.some((feature) => features[feature].state === "unknown")
+  ) {
+    return "unconfirmed";
+  }
+  // Nothing on and nothing unknown leaves every counted feature off, because
+  // the states partition: isOff is exactly "not covered and not unknown".
+  return "not_covered";
+}
+
+/**
  * The reason to show for one feature: GitHub's words where it gave any, ours
  * where it did not.
  *

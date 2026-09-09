@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import type { CodeScanningAlertObservation } from "../collect/code-scanning.js";
 import type { AlertObservation } from "../collect/dependabot-alerts.js";
 import type { IssueObservation } from "../collect/issues.js";
 import type { ReviewRequestObservation } from "../collect/review-requests.js";
@@ -48,6 +49,33 @@ export function readAlert(payload: unknown): AlertObservation | null {
     return null;
   }
   return a;
+}
+
+/**
+ * The code scanning shape check, same posture as readAlert: counted, not
+ * guessed at.
+ *
+ * `severity` is a required string because the mapper always writes one - the
+ * `n/a` sentinel where GitHub graded nothing - so a row missing it is a row
+ * this system did not write, and the queue must not rank it. `state` is the
+ * one field allowed to be null: GitHub's schema permits it, this estate has
+ * never produced one, and nothing on the read side acts on it.
+ */
+export function readCodeScanningAlert(
+  payload: unknown,
+): CodeScanningAlertObservation | null {
+  const c = payload as CodeScanningAlertObservation | null | undefined;
+  if (!c || typeof c !== "object") return null;
+  if (typeof c.number !== "number" || typeof c.repo !== "string") return null;
+  if (typeof c.severity !== "string") return null;
+  if (!stringOrNull(c.state)) return null;
+  if (!stringOrNull(c.tool)) return null;
+  if (!stringOrNull(c.ruleId)) return null;
+  // The default-branch condition reads this and nothing else, so a row that
+  // cannot say which ref it is on is one the queue cannot place.
+  if (!stringOrNull(c.ref)) return null;
+  if (!stringOrNull(c.htmlUrl)) return null;
+  return c;
 }
 
 /**

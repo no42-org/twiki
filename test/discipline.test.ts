@@ -999,6 +999,138 @@ describe("the conditional alert listing", () => {
   });
 });
 
+describe("the conditional code scanning listing (#156)", () => {
+  // The sibling of "the conditional alert listing" above, case for case. The
+  // whole 304 path of this endpoint was exercised by nothing: the lane tests
+  // drive a fake that fabricates `notModified` itself, so breaking this
+  // branch left the suite green while production would confirm zeros and
+  // tombstone every finding.
+  const EXPIRES = "2026-08-18T08:00:00Z";
+
+  function stubGh(
+    handler: (
+      route: string,
+      options: Record<string, unknown>,
+    ) => { data: unknown; headers: Record<string, string> },
+  ) {
+    const seen: Record<string, unknown>[] = [];
+    const gh = {
+      auth: async () => ({ token: "ghs_x", expiresAt: EXPIRES }),
+      request: async (route: string, options: Record<string, unknown> = {}) => {
+        seen.push({ route, ...options });
+        return handler(route, options);
+      },
+    };
+    return { gh: gh as unknown as Octokit, seen };
+  }
+
+  const scanItem = {
+    number: 1,
+    state: "open",
+    rule: { id: "CVE-2026-31789", security_severity_level: "critical" },
+    tool: { name: "Trivy" },
+    most_recent_instance: { ref: "refs/heads/main" },
+    repository: { name: "twiki", owner: { login: "no42-org" } },
+  };
+
+  const adapterOn = (gh: Octokit) =>
+    new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+  it("sends the validator only when the token generation still matches", async () => {
+    const { gh, seen } = stubGh(() => ({ data: [scanItem], headers: {} }));
+    const adapter = adapterOn(gh);
+
+    await adapter.listCodeScanningAlerts("no42-org", [], {
+      etag: 'W/"a"',
+      lastModified: null,
+      tokenGen: EXPIRES,
+    });
+    await adapter.listCodeScanningAlerts("no42-org", [], {
+      etag: 'W/"a"',
+      lastModified: null,
+      tokenGen: "some-older-token",
+    });
+
+    const headersOf = (i: number) =>
+      (seen[i] as { headers?: Record<string, string> }).headers ?? {};
+    expect(headersOf(0)["if-none-match"]).toBe('W/"a"');
+    // Cold: GitHub's ETags vary with the Authorization header, so a
+    // validator from another token is a guaranteed miss.
+    expect(headersOf(1)["if-none-match"]).toBeUndefined();
+  });
+
+  it("returns notModified on a 304, echoing the validator it sent", async () => {
+    const { gh } = stubGh(() => {
+      throw Object.assign(new Error("Not modified"), { status: 304 });
+    });
+
+    const page = await adapterOn(gh).listCodeScanningAlerts("no42-org", [], {
+      etag: 'W/"a"',
+      lastModified: null,
+      tokenGen: EXPIRES,
+    });
+
+    expect(page.notModified).toBe(true);
+    expect(page.alerts).toEqual([]);
+    expect(page.validator?.etag).toBe('W/"a"');
+    expect(page.skipped).toEqual([]);
+    expect(page.unreachable).toEqual([]);
+  });
+
+  it("answers a 304 to an unconditional request with a legible error", async () => {
+    // Only a conditional request may be answered 304. Treating an
+    // unsolicited one as notModified would confirm every stored finding
+    // against a validator nobody sent, and skip the tombstone pass.
+    const { gh } = stubGh(() => {
+      throw Object.assign(new Error("Not modified"), { status: 304 });
+    });
+
+    await expect(
+      adapterOn(gh).listCodeScanningAlerts("no42-org", []),
+    ).rejects.toThrow(/unconditional/);
+  });
+
+  it("caches a validator only for a single, untruncated page", async () => {
+    const single = stubGh(() => ({
+      data: [scanItem],
+      headers: { etag: 'W/"page1"' },
+    }));
+    const paged = stubGh(() => ({
+      data: [scanItem],
+      headers: {
+        etag: 'W/"page1"',
+        link: '<https://api.github.com/x?page=2>; rel="next"',
+      },
+    }));
+
+    const one = await adapterOn(single.gh).listCodeScanningAlerts(
+      "no42-org",
+      [],
+    );
+    const many = await adapterOn(paged.gh).listCodeScanningAlerts(
+      "no42-org",
+      [],
+    );
+
+    expect(one.validator).toEqual({
+      etag: 'W/"page1"',
+      lastModified: null,
+      tokenGen: EXPIRES,
+    });
+    // Each page carries its own ETag, and a 304 on page one says nothing
+    // about the pages behind it. The self-referential link also truncates at
+    // the cap, and a truncated listing may never be revalidated against
+    // either: a later 304 would confirm the incomplete set as the whole
+    // answer.
+    expect(many.truncated).toBe(true);
+    expect(many.validator).toBeNull();
+  });
+});
+
 describe("parsing the Link header's next target", () => {
   it("handles the shapes a naive split gets wrong", () => {
     // GitHub's own emission: quoted rel, first parameter.
