@@ -21,6 +21,7 @@ import type {
   KevFetchOutcome,
 } from "../src/enrich/port.js";
 import type {
+  CodeScanningAlertPage,
   DependabotAccess,
   FeatureProbe,
   FileAtRef,
@@ -28,6 +29,7 @@ import type {
   GitHubReadPort,
   IssuePage,
   OrgAlertPage,
+  RawCodeScanningAlert,
   RawDependabotAlert,
   RawIssue,
   RawPullRequest,
@@ -39,6 +41,7 @@ import type {
   ReleaseState,
   RequestValidator,
   ReviewRequestPage,
+  UnlistedRepo,
   UpdatePrPage,
   WorkflowRunPage,
 } from "../src/github/port.js";
@@ -92,6 +95,36 @@ export function makeFacts(partial: Partial<RepoFacts> = {}): RepoFacts {
       unreadableSources: [],
     },
     prs: [],
+    ...partial,
+  };
+}
+
+/**
+ * A code scanning alert fixture with sensible defaults.
+ *
+ * `securitySeverity` defaults to a graded value, so a test that means "the
+ * tool graded nothing" has to say `NOT_APPLICABLE` out loud rather than get
+ * it by omission.
+ */
+export function makeCodeScanningAlert(
+  partial: Partial<RawCodeScanningAlert> = {},
+): RawCodeScanningAlert {
+  // Derived from the repository and the number, as the real payload's own
+  // html_url is. A constant here made every row's link identical, so a
+  // rendered-HTML assertion over two rows could not tell them apart and a
+  // renderer putting one row's link on another passed.
+  const number = partial.number ?? 1;
+  const repo = partial.repo ?? { owner: "no42-org", name: "twiki" };
+  return {
+    number,
+    repo,
+    state: "open",
+    securitySeverity: "high",
+    ruleId: "CVE-2026-0002",
+    tool: "Trivy",
+    ref: "refs/heads/main",
+    htmlUrl: `https://github.com/${repo.owner}/${repo.name}/security/code-scanning/${number}`,
+    createdAt: "2026-08-01T00:00:00.000Z",
     ...partial,
   };
 }
@@ -297,6 +330,9 @@ export class FakeEnrichmentPort implements EnrichmentPort {
     return { kind: "fresh", catalogue, validator: this.validator };
   }
 }
+
+/** GitHub's measured body when a repository has nothing analysed (#152). */
+const CODE_SCANNING_NO_ANALYSIS = "no analysis found";
 
 /** What a 200 from either security-feature probe looks like. */
 const COVERED_FEATURE: FeatureProbe = {
@@ -535,6 +571,92 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       notModified: false,
       truncated: this.orgAlertTruncated.has(org),
       validator: this.orgAlertValidators.get(org) ?? null,
+    };
+  }
+
+  /** Code scanning alerts per lowercase org login, for the org-level path. */
+  orgCodeScanningAlerts = new Map<string, RawCodeScanningAlert[]>();
+  /** Code scanning alerts per lowercase `owner/name`, for the fan-out. */
+  repoCodeScanningAlerts = new Map<string, RawCodeScanningAlert[]>();
+  /** Payloads the mapper would have dropped, per org or per repo slug. */
+  codeScanningUnreadable = new Map<string, number>();
+  /** Orgs whose next conditional read answers 304. Unconditional still 200s. */
+  codeScanningNotModified = new Set<string>();
+  /** Orgs whose listing stops at the pagination cap. */
+  codeScanningTruncated = new Set<string>();
+  /** Validator a 200 hands back, per org; null mimics a multi-page listing. */
+  codeScanningValidators = new Map<string, RequestValidator>();
+  /** What each call carried, so a test can assert conditionality. */
+  codeScanningCachedSeen: (RequestValidator | null)[] = [];
+  /** The account and the repository list each call was given. */
+  codeScanningQueries: { org: string; repos: readonly RepoRef[] }[] = [];
+  /** Orgs whose code scanning read should fail outright. */
+  codeScanningFailingOrgs = new Set<string>();
+  /** Repos GitHub answered with no analysis to list, on the fan-out. */
+  codeScanningSkipped = new Set<string>();
+  /** Repos the fan-out could not read at all. */
+  codeScanningUnreachable = new Set<string>();
+
+  async listCodeScanningAlerts(
+    org: string,
+    repos: readonly RepoRef[] = [],
+    cached: RequestValidator | null = null,
+  ): Promise<CodeScanningAlertPage> {
+    // Recorded before any early return, for the reason the alert fake states:
+    // a test asserting the lane sends no validator on the fan-out has nothing
+    // to assert against otherwise.
+    this.codeScanningCachedSeen.push(cached);
+    this.codeScanningQueries.push({ org, repos });
+    if (this.codeScanningFailingOrgs.has(org)) {
+      throw new Error(`fake: ${org} code scanning is unreachable`);
+    }
+    if (this.userAccounts.has(org)) {
+      const alerts: RawCodeScanningAlert[] = [];
+      let unreadable = 0;
+      const unreachable: UnlistedRepo[] = [];
+      const skipped: UnlistedRepo[] = [];
+      for (const repo of repos) {
+        const slug = repoSlug(repo).toLowerCase();
+        if (this.codeScanningSkipped.has(slug)) {
+          skipped.push({ repo, reason: CODE_SCANNING_NO_ANALYSIS });
+          continue;
+        }
+        if (this.codeScanningUnreachable.has(slug)) {
+          unreachable.push({ repo, reason: null });
+          continue;
+        }
+        alerts.push(...(this.repoCodeScanningAlerts.get(slug) ?? []));
+        unreadable += this.codeScanningUnreadable.get(slug) ?? 0;
+      }
+      return {
+        alerts,
+        unreadable,
+        unreachable,
+        skipped,
+        notModified: false,
+        truncated: false,
+        validator: null,
+      };
+    }
+    if (cached && this.codeScanningNotModified.has(org)) {
+      return {
+        alerts: [],
+        unreadable: 0,
+        unreachable: [],
+        skipped: [],
+        notModified: true,
+        truncated: false,
+        validator: cached,
+      };
+    }
+    return {
+      alerts: this.orgCodeScanningAlerts.get(org) ?? [],
+      unreadable: this.codeScanningUnreadable.get(org) ?? 0,
+      unreachable: [],
+      skipped: [],
+      notModified: false,
+      truncated: this.codeScanningTruncated.has(org),
+      validator: this.codeScanningValidators.get(org) ?? null,
     };
   }
 

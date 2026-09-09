@@ -153,6 +153,242 @@ describe("Dependabot alerts map field for field", () => {
   });
 });
 
+describe("code scanning alerts map field for field", () => {
+  /** The shape of the recorded payloads, as far as the mapper reads them. */
+  interface RecordedScan {
+    number: number;
+    state: string | null;
+    html_url: string;
+    created_at: string;
+    repository?: { name: string; owner: { login: string } };
+    rule: { id: string; security_severity_level?: string };
+    tool: { name: string };
+    most_recent_instance: { ref: string };
+  }
+
+  const wholeOf = (
+    raw: RecordedScan,
+    repo: { owner: string; name: string },
+  ) => ({
+    number: raw.number,
+    repo,
+    state: raw.state,
+    // The one field with a fallback, and the fallback is the sentinel: see
+    // the no-severity case below for what it is guarding.
+    securitySeverity: raw.rule.security_severity_level ?? "n/a",
+    ruleId: raw.rule.id,
+    tool: raw.tool.name,
+    ref: raw.most_recent_instance.ref,
+    htmlUrl: raw.html_url,
+    createdAt: raw.created_at,
+  });
+
+  it("maps the org listing, which names the repository on every alert", async () => {
+    const raw = recorded<RecordedScan>("code-scanning-alert-org.json");
+    const adapter = adapterFor(restStub([raw]), "organization");
+
+    const page = await adapter.listCodeScanningAlerts("no42-org", []);
+
+    expect(page.unreadable, "a real payload must map").toBe(0);
+    // The whole mapped object against the recording, never one field of it.
+    expect(page.alerts[0]).toEqual(
+      wholeOf(raw, {
+        owner: raw.repository?.owner.login ?? "",
+        name: raw.repository?.name ?? "",
+      }),
+    );
+    // The two fields the ranking and the queue filter actually read, pinned
+    // against the recording rather than against a literal typed here.
+    expect(page.alerts[0]?.securitySeverity).toBe("critical");
+    expect(page.alerts[0]?.ref).toBe("refs/heads/main");
+    // A single-page listing is the only one that earns a validator, and this
+    // stub sends no ETag, so it earns none.
+    expect(page.validator).toBeNull();
+    expect(page.skipped).toEqual([]);
+    expect(page.unreachable).toEqual([]);
+  });
+
+  it("maps the per-repository listing, which names no repository at all", async () => {
+    // The shape the Dependabot fan-out once shipped broken on: `repository`
+    // is absent here, because the URL already said which repository it is.
+    const raw = recorded<RecordedScan>("code-scanning-alert-repo.json");
+    expect(
+      raw.repository,
+      "fixture must be the per-repo shape",
+    ).toBeUndefined();
+    const repo = { owner: "no42-org", name: "twiki" };
+    const adapter = adapterFor(restStub([raw]), "user");
+
+    const page = await adapter.listCodeScanningAlerts("no42-org", [repo]);
+
+    expect(page.unreadable).toBe(0);
+    // Attributed from the repository the caller asked about, since the
+    // payload cannot say. Without the fallback every alert from a personal
+    // account fails to map and the lane reports a confident zero.
+    expect(page.alerts[0]).toEqual(wholeOf(raw, repo));
+  });
+
+  it("maps an alert whose rule carries no severity level at all to n/a", async () => {
+    const raw = recorded<RecordedScan>("code-scanning-alert-no-severity.json");
+    // ABSENT, not null. A mapper written for null reads `undefined` here and
+    // hands the chain a value it ranks as a graded severity.
+    expect(
+      "security_severity_level" in raw.rule,
+      "fixture must carry no severity key",
+    ).toBe(false);
+    const adapter = adapterFor(restStub([raw]), "organization");
+
+    const page = await adapter.listCodeScanningAlerts("no42-org", []);
+
+    expect(page.alerts[0]).toEqual(
+      wholeOf(raw, {
+        owner: raw.repository?.owner.login ?? "",
+        name: raw.repository?.name ?? "",
+      }),
+    );
+    // Spelled out beside the whole-object assertion, because `wholeOf`
+    // computes the same fallback and could agree with a broken mapper.
+    expect(page.alerts[0]?.securitySeverity).toBe("n/a");
+    // And never the linting scale, which this alert grades `warning`: a
+    // Scorecard `error` on that scale outranks the estate's one critical.
+    expect(page.alerts[0]?.securitySeverity).not.toBe("warning");
+  });
+
+  it("carries a null state through rather than inventing `open`", async () => {
+    // Derived, not recorded: GitHub's schema permits `state: null` and 73
+    // live alerts produced none. Defaulting it would put a word in GitHub's
+    // mouth about the one field this lane deliberately does not act on.
+    const raw = derived<RecordedScan>(
+      "code-scanning-alert-null-state.derived.json",
+    );
+    expect(raw.state, "fixture must carry the null state").toBeNull();
+    const adapter = adapterFor(restStub([raw]), "organization");
+
+    const page = await adapter.listCodeScanningAlerts("no42-org", []);
+
+    expect(page.unreadable, "a null state is mappable, not unreadable").toBe(0);
+    expect(page.alerts[0]).toEqual(
+      wholeOf(raw, {
+        owner: raw.repository?.owner.login ?? "",
+        name: raw.repository?.name ?? "",
+      }),
+    );
+    expect(page.alerts[0]?.state).toBeNull();
+  });
+
+  it("skips a repository GitHub answered with no analysis, and does not degrade", async () => {
+    // The fan-out's own 404, translated by the probe translator that already
+    // owns this body. GitHub answered; what it said is that there is nothing
+    // to list. Counting it as unreachable would hold the lane partial for as
+    // long as the repository exists.
+    const body = recorded<{ message: string }>("code-scanning-404.json");
+    const failing = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw Object.assign(new Error(body.message), { status: 404 });
+      },
+    } as unknown as Octokit;
+    const repo = { owner: "no42-org", name: "twiki" };
+
+    const page = await adapterFor(failing, "user").listCodeScanningAlerts(
+      "no42-org",
+      [repo],
+    );
+
+    expect(page).toEqual({
+      alerts: [],
+      unreadable: 0,
+      unreachable: [],
+      // Named, with GitHub's own words: the run detail quotes what came back
+      // rather than a sentence we invented for it.
+      skipped: [{ repo, reason: body.message }],
+      notModified: false,
+      truncated: false,
+      validator: null,
+    });
+  });
+
+  it("skips a repository that refuses the endpoint outright, rather than degrading", async () => {
+    // `403 Resource not accessible by integration` is an ANSWER: stable, the
+    // same words next hour. Counting it as unreachable held the whole
+    // installation `partial` for ever - no confirmations, no tombstones, the
+    // validator deleted, every sweep.
+    const message = "Resource not accessible by integration";
+    const failing = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw Object.assign(new Error(message), { status: 403 });
+      },
+    } as unknown as Octokit;
+    const repo = { owner: "no42-org", name: "twiki" };
+
+    const page = await adapterFor(failing, "user").listCodeScanningAlerts(
+      "no42-org",
+      [repo],
+    );
+
+    expect(page.skipped).toEqual([{ repo, reason: message }]);
+    expect(page.unreachable).toEqual([]);
+  });
+
+  it("fans out one call per watched repository on a user account", async () => {
+    // A user account has no org-level endpoint - `/orgs/{login}/...` answers
+    // 404 - so the only route is one call per WATCHED repository. The bound
+    // is the allowlist, not the installation: an account exposing 241
+    // repositories and watching two costs two calls.
+    const paths: string[] = [];
+    const raw = recorded("code-scanning-alert-repo.json");
+    const counting = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async (path: string) => {
+        paths.push(path);
+        return { data: [raw], headers: {} };
+      },
+    } as unknown as Octokit;
+
+    const page = await adapterFor(counting, "user").listCodeScanningAlerts(
+      "no42-org",
+      [
+        { owner: "no42-org", name: "twiki" },
+        { owner: "no42-org", name: "packyard" },
+      ],
+    );
+
+    expect(paths).toEqual([
+      "GET /repos/{owner}/{repo}/code-scanning/alerts",
+      "GET /repos/{owner}/{repo}/code-scanning/alerts",
+    ]);
+    // Each repository's alert is attributed to the repository asked about.
+    expect(page.alerts.map((a) => a.repo.name)).toEqual(["twiki", "packyard"]);
+    // No validator: each repository carries its own ETag, and one cached
+    // value cannot describe a set of them.
+    expect(page.validator).toBeNull();
+  });
+
+  it("counts a repository that reached no answer as unreachable", async () => {
+    // A 502 is not an answer about the repository, and retrying it next
+    // sweep may well work: the sweep is incomplete, so it degrades.
+    const failing = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw Object.assign(new Error("Bad gateway"), { status: 502 });
+      },
+    } as unknown as Octokit;
+
+    const page = await adapterFor(failing, "user").listCodeScanningAlerts(
+      "no42-org",
+      [{ owner: "no42-org", name: "twiki" }],
+    );
+
+    // Named, not counted: a bare integer cannot say which repository failed
+    // or what came back, which is the whole of what an operator asks first.
+    expect(page.unreachable).toEqual([
+      { repo: { owner: "no42-org", name: "twiki" }, reason: "Bad gateway" },
+    ]);
+    expect(page.skipped).toEqual([]);
+  });
+});
+
 describe("workflow runs map field for field", () => {
   it("maps a run listing", async () => {
     const raw = recorded<{

@@ -790,6 +790,12 @@ const QueueRow: FC<{ item: QueueItem; rank: number; linked: boolean }> = ({
           <span class="badge">PR</span>
         ) : item.kind === "issue" ? (
           <span class="badge">issue</span>
+        ) : item.kind === "code_scanning" ? (
+          // A code scanning `#21` and a Dependabot `#21` are different things
+          // in the same repository's number space, and the rationale beside
+          // them both starts with a word the reader has to parse. The badge
+          // is what tells them apart at a glance.
+          <span class="badge">scan</span>
         ) : item.kind === "ci_failure" ? (
           // A run number looks exactly like an issue or pull request number,
           // and the rationale beside it calls the thing a workflow run: the
@@ -863,11 +869,17 @@ export const QueuePage: FC<{
     >
       <h1>What to deal with next</h1>
       <p class="sub">
-        {filtered.counted.filter((i) => i.kind === "alert").length} open alerts
+        {/* The TOPIC, not the kind: Security holds two kinds now and will
+            hold three, and a kind listed in the table and missing here reads
+            as zeros above the row a reader came for - which is what this
+            line did to the first red main it ever showed, and did again to
+            the first code scanning finding. Derived the way tiers.ts derives
+            its own security count, so a kind joins this sentence by being
+            filed under a topic rather than by anyone editing this line. */}
+        {filtered.counted.filter((i) => topicOf(i.kind) === "security").length}{" "}
+        open alerts
         {" · "}
-        {/* One count per queue kind. A kind listed in the table and missing
-            here reads as three zeros above the row a reader came for, which
-            is what this line did to the first red main it ever showed. */}
+        {/* One count per remaining kind; each of these topics holds one. */}
         {filtered.counted.filter((i) => i.kind === "ci_failure").length} broken
         builds
         {" · "}
@@ -987,6 +999,15 @@ type SectionProps = { topic: Topic; state: SectionState } & (
       suppressed?: undefined;
       /** Rows in the table below, which is also what `N shown` says. */
       count: number;
+      /**
+       * How many of those rows this section's own attestation speaks for.
+       * Defaults to all of them, which is every section but Security: its
+       * heading attests the Dependabot lane alone, so the "collected earlier,
+       * not confirmed" warning may only count that lane's rows, or it would
+       * say so directly above a code scanning row wearing a fresh badge from
+       * its own lane.
+       */
+      attestedCount?: number;
       /** The sentence for an attested empty. */
       empty: string;
       children?: Child;
@@ -1008,7 +1029,10 @@ const Section: FC<SectionProps> = (props) => (
     {props.suppressed !== undefined ? (
       <p class="attest">{props.suppressed}</p>
     ) : (
-      <SectionBody {...props} />
+      <SectionBody
+        {...props}
+        attestedCount={props.attestedCount ?? props.count}
+      />
     )}
   </>
 );
@@ -1016,9 +1040,10 @@ const Section: FC<SectionProps> = (props) => (
 const SectionBody: FC<{
   state: SectionState;
   count: number;
+  attestedCount: number;
   empty: string;
   children?: Child;
-}> = ({ state, count, empty, children }) => (
+}> = ({ state, count, attestedCount, empty, children }) => (
   <>
     {state.attested ? (
       count === 0 ? (
@@ -1026,16 +1051,24 @@ const SectionBody: FC<{
       ) : (
         children
       )
-    ) : count > 0 ? (
+    ) : attestedCount > 0 ? (
       // Rows collected by an earlier sweep, which the latest one did not
       // confirm. Saying "never collected" over a table of them would be
       // false; the rows carry their own freshness in the table below.
       <>
         <p class="attest warn">
-          {count} collected earlier; the latest sweep did not confirm them
+          {attestedCount} collected earlier; the latest sweep did not confirm
+          them
         </p>
         {children}
       </>
+    ) : count > 0 ? (
+      // Rows this section's own attestation says nothing about, because they
+      // came from another lane: the Security section's badge is the
+      // Dependabot lane's, and the code scanning rows beneath it carry their
+      // own per-row badge. Listed with no warning above them rather than
+      // under a sentence about a sweep that never spoke for them.
+      children
     ) : (
       // No rows AND no clean sweep. Deliberately not "never collected": the
       // store keeps only the latest run per lane, so an earlier clean sweep
@@ -1079,6 +1112,36 @@ const VERDICT_WORDS: Record<RunVerdict, string | null> = {
   other: null,
 };
 
+/**
+ * The Security section lists two kinds, and either can be withdrawn on its
+ * own, so what it may claim about an empty section depends on which of them
+ * it was allowed to look at.
+ *
+ * "No open alerts or code scanning findings" over rows we deliberately
+ * dropped is a measured empty asserted over a withheld one, which is the
+ * confident zero this page exists to refuse (AD-28). With both withdrawn
+ * there is nothing measured at all - the whole-section suppression does not
+ * fire, because a third feature may still be confirmed on - so the sentence
+ * says that rather than a zero.
+ */
+function securityEmpty(view: RepoView): string {
+  const shown = [
+    view.alertsWithdrawn ? null : "open alerts",
+    view.codeScanningWithdrawn ? null : "code scanning findings",
+  ].filter((kind): kind is string => kind !== null);
+  return shown.length === 0
+    ? "nothing here is counted: every kind this section lists is switched off"
+    : `no ${shown.join(" or ")} in this repository`;
+}
+
+/** What the section is not listing, named. Empty when it lists both kinds. */
+function securityWithheld(view: RepoView): string[] {
+  return [
+    view.alertsWithdrawn ? "Dependabot alerts" : null,
+    view.codeScanningWithdrawn ? "code scanning findings" : null,
+  ].filter((kind): kind is string => kind !== null);
+}
+
 const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
   switch (topic) {
     case "security":
@@ -1098,46 +1161,142 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
           suppressed={joinNotes(view.coverageReasons)}
         />
       ) : (
-        <Section
-          topic={topic}
-          state={view.summary}
-          count={view.alerts.length}
-          empty="no open alerts in this repository"
-        >
-          <table class="cards" role="table">
-            <thead role="rowgroup">
-              <tr role="row">
-                <Th>Alert</Th>
-                <Th>Severity</Th>
-                <Th>Package</Th>
-                <Th>Last confirmed</Th>
-              </tr>
-            </thead>
-            <tbody role="rowgroup">
-              {view.alerts.map((a) => (
-                <tr key={`alert-${a.number}`} role="row">
-                  <Td label="Alert">
-                    <ExternalLink href={a.htmlUrl}>#{a.number}</ExternalLink>
-                    {a.advisory ? ` · ${a.advisory}` : ""}
-                  </Td>
-                  <Td
-                    class={a.severity === "critical" ? "crit" : undefined}
-                    label="Severity"
-                    show
-                  >
-                    {a.severity}
-                  </Td>
-                  <Td label="Package" show>
-                    {a.packageName ?? "unknown"}
-                  </Td>
-                  <Td label="Last confirmed">
-                    <FreshnessBadge freshness={a.freshness} age={a.age} />
-                  </Td>
+        <>
+          <Section
+            topic={topic}
+            state={view.summary}
+            // Both kinds, because the heading's `N shown` must equal the rows
+            // under it: two tables, one section, one count.
+            count={view.alerts.length + view.codeScanning.length}
+            // The Dependabot rows only: the heading's badge is that lane's.
+            attestedCount={view.alerts.length}
+            empty={securityEmpty(view)}
+          >
+            <table class="cards" role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <Th>Alert</Th>
+                  <Th>Severity</Th>
+                  <Th>Package</Th>
+                  <Th>Last confirmed</Th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </Section>
+              </thead>
+              <tbody role="rowgroup">
+                {view.alerts.map((a) => (
+                  <tr key={`alert-${a.number}`} role="row">
+                    <Td label="Alert">
+                      <ExternalLink href={a.htmlUrl}>#{a.number}</ExternalLink>
+                      {a.advisory ? ` · ${a.advisory}` : ""}
+                    </Td>
+                    <Td
+                      class={a.severity === "critical" ? "crit" : undefined}
+                      label="Severity"
+                      show
+                    >
+                      {a.severity}
+                    </Td>
+                    <Td label="Package" show>
+                      {a.packageName ?? "unknown"}
+                    </Td>
+                    <Td label="Last confirmed">
+                      <FreshnessBadge freshness={a.freshness} age={a.age} />
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {/* Its own table, not extra rows in the one above: a code scanning
+              finding has no package and a Dependabot alert has no ref, so one
+              table would carry a column that is blank for half its rows. The
+              ref is a column because this list is unfiltered - the queue
+              ranks only the default-branch findings, and a reader looking at
+              one it declined must be able to see why (#156). */}
+            {view.codeScanning.length === 0 ? null : (
+              <table class="cards" role="table">
+                <thead role="rowgroup">
+                  <tr role="row">
+                    <Th>Code scanning</Th>
+                    <Th>Severity</Th>
+                    <Th>Tool</Th>
+                    <Th>Ref</Th>
+                    <Th>Last confirmed</Th>
+                  </tr>
+                </thead>
+                <tbody role="rowgroup">
+                  {view.codeScanning.map((c) => (
+                    <tr key={`scan-${c.number}`} role="row">
+                      <Td label="Code scanning">
+                        <ExternalLink href={c.htmlUrl}>
+                          #{c.number}
+                        </ExternalLink>
+                        {c.ruleId ? ` · ${c.ruleId}` : ""}
+                      </Td>
+                      <Td
+                        class={c.severity === "critical" ? "crit" : undefined}
+                        label="Severity"
+                        show
+                      >
+                        {c.severity}
+                      </Td>
+                      <Td label="Tool" show>
+                        {c.tool ?? "unknown"}
+                      </Td>
+                      <Td label="Ref" show>
+                        {c.ref ?? "unknown"}
+                        {c.onDefaultBranch ? "" : " (not ranked)"}
+                      </Td>
+                      <Td label="Last confirmed">
+                        {/* The section header attests the Dependabot lane, so
+                          these rows carry their own standing: with no
+                          `repository_code_scanning` confirmation nothing has
+                          vouched for them, and a freshness word would claim
+                          an attestation nobody made (AD-28). */}
+                        {view.codeScanningAttested ? (
+                          <FreshnessBadge freshness={c.freshness} age={c.age} />
+                        ) : (
+                          <span class="badge unknown">unconfirmed</span>
+                        )}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Section>
+          {/* A feature confirmed off has its rows dropped from the tables
+            above, exactly as the chip drops them from its count. Saying so
+            is the difference between a row that is absent and one we
+            withheld; the reason itself is in the header's sub-line, where
+            every coverage answer for this repository already is. */}
+          {securityWithheld(view).length === 0 ? null : (
+            <p class="attest">
+              {securityWithheld(view).join(" and ")} not listed: the feature is
+              switched off
+            </p>
+          )}
+          {/* The heading counts the rows shown; the header counts the items
+            the queue RANKS, and a finding off the default branch is one and
+            not the other. Without this the page reads `1 open alerts` above
+            `4 shown` and neither number is wrong (#156). */}
+          {view.codeScanning.filter((c) => !c.onDefaultBranch).length ===
+          0 ? null : (
+            <p class="attest">
+              {view.codeScanning.filter((c) => !c.onDefaultBranch).length} of
+              these are not on the default branch, so the queue does not rank
+              them and the count above does not include them
+            </p>
+          )}
+          {/* The section's heading attests the Dependabot lane alone, which is
+            deliberate (#156). This is what stops that heading speaking for a
+            lane it never ran: with no `repository_code_scanning`
+            confirmation, code scanning is unconfirmed here, and the absence
+            of findings above must not read as a measured zero (AD-28). */}
+          {view.codeScanningAttested ? null : (
+            <p class="attest">
+              code scanning: not confirmed by any completed sweep
+            </p>
+          )}
+        </>
       );
     case "ci":
       return (
@@ -1227,7 +1386,7 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
                         honest absence of any: not the package heuristic.
                         Under withdrawn coverage the page lists no alerts,
                         so it names none here either (AD-28). */}
-                    {view.notCovered
+                    {view.alertsWithdrawn
                       ? "alerts not covered"
                       : p.linkedAlerts.length === 0
                         ? "none on record"

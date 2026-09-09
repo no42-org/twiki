@@ -521,6 +521,14 @@ describe("issues found in review (round 2)", () => {
     /** The tablet's one cell: the chips that say something, topic first. */
     const signals = (...chips: string[]) =>
       `<td class="signals" role="cell"><span class="lbl hid">Signals</span>${chips.join(" · ")}</td>`;
+    /**
+     * What the Security count does not speak for wherever the code scanning
+     * lane has confirmed nothing, which is every case here: the count spans
+     * both kinds and the caveat rides beside it in the sentence, never only
+     * in a title (#156).
+     */
+    const SCAN_CAVEAT =
+      " \u00B7 code scanning: not confirmed by any completed sweep";
     /** The rationale row; `rest` is what the signals cell left out. */
     const why = (reason: string, rest = "") =>
       '<tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th>' +
@@ -565,7 +573,8 @@ describe("issues found in review (round 2)", () => {
           FRESH +
           "</tr>" +
           why(
-            "alert #1 left-pad: KEV status unknown, EPSS 42.0%, severity critical, not an update, stuck state unknown",
+            "alert #1 left-pad: KEV status unknown, EPSS 42.0%, severity critical, not an update, stuck state unknown" +
+              SCAN_CAVEAT,
             REST_UNCONFIRMED,
           ) +
           "</tbody>",
@@ -580,7 +589,10 @@ describe("issues found in review (round 2)", () => {
           FRESH +
           "</tr>" +
           why(
-            "pull request #4 open 9d, past the 3d review budget",
+            // A confirmed zero carries the caveat too, and more pointedly:
+            // a `0` that speaks for one kind of two is the confident zero
+            // this dashboard exists to refuse (AD-28).
+            `pull request #4 open 9d, past the 3d review budget${SCAN_CAVEAT}`,
             `zero: Security · ${REST_UNCONFIRMED}`,
           ) +
           "</tbody>",
@@ -677,7 +689,8 @@ describe("issues found in review (round 2)", () => {
           FRESH +
           "</tr>" +
           why(
-            "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+            "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown" +
+              SCAN_CAVEAT,
             REST_UNCONFIRMED,
           ) +
           "</tbody>",
@@ -799,7 +812,7 @@ describe("issues found in review (round 2)", () => {
           FRESH +
           "</tr>" +
           why(
-            "workflow run #9: default branch workflow CI failed 2h ago",
+            `workflow run #9: default branch workflow CI failed 2h ago${SCAN_CAVEAT}`,
             "zero: Security · unconfirmed: Dependencies, Pull requests, Issues, Reviews",
           ) +
           "</tbody>",
@@ -871,7 +884,8 @@ describe("issues found in review (round 2)", () => {
           FRESH +
           "</tr>" +
           why(
-            "update PR #7 left-pad: no CVE to check against KEV, no CVE to score, no advisory, minor bump, no Dependabot fix attempt on record",
+            "update PR #7 left-pad: no CVE to check against KEV, no CVE to score, no advisory, minor bump, no Dependabot fix attempt on record" +
+              SCAN_CAVEAT,
             "zero: Security · unconfirmed: CI, Pull requests, Issues, Reviews",
           ) +
           "</tbody>",
@@ -987,7 +1001,8 @@ describe("issues found in review (round 2)", () => {
           ) +
           "</tr>" +
           why(
-            "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+            "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown" +
+              SCAN_CAVEAT,
             REST_UNCONFIRMED,
           ) +
           "</tbody>",
@@ -1417,12 +1432,21 @@ describe("issues found in review (round 2)", () => {
   });
 
   describe("coverage is a separate axis from freshness (AD-28)", () => {
+    /**
+     * A coverage row as the lane writes one. A whole-repository state -
+     * `archived`, `repo_disabled` - is written to all three features at
+     * once, which is what the lane does and what makes `not covered` the
+     * honest verdict for it: nothing is scanning an archived repository
+     * either, so no feature is left to contribute a count (#156).
+     */
     const cov = (repo: { owner: string; name: string }, state: string) => ({
       subject: coverageSubject(repo),
       payload: {
         repo: `${repo.owner}/${repo.name}`.toLowerCase(),
         state,
         archived: false,
+        codeScanning: { state, reason: null },
+        secretScanning: { state, reason: null },
       },
     });
 
@@ -1470,6 +1494,52 @@ describe("issues found in review (round 2)", () => {
           "</span></td></tr>",
       );
       expect(html).not.toContain("not collected");
+    });
+
+    it("names a feature nothing confirmed either way beside the count it does not speak for", async () => {
+      // The generalised standing counts as soon as ONE feature is confirmed
+      // on, so a Dependabot answer we could not read no longer withholds the
+      // number. Without this note it would withhold nothing and say nothing:
+      // a bare `1 high` for a topic one of its features has no standing in.
+      //
+      // The sentence is about OUR knowledge, not GitHub's answer, so it is
+      // true both of a probe that came back unrecognised and of a row
+      // written before the feature was probed at all.
+      const alerts = [makeAlert({ number: 1, repo: REPO, severity: "high" })];
+      store.recordObservations(run, "2026-08-16T11:55:00.000Z", [
+        ...alerts.map(normalise),
+        summariseRepo(REPO, alerts),
+        {
+          subject: coverageSubject(REPO),
+          payload: {
+            repo: "no42-org/twiki",
+            state: "unknown",
+            codeScanning: { state: "covered", reason: null },
+            secretScanning: { state: "covered", reason: null },
+          },
+        },
+      ] as never[]);
+      complete();
+
+      const html = await (
+        await createApp({
+          defaultBranchOf: () => "main",
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          now: () => NOW,
+        }).request("/")
+      ).text();
+
+      // The count stands, and the caveat rides beside it in the sentence a
+      // reader meets, never only in a title.
+      expect(html).toContain(
+        '<a class="chip high" href="/queue?repo=no42-org%2Ftwiki&amp;topic=security">1 high</a>',
+      );
+      expect(html).toContain(
+        "severity high, not an update, stuck state unknown" +
+          " \u00B7 Dependabot alerts: not confirmed on or off",
+      );
     });
   });
 
@@ -1570,7 +1640,22 @@ describe("issues found in review (round 2)", () => {
       store.recordObservations(cRun, "2026-08-16T07:00:00.000Z", [
         {
           subject: coverageSubject(REPO),
-          payload: { repo: "no42-org/twiki", state: "alerts_disabled" },
+          payload: {
+            repo: "no42-org/twiki",
+            state: "alerts_disabled",
+            // Every feature confirmed off, because the chip reads `not
+            // covered` only when none is on and none is unknown (#156). Code
+            // scanning has no `feature_off` mapping at all, so GitHub
+            // refusing the endpoint is what an off scanner looks like.
+            codeScanning: {
+              state: "unreachable",
+              reason: "Resource not accessible by integration",
+            },
+            secretScanning: {
+              state: "feature_off",
+              reason: "Secret scanning is disabled on this repository.",
+            },
+          },
         },
         // Lifted into view by an overdue review, as a quiet repository has
         // no row for the chip to sit in.
@@ -1599,7 +1684,9 @@ describe("issues found in review (round 2)", () => {
       // cadence the attestation would be stale, coverage unknown, and the
       // chip a plain unconfirmed. On the daily cadence it is the real state.
       expect(html).toContain(
-        '<span class="chip uncovered" title="Dependabot alerts: switched off for this repository">not covered</span>',
+        '<span class="chip uncovered" title="Dependabot alerts: switched off for this repository' +
+          " \u00B7 code scanning: Resource not accessible by integration" +
+          ' \u00B7 secret scanning: Secret scanning is disabled on this repository.">not covered</span>',
       );
     });
 

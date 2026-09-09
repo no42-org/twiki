@@ -124,6 +124,128 @@ export interface OrgAlertPage {
 }
 
 /**
+ * The validator-cache key for one organisation's code scanning listing (#156).
+ *
+ * Same convention as orgAlertsUrl, and separate from it because it is a
+ * separate listing: one cache entry per installation and request URL (AD-25).
+ */
+export function orgCodeScanningUrl(org: string): string {
+  return `/orgs/${org.toLowerCase()}/code-scanning/alerts?state=open&per_page=100`;
+}
+
+/**
+ * One code scanning alert as the REST listing returns it (#156).
+ *
+ * Deliberately NOT a copy of RawDependabotAlert. Two fields cannot be copied,
+ * and both are the reason this is its own type:
+ *
+ *   `state`     GitHub's schema permits null here, where a Dependabot alert's
+ *               is always one of four words. Unobserved across the 73 open
+ *               alerts measured on 2026-09-09 and still typed, because a shape
+ *               the mapper refuses to represent is a row it silently drops.
+ *   `severity`  comes from `rule.security_severity_level`, which is ABSENT on
+ *               some alerts rather than null: the three zizmor findings in
+ *               this estate carry no such key at all, so a mapper handling
+ *               only null reads `undefined` and ranks it as a graded value.
+ */
+export interface RawCodeScanningAlert {
+  /** Per-repository, not global. Subject identity is repo + this (AD-22). */
+  number: number;
+  repo: RepoRef;
+  /**
+   * `open`, `fixed` or `dismissed` as GitHub reported it, or null: the schema
+   * permits it and this estate has never produced one. Informational, like
+   * the Dependabot alert's: the projection's own state carries the tombstone,
+   * and the lane asks only for open alerts.
+   */
+  state: string | null;
+  /**
+   * `rule.security_severity_level`, or `n/a` when GitHub sent no such level.
+   *
+   * The sentinel rather than null, because the ranking chain reads the two
+   * differently and the difference is the whole of this story's severity
+   * handling: `n/a` says this tool grades nothing, which ranks at the
+   * least-urgent end, where null would rank as a signal we failed to collect.
+   * No severity level GitHub sends is spelled `n/a`, so it cannot shadow one.
+   *
+   * NEVER `rule.severity`. That carries the linting scale (`error`,
+   * `warning`, `note`), on which a Scorecard `error` outranks this estate's
+   * one Trivy `critical`.
+   */
+  securitySeverity: string;
+  /** `rule.id`: `CVE-2026-31789` from Trivy, `zizmor/...` from zizmor. */
+  ruleId: string | null;
+  /** The scanner that found it: Trivy, CodeQL, Scorecard, zizmor. */
+  tool: string | null;
+  /**
+   * `most_recent_instance.ref`, e.g. `refs/heads/main`, `refs/pull/7/merge`.
+   *
+   * The queue's default-branch condition reads this and nothing else. NOT
+   * `most_recent_instance.state`: one alert on this estate holds two
+   * instances on the same ref from two analysis categories, one open and one
+   * fixed, and `most_recent_instance` returned a different one from two reads
+   * minutes apart. Gating on it would add and remove the item on alternating
+   * sweeps for no change on GitHub; the alert's own `state` is the authority.
+   */
+  ref: string | null;
+  htmlUrl: string | null;
+  /** Null when GitHub did not supply one; never an empty string. */
+  createdAt: string | null;
+}
+
+/**
+ * One repository the fan-out could not list, and what came back from it.
+ *
+ * The reason is GitHub's own message, redacted and bounded, or null where it
+ * sent none. Carried rather than dropped because this is exactly the boundary
+ * read the house rule is about: an error that names neither the repository
+ * nor the answer sends an operator nowhere.
+ */
+export interface UnlistedRepo {
+  repo: RepoRef;
+  reason: string | null;
+}
+
+/**
+ * One sweep of the code scanning listing. Mirrors OrgAlertPage term for term,
+ * with the two it needs and the Dependabot page does not.
+ */
+export interface CodeScanningAlertPage {
+  alerts: RawCodeScanningAlert[];
+  /** Payloads the mapper could not read. Never silently discarded. */
+  unreadable: number;
+  /**
+   * Repositories the fan-out reached NO ANSWER about: a transport failure, a
+   * 5xx, a token that could not be minted. The sweep is incomplete, so the
+   * caller degrades and tombstones nothing.
+   *
+   * Named rather than counted, like `skipped`. This is a boundary read, and
+   * a bare integer cannot say which repository failed or what came back from
+   * it - the two questions an operator asks first.
+   */
+  unreachable: UnlistedRepo[];
+  /**
+   * Repositories the fan-out asked and GitHub ANSWERED without a listing:
+   * `404 no analysis found`, `403 Resource not accessible by integration`, or
+   * any other refusal it sends steadily. Not a failure: the answer is stable,
+   * so retrying it every sweep returns the same words, and degrading on it
+   * would hold the lane partial for as long as the repository exists.
+   *
+   * A LIST rather than a count, because the lane does more with it than
+   * report it: a repository here gets no rows and no confirmation, so it
+   * reads `unconfirmed` rather than a confident zero (AD-28), and the run
+   * detail names it and quotes what GitHub said. A count could say neither.
+   */
+  skipped: UnlistedRepo[];
+  /** True when GitHub answered 304 against the cached validator. */
+  notModified: boolean;
+  /** True when pagination stopped at the safety cap with more pages claimed. */
+  truncated: boolean;
+  /** The validator to cache, or null when this response must not be revalidated against. */
+  validator: RequestValidator | null;
+}
+
+/**
  * Reads only, of one named repository.
  *
  * Every method here names the repository it acts on, so its installation
@@ -357,6 +479,25 @@ export interface GitHubAccountReadPort {
     repos: readonly RepoRef[],
     cached?: RequestValidator | null,
   ): Promise<OrgAlertPage>;
+
+  /**
+   * Open code scanning alerts across every repository in the org, unfiltered
+   * and regardless of ref (#156).
+   *
+   * Every open alert is returned whatever branch its most recent instance is
+   * on. The default-branch condition belongs to the queue builder, so the
+   * repository page can list what the queue declines to rank.
+   *
+   * `repos` is the watched set for this installation, used only when the
+   * account has no org-level endpoint to collapse into, exactly as on the
+   * Dependabot listing: a user account costs one call per watched repository,
+   * an organisation still costs one.
+   */
+  listCodeScanningAlerts(
+    installation: string,
+    repos: readonly RepoRef[],
+    cached?: RequestValidator | null,
+  ): Promise<CodeScanningAlertPage>;
 }
 
 /** Every read, both halves. What gitricorder's collector consumes. */

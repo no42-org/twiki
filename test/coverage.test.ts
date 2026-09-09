@@ -15,6 +15,7 @@ import {
   isCovered,
   isOff,
   offNotes,
+  securityStanding,
   unansweredNotes,
 } from "../src/core/coverage.js";
 import { coverageSubject } from "../src/core/subject.js";
@@ -450,6 +451,58 @@ describe("the reasons a feature carries", () => {
         features(feature("covered"), feature("unknown"), feature("unknown")),
       ),
     ).toEqual([]);
+  });
+});
+
+describe("what standing the Security number has (#156)", () => {
+  const f = (
+    dependabot: string,
+    code_scanning: string,
+    secret_scanning: string,
+  ): CoverageFeatures =>
+    ({
+      dependabot: { state: dependabot, reason: null },
+      code_scanning: { state: code_scanning, reason: null },
+      secret_scanning: { state: secret_scanning, reason: null },
+    }) as CoverageFeatures;
+
+  it("counts as soon as one collected feature is confirmed on", () => {
+    // Story 3.2's rule generalised: one feature being off no longer withdraws
+    // the whole number, or a repository that scans itself would show nothing.
+    expect(
+      securityStanding(f("alerts_disabled", "covered", "feature_off")),
+    ).toBe("counted");
+    expect(securityStanding(f("covered", "unknown", "feature_off"))).toBe(
+      "counted",
+    );
+  });
+
+  it("reads unconfirmed while a collected feature is unknown and none is on", () => {
+    // The live shape of this estate: `404 no analysis found` is `unknown`, and
+    // calling it `not covered` would claim GitHub said a feature is off when
+    // GitHub said nothing of the kind.
+    expect(
+      securityStanding(f("alerts_disabled", "unknown", "feature_off")),
+    ).toBe("unconfirmed");
+  });
+
+  it("reads not covered only when every collected feature is confirmed off", () => {
+    expect(
+      securityStanding(f("alerts_disabled", "feature_off", "feature_off")),
+    ).toBe("not_covered");
+  });
+
+  it("does not let secret scanning license a count nothing collects", () => {
+    // Secret scanning is confirmed ON and no lane sweeps it until Story 3.4,
+    // so the items it contributes are zero because nobody looked, not because
+    // there are none. Counting on it would be the confident zero this whole
+    // rule exists to refuse, one feature over (AD-28).
+    expect(securityStanding(f("alerts_disabled", "unknown", "covered"))).toBe(
+      "unconfirmed",
+    );
+    expect(
+      securityStanding(f("alerts_disabled", "feature_off", "covered")),
+    ).toBe("not_covered");
   });
 });
 

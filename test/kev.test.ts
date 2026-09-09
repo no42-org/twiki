@@ -557,6 +557,7 @@ describe("the real schedule table", () => {
   const schedules = buildSchedules({
     installations: ["no42-org", "other-org"],
     alerts: noop,
+    codeScanning: noop,
     coverage: noop,
     kev: noop,
     updatePrs: noop,
@@ -577,6 +578,7 @@ describe("the real schedule table", () => {
       "graphql-update-status",
       "kev",
       "rest-actions-runs",
+      "rest-org-code-scanning",
       "rest-org-dependabot",
     ]);
   });
@@ -588,6 +590,7 @@ describe("the real schedule table", () => {
     const without = buildSchedules({
       installations: ["no42-org"],
       alerts: noop,
+      codeScanning: noop,
       coverage: noop,
       kev: noop,
       updatePrs: null,

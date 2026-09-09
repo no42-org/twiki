@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { isDefaultBranchRun } from "../../core/branch.js";
+import { isDefaultBranchRef, isDefaultBranchRun } from "../../core/branch.js";
 import {
   compareRankings,
   NOT_APPLICABLE,
   type Ranking,
   type RankPolicy,
   rank,
+  type Signal,
 } from "../../core/rank.js";
 import { isBrokenVerdict, runVerdict } from "../../core/run-verdict.js";
 import { safeUrl } from "../../core/safe-url.js";
@@ -37,6 +38,7 @@ import {
 import { kevSignal, loadKevIndex } from "./kev-lookup.js";
 import {
   readAlert,
+  readCodeScanningAlert,
   readIssue,
   readPr,
   readStatus,
@@ -53,14 +55,24 @@ import {
 export interface QueueItem {
   kind: QueueKind;
   /**
-   * The subject key: `owner/name#number` for alerts, the node id for PRs and
-   * issues, and `owner/name#workflow:<id>` for a CI failure.
+   * The subject key: `owner/name#number` for Dependabot alerts, the node id
+   * for PRs and issues, `owner/name#workflow:<id>` for a CI failure and
+   * `owner/name#code-scanning:<n>` for a code scanning finding.
    *
-   * A `ci_failure` is the one kind whose key is not a stored row's key,
-   * because the item is not a stored row: it is one workflow's standing, and
-   * a rerun that breaks the same workflow again is the same thing needing
-   * the same attention. Keyed by the workflow rather than by the run, so a
-   * rerun replaces the item instead of adding a second one.
+   * Two kinds carry a key that is not a stored row's, for two reasons.
+   *
+   * A `ci_failure` is not a stored row at all: it is one workflow's
+   * standing, and a rerun that breaks the same workflow again is the same
+   * thing needing the same attention. Keyed by the workflow rather than by
+   * the run, so a rerun replaces the item instead of adding a second one.
+   *
+   * A `code_scanning` finding IS a stored row, but `alertSubject` puts the
+   * discriminating type OUTSIDE the key, so alert 21 and code scanning alert
+   * 21 in one repository store under the same key under different types.
+   * They are distinct subjects there and would be one key here, which
+   * collides as a render key, ties the queue's final tiebreak and, in Epic 4
+   * where item keys become notification keys, would have one finding
+   * suppress the other.
    */
   key: string;
   repo: string;
@@ -82,11 +94,20 @@ export interface QueueItem {
    */
   kevListed: boolean;
   /**
-   * The severity word a chip may show for this item, or null when the kind
-   * carries none it could vouch for. The chain's severity term is the rank;
-   * this is the display, and the two are set from one value so they agree.
+   * The severity a chip may show for this item, as the chain's own signal so
+   * the display and the rank are one value (AD-20):
+   *
+   *   a word    the graded severity
+   *   `n/a`     the item carries no severity to grade, which is a FACT and
+   *             not a gap: a code scanning tool that grades nothing produces
+   *             this, and three of the estate's 73 findings are in it
+   *   null      there is a severity and we could not read it
+   *
+   * The last two were one value until a repository with one ungraded finding
+   * beside a real `high` reported its worst severity as `unknown`: absence of
+   * a grade is not a failure to read one.
    */
-  displaySeverity: Severity | null;
+  displaySeverity: Signal<Severity>;
   ranking: Ranking;
   freshness: Freshness;
   age: string;
@@ -225,6 +246,19 @@ export function buildQueue(
   const items: QueueItem[] = [];
   let unreadable = 0;
 
+  // One resolver call per repository rather than one per row: a repository
+  // with thirty workflows asks the same question thirty times otherwise.
+  const branches = new Map<string, string | null>();
+  const defaultBranchOf = (slug: string): string | null => {
+    let branch = branches.get(slug);
+    if (branch === undefined) {
+      const ref = refOf(slug);
+      branch = ref === null ? null : deps.defaultBranchOf(ref);
+      branches.set(slug, branch);
+    }
+    return branch;
+  };
+
   // Filled during the alert pass, read during the PR pass. One derivation of
   // kev and severity per alert: two copy-parallel loops let the two drift, and
   // a PR could "inherit" a risk disagreeing with the alert row beside it.
@@ -311,6 +345,111 @@ export function buildQueue(
       kevListed: kevListedFor("alert") && kev === true,
       displaySeverity: severity,
       ranking,
+      freshness: freshness(row.verifiedAt, now, deps.policy),
+      age: ageLabel(row.verifiedAt, now),
+    });
+  }
+
+  // The code scanning findings (#156). Stored regardless of ref by a lane
+  // that deliberately does not filter, so THIS is where the default-branch
+  // condition is applied and the only place it is: the repository page lists
+  // every stored alert with its ref, and a finding on a pull-request merge
+  // ref is real work that is not yet a claim about the shipped branch.
+  //
+  // Every term but severity is a fact of absence. There is no CVE to look up,
+  // no EPSS to score, no update to bump and no fix being prepared, so a
+  // critical finding reaches `soon` and never `now`: `now` needs a broken
+  // branch, a KEV listing or an EPSS band, and this kind carries none of the
+  // three by construction.
+  for (const row of store.currentByType("code_scanning_alert")) {
+    if (row.state !== "present") continue;
+    const alert = readCodeScanningAlert(row.payload);
+    if (alert === null) {
+      unreadable++;
+      continue;
+    }
+
+    const slug = foldSlug(alert.repo);
+    const branch = defaultBranchOf(slug);
+    // Two ways to get here, neither an unreadable row: the resolver declined
+    // (a configuration fact, which the Security chip renders through the
+    // coverage and confirmation rules rather than as a zero), or the payload
+    // slug does not split into an owner and a name. Neither is evidence
+    // about the finding, so neither is counted as a row we failed to read.
+    if (branch === null) continue;
+    // Through the shared predicate, never a bare string comparison, so the
+    // page's run list, the Actions lane and this builder all decide "is this
+    // the default branch" the same way (AD-33). `refs/pull/7/merge` is false
+    // rather than parsed, which is exactly the case this filter is for.
+    if (!isDefaultBranchRef(alert.ref, branch)) continue;
+
+    // The sentinel first: `n/a` is a fact (this tool grades nothing) and
+    // ranks least, where an unrecognised word is a value we could not read
+    // and ranks as unknown. Collapsing the two would let a level GitHub
+    // invents tomorrow sink silently to the bottom of the queue.
+    const severity =
+      alert.severity === NOT_APPLICABLE
+        ? NOT_APPLICABLE
+        : normaliseSeverity(alert.severity);
+    const ranking = rank(
+      {
+        // Not a statement about a build, and not an advisory: five facts of
+        // absence, of which the kind's table silences three and words two.
+        broken: NOT_APPLICABLE,
+        kev: NOT_APPLICABLE,
+        epss: NOT_APPLICABLE,
+        severity,
+        bump: NOT_APPLICABLE,
+        stuck: NOT_APPLICABLE,
+      },
+      deps.rankPolicy,
+      {
+        ...KIND_REASONS.code_scanning,
+        // Per item, because the sentence names the tool that found it, and
+        // which tool it was is what a maintainer acts on differently: a
+        // Trivy finding is a dependency to bump, a zizmor one is a workflow
+        // to edit. The `broken` slot leads the chain, so the tool name leads
+        // the sentence.
+        broken: { na: alert.tool ?? "code scanning" },
+      },
+    );
+
+    items.push({
+      kind: "code_scanning",
+      // NOT the stored row's key, which is the second kind whose key is not.
+      // `alertSubject` puts the type outside the key, so this row and a
+      // Dependabot alert of the same number in the same repository share it
+      // exactly; two items under one key collide as a render key, tie the
+      // sort's final tiebreak, and in Epic 4 would have one finding suppress
+      // the other's notification. Shaped like the `ci_failure` key for the
+      // same reason it is shaped that way: the discriminator is in the key.
+      key: `${slug}#code-scanning:${alert.number}`,
+      repo: alert.repo,
+      number: alert.number,
+      packageName: null,
+      // The rule id, which is the identifying half of the finding: a CVE for
+      // Trivy, an audit name for zizmor. The full description is not stored,
+      // because nothing renders it and a field nothing renders is a field
+      // that can silently rot.
+      title: alert.ruleId,
+      // Deliberately null even when the rule id IS a CVE. This column means
+      // "the advisory this item is about", and a code scanning rule id is
+      // the rule, not an advisory record: Trivy names one, Scorecard and
+      // zizmor never do, and a column that is a CVE for one tool and an
+      // audit slug for another teaches the reader nothing.
+      advisory: null,
+      htmlUrl: safeUrl(alert.htmlUrl),
+      explanation: ranking.explanation,
+      // Its KEV term is n/a by construction, and kevListedFor says so: the
+      // page never gets a chance to shout about it.
+      kevListed: kevListedFor("code_scanning"),
+      // The signal as it stands: `n/a` where the tool grades nothing, null
+      // where it sent a level we do not recognise. Collapsing the two let one
+      // ungraded finding report a repository's worst severity as `unknown`.
+      displaySeverity: severity,
+      ranking,
+      // The lane runs on the alert cadence, so its rows are judged on the
+      // same budget as the Dependabot alerts beside them.
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
     });
@@ -505,19 +644,6 @@ export function buildQueue(
   for (const [slug, value] of actionsConfirmations(store)) {
     if (actionsVouched(value, now, deps.actionsPolicy)) vouched.add(slug);
   }
-  // One resolver call per repository rather than one per row: a repository
-  // with thirty workflows asks the same question thirty times otherwise.
-  const branches = new Map<string, string | null>();
-  const defaultBranchOf = (slug: string): string | null => {
-    let branch = branches.get(slug);
-    if (branch === undefined) {
-      const ref = refOf(slug);
-      branch = ref === null ? null : deps.defaultBranchOf(ref);
-      branches.set(slug, branch);
-    }
-    return branch;
-  };
-
   // The NEWEST default-branch run per workflow, selected before anything
   // asks whether it is broken. Testing the verdict first would skip the
   // green re-run entirely and leave the failure it replaced still holding

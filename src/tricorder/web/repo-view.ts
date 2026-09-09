@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { isDefaultBranchRun } from "../../core/branch.js";
-import { coverageNotes, isOff } from "../../core/coverage.js";
+import { isDefaultBranchRef, isDefaultBranchRun } from "../../core/branch.js";
+import { coverageNotes, isOff, securityStanding } from "../../core/coverage.js";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import {
   DEFAULT_HUNG_AFTER_MS,
@@ -13,6 +13,7 @@ import {
   runVerdict,
 } from "../../core/run-verdict.js";
 import { safeUrl } from "../../core/safe-url.js";
+import { worstSeverity } from "../../core/severity.js";
 import { watchKey } from "../../core/slug.js";
 import {
   DEFAULT_REVIEW_BUDGET_DAYS,
@@ -33,6 +34,7 @@ import {
 } from "../attention/freshness.js";
 import {
   readAlert,
+  readCodeScanningAlert,
   readIssue,
   readPr,
   readReviewRequest,
@@ -40,6 +42,7 @@ import {
   readWorkflowRun,
 } from "../attention/payloads.js";
 import { repoAttention } from "../attention/tiers.js";
+import type { RepoCodeScanningObservation } from "../collect/code-scanning.js";
 import {
   type CoverageObservation,
   coverageFeatures,
@@ -69,6 +72,30 @@ export interface RepoAlertRow {
   severity: string;
   advisory: string | null;
   packageName: string | null;
+  htmlUrl: string | null;
+  freshness: Freshness;
+  age: string;
+}
+
+/**
+ * One stored code scanning finding (#156).
+ *
+ * Every stored alert reaches this list, whatever ref it is on, which is why
+ * the ref is a column: the queue ranks only the default-branch ones, and a
+ * reader looking at a finding the queue declined must be able to see why.
+ */
+export interface RepoCodeScanningRow {
+  number: number;
+  /** The graded level, or `n/a` where the tool graded nothing. */
+  severity: string;
+  /** The scanner that found it. */
+  tool: string | null;
+  /** `rule.id`: a CVE for Trivy, an audit name for zizmor. */
+  ruleId: string | null;
+  /** `most_recent_instance.ref`, verbatim, or null where GitHub named none. */
+  ref: string | null;
+  /** Whether the queue ranks it, decided by the same predicate the queue uses. */
+  onDefaultBranch: boolean;
   htmlUrl: string | null;
   freshness: Freshness;
   age: string;
@@ -196,17 +223,32 @@ export interface RepoView {
    */
   coverageReasons: readonly string[];
   /**
-   * DEPENDABOT is positively known not to be watching this repository, so its
-   * alert count is not a real number and none is rendered (AD-28).
+   * EVERY security feature that could contribute a count is positively known
+   * to be off, so there is no real number to render and the whole section is
+   * suppressed (AD-28).
    *
-   * Dependabot alone, because the count this withdraws is Dependabot's: a
-   * scanner being off says nothing about whether the alert count is real, and
-   * withdrawing on it would hide live alerts behind an unrelated feature. What
-   * the scanners said still reaches the reader, through `coverageReasons`.
+   * Both Dependabot and code scanning, not either (#156). While nothing
+   * collected the scanners' findings the count was Dependabot's alone and one
+   * feature being off withdrew it; now that code scanning findings are
+   * collected, that rule would hide real findings from a repository that does
+   * scan itself. Each feature that is off still reaches the reader through
+   * `coverageReasons`, beside the count rather than instead of it.
+   *
    * False for `unknown`, which means GitHub gave no answer rather than that
    * anything was switched off.
    */
   notCovered: boolean;
+  /**
+   * Dependabot is confirmed off, so its alerts are neither listed nor
+   * counted here, exactly as the overview's chip does not count them.
+   *
+   * Its own field rather than a reading of `notCovered`, which is now the
+   * whole-section verdict over every feature: one feature being off
+   * withdraws that feature's rows and nothing else.
+   */
+  alertsWithdrawn: boolean;
+  /** The same rule one feature over: code scanning is confirmed off. */
+  codeScanningWithdrawn: boolean;
   /**
    * The header line: the tier, its rationale, and the counts.
    *
@@ -223,6 +265,22 @@ export interface RepoView {
     worstSeverity: string | null;
   };
   alerts: RepoAlertRow[];
+  /**
+   * Every stored code scanning finding for this repository, whatever ref it
+   * is on. The queue applies the default-branch condition; this list does
+   * not, so the page can show what the queue declined to rank.
+   */
+  codeScanning: RepoCodeScanningRow[];
+  /**
+   * A present `repository_code_scanning` confirmation exists for this
+   * repository: something swept it for findings.
+   *
+   * Its own flag rather than a second freshness on the section header, which
+   * keeps attesting from the Dependabot lane alone. The code scanning rows
+   * carry their own per-row badge, and this is what lets that badge read
+   * `unconfirmed` rather than a freshness word nobody earned.
+   */
+  codeScanningAttested: boolean;
   updatePrs: RepoPrRow[];
   prSection: SectionState;
   /**
@@ -380,6 +438,12 @@ export function buildRepoView(
   // cadence of its own means a new dependency on the type and a binding in
   // `repoViewDeps`, exactly as `actionsPolicy` has.
   const alertPolicy = deps.policy;
+  // The code scanning lane runs on the alert cadence, so its rows are judged
+  // on the same budget as the Dependabot alerts beside them in the same
+  // section. Named rather than reusing `alertPolicy` at the call site: the
+  // two are one number today because one schedule entry says so, and the day
+  // that changes this is the name that has to move.
+  const codeScanningPolicy = deps.policy;
   const updatePrPolicy = deps.policy;
   const issuePolicy = deps.policy;
   const reviewPolicy = deps.policy;
@@ -411,14 +475,23 @@ export function buildRepoView(
   // blanking on it would let one dead coverage lane wipe correct counts off
   // every page in the estate (AD-28). Decided here, once, so the renderer
   // cannot reach a different conclusion from the same data.
-  const notCovered = features !== null && isOff(features.dependabot.state);
+  const dependabotOff = features !== null && isOff(features.dependabot.state);
+  const codeScanningOff =
+    features !== null && isOff(features.code_scanning.state);
+  // Story 3.2's precedence generalised over every feature (#156), decided by
+  // the one function the overview's chip reads, so the two surfaces agree by
+  // construction rather than by two people remembering the same rule. The
+  // section is suppressed exactly where that chip reads `not covered`.
+  const notCovered =
+    features !== null && securityStanding(features) === "not_covered";
   const coverageReasons = features === null ? [] : coverageNotes(features);
   const known = !notCovered;
 
   // The one tier computation (AD-34). Nothing on this page derives a tier
   // from the rows it lists; it reads this result. Coverage is decided first
-  // and handed in, so a repository this page refuses to count alerts for is
-  // not at the same time judged `now` by one of them.
+  // and handed in, PER FEATURE, so a repository this page refuses to count a
+  // feature's findings for is not at the same time judged `now` by one of
+  // them - and a feature that is still on keeps its findings and its tier.
   const attention = repoAttention(
     store,
     repo,
@@ -438,7 +511,8 @@ export function buildRepoView(
       // value, not the resolver (AD-33).
       defaultBranchOf: () => defaultBranch,
     },
-    notCovered ? new Set([slug]) : undefined,
+    dependabotOff ? new Set([slug]) : undefined,
+    codeScanningOff ? new Set([slug]) : undefined,
   );
   // Counted from the same items the tier was judged on, so the sentence
   // beside the chip cannot disagree with it (AD-32). With no alert items
@@ -446,10 +520,13 @@ export function buildRepoView(
   // is the honest answer.
   const counted = attention.openAlerts > 0;
 
-  const alertValues = store.currentByTypeForOwner(
-    "dependabot_alert",
-    installation,
-  );
+  // Suppressed exactly as the tier suppresses them, and for the same reason:
+  // a page that lists rows the chip beside it refuses to count has each half
+  // contradicting the other (AD-28). Per feature, so a repository with
+  // Dependabot off and code scanning on still lists its findings.
+  const alertValues = dependabotOff
+    ? []
+    : store.currentByTypeForOwner("dependabot_alert", installation);
   const alerts: RepoAlertRow[] = [];
   for (const value of alertValues) {
     if (value.state !== "present") continue;
@@ -485,6 +562,57 @@ export function buildRepoView(
     });
   }
   alerts.sort((a, b) => a.number - b.number);
+
+  // The code scanning findings (#156). Attributed by SUBJECT KEY like the
+  // Dependabot alerts above and for the same reason: keys are
+  // `owner/name#number` (AD-22), so a row too malformed to read still says
+  // which repository it belongs to, and a corrupt row in a sibling
+  // repository must not mark this page incomplete.
+  //
+  // Listed regardless of ref. `onDefaultBranch` is computed through the same
+  // predicate the queue filters on, so the page and the queue cannot disagree
+  // about which findings are ranked; a repository with no declared default
+  // branch has no such answer, and the column says so rather than guessing.
+  const codeScanningRows: RepoCodeScanningRow[] = [];
+  for (const value of codeScanningOff
+    ? []
+    : store.currentByTypeForOwner("code_scanning_alert", installation)) {
+    if (value.state !== "present") continue;
+    const keyRepo = value.subject.key.split("#")[0]?.toLowerCase() ?? "";
+    if (keyRepo !== slug) continue;
+    const alert = readCodeScanningAlert(value.payload);
+    if (alert === null) {
+      unreadable++;
+      continue;
+    }
+    if (alert.repo.toLowerCase() !== slug) {
+      // The key says this repository and the payload says another. Both are
+      // written from one RepoRef at ingest (AD-22), so the row is corrupt.
+      unreadable++;
+      continue;
+    }
+    codeScanningRows.push({
+      number: alert.number,
+      severity: alert.severity,
+      tool: alert.tool,
+      ruleId: alert.ruleId,
+      ref: alert.ref,
+      onDefaultBranch:
+        defaultBranch !== null && isDefaultBranchRef(alert.ref, defaultBranch),
+      htmlUrl: safeUrl(alert.htmlUrl),
+      freshness: freshness(value.verifiedAt, now, codeScanningPolicy),
+      age: ageLabel(value.verifiedAt, now),
+    });
+  }
+  codeScanningRows.sort((a, b) => a.number - b.number);
+
+  // Whether anything has swept THIS repository for findings. The lane's own
+  // per-repository confirmation, not its run: a bounded sweep reaches some
+  // repositories and skips others GitHub gave no listing for, so a lane-wide
+  // verdict would vouch for one it never listed.
+  const codeScanningConfirmation = store
+    .currentByType("repository_code_scanning")
+    .find((v) => v.state === "present" && v.subject.key === slug);
 
   // What dependabotUpdate said per alert, read for the one thing this page
   // wants from it: which alerts a PR was opened for. Status keys are
@@ -628,30 +756,55 @@ export function buildRepoView(
     // left their order to whatever the store happened to return.
     .sort((a, b) => compareRunRows(a, b, onDefaultBranch));
 
+  // With no queue item to count, the lanes' own confirmations are the honest
+  // answer - and BOTH of them, one per kind, or a repository whose three
+  // findings are all off the default branch would report `0` above a table
+  // listing three. A feature this page has withdrawn contributes nothing,
+  // exactly as its rows contribute none above.
+  const scanPayload = codeScanningConfirmation?.payload as
+    | RepoCodeScanningObservation
+    | undefined;
+  const fallbackCounts = [
+    dependabotOff ? undefined : summaryPayload?.openAlerts,
+    codeScanningOff ? undefined : scanPayload?.openAlerts,
+  ].filter((n): n is number => typeof n === "number");
+  // Null, not zero: no confirmation from either lane is "nobody has looked",
+  // which the header renders as `alert count not collected` (AD-28).
+  const fallbackOpen =
+    fallbackCounts.length === 0
+      ? null
+      : fallbackCounts.reduce((sum, n) => sum + n, 0);
+  const fallbackWorst = worstSeverity(
+    [
+      dependabotOff ? null : (summaryPayload?.worstSeverity ?? null),
+      codeScanningOff ? null : (scanPayload?.worstSeverity ?? null),
+    ].filter((s): s is string => s !== null),
+  );
+
   return {
     slug,
     coverageReasons,
     notCovered,
+    alertsWithdrawn: dependabotOff,
+    codeScanningWithdrawn: codeScanningOff,
     summary: {
       tier: attention.tier,
       tierReason: attention.reason,
       // Suppressed on positive evidence of non-coverage only: a number beside
       // "not covered" invites the reader to believe it (AD-28).
-      openAlerts: !known
-        ? null
-        : counted
-          ? attention.openAlerts
-          : (summaryPayload?.openAlerts ?? null),
+      openAlerts: !known ? null : counted ? attention.openAlerts : fallbackOpen,
       worstSeverity: !known
         ? null
         : counted
           ? attention.worstSeverity
-          : (summaryPayload?.worstSeverity ?? null),
+          : fallbackWorst,
       attested: confirmation !== undefined,
       freshness: freshness(confirmation?.verifiedAt ?? null, now, alertPolicy),
       age: ageLabel(confirmation?.verifiedAt ?? null, now),
     },
     alerts,
+    codeScanning: codeScanningRows,
+    codeScanningAttested: codeScanningConfirmation !== undefined,
     updatePrs,
     prSection: laneAttestation(
       store,

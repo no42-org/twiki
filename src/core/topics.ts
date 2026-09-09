@@ -14,7 +14,12 @@ import type { ReasonTable } from "./rank.js";
 // live here too, so a tile, a chip, a column header and a queue filter cannot
 // disagree about what a topic is called or which items belong to it.
 
-export type QueueKind = "alert" | "ci_failure" | "update_pr" | "issue";
+export type QueueKind =
+  | "alert"
+  | "code_scanning"
+  | "ci_failure"
+  | "update_pr"
+  | "issue";
 
 /** The six topics, in the order every surface shows them. */
 export type Topic =
@@ -74,7 +79,11 @@ export const TOPICS: readonly TopicSpec[] = [
     noun: "Security",
     sentenceNoun: "security",
     query: "security",
-    kinds: ["alert"],
+    // Two kinds, and the topic is what makes them one number: a Dependabot
+    // alert and a code scanning finding are both "something GitHub found in
+    // this repository", and every chip, tile and filter counts them together
+    // by reading this list rather than naming a kind (#156).
+    kinds: ["alert", "code_scanning"],
   },
   {
     topic: "ci",
@@ -161,6 +170,28 @@ export const KIND_REASONS: Readonly<Record<QueueKind, ReasonTable>> = {
     epss: { na: "" },
     severity: { na: "" },
     bump: { na: "" },
+    stuck: { na: "" },
+  },
+  // A static-analysis finding is not an advisory either. Four of the six
+  // terms are silenced; the two that speak are the severity the tool graded
+  // and, in the `bump` slot, the fact that puts the item in the queue at all.
+  //
+  // The branch phrase rides in `bump` because the chain prints its terms in
+  // order and the sentence a reader wants is `Trivy, severity high, on the
+  // default branch`: the tool name is supplied per item in the leading
+  // `broken` slot, severity says its own words, and this is the slot after
+  // it. It is true by construction rather than by measurement here - the
+  // queue builder derives an item only from an alert whose most recent
+  // instance is on the default branch, so an item that reached this table
+  // cannot be anywhere else.
+  code_scanning: {
+    kev: { na: "" },
+    epss: { na: "" },
+    // Not the chain's "no advisory": the alert IS the finding, and what is
+    // missing is a grade for it. Three of the estate's 73 alerts are in this
+    // state, all from one tool that grades nothing.
+    severity: { na: "no severity from the tool" },
+    bump: { na: "on the default branch" },
     stuck: { na: "" },
   },
   update_pr: {},
