@@ -93,15 +93,35 @@ export interface OrgAlertPage {
   /** Payloads the mapper could not read. Never silently discarded. */
   unreadable: number;
   /**
-   * Whole repositories that could not be read, on the per-repository path.
+   * Repositories the fan-out reached NO ANSWER about, on the per-repository
+   * path: a transport failure, a 5xx, a token that could not be minted. The
+   * sweep is incomplete, so the caller degrades and tombstones nothing.
    *
-   * Counted apart from `unreadable` because they are a different fact and
-   * the operator-facing detail says which: folding three unreachable
+   * Kept apart from `unreadable` because they are a different fact and the
+   * operator-facing detail says which: folding three unreachable
    * repositories into "3 alert payloads could not be read" points the
-   * reader at a mapper bug that does not exist. Zero on the org path,
+   * reader at a mapper bug that does not exist. Empty on the org path,
    * which reads one listing or none.
+   *
+   * Named rather than counted, like `skipped` and like both sibling pages: a
+   * bare integer cannot say which repository failed or what came back from
+   * it, the two questions an operator asks first (#169).
    */
-  unreachable: number;
+  unreachable: UnlistedRepo[];
+  /**
+   * Repositories the fan-out asked and GitHub ANSWERED without a listing:
+   * `403 "Dependabot alerts are disabled for this repository."`. Not a
+   * failure but a fact, the same one the coverage probe records, and most
+   * repositories on a personal account answer it - so degrading on it would
+   * hold this lane partial for as long as the account exists.
+   *
+   * A LIST rather than a count, because the lane does more with it than
+   * report it: a repository here gets no rows, no confirmation and no
+   * tombstone, so it reads `unconfirmed` rather than a confident zero
+   * (AD-28), and the run detail names it and quotes what GitHub said. A
+   * count could say neither. Empty on the org path.
+   */
+  skipped: UnlistedRepo[];
   /**
    * True when GitHub answered 304: the listing is byte-identical to the one
    * the cached validator was captured from. `alerts` is empty then, and the
@@ -213,8 +233,9 @@ export interface UnlistedRepo {
 }
 
 /**
- * One sweep of the code scanning listing. Mirrors OrgAlertPage term for term,
- * with the two it needs and the Dependabot page does not.
+ * One sweep of the code scanning listing. Mirrors OrgAlertPage term for term:
+ * all three org-listing pages carry one vocabulary for the repositories a
+ * sweep cannot speak for (#169).
  */
 export interface CodeScanningAlertPage {
   alerts: RawCodeScanningAlert[];

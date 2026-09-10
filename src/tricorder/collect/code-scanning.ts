@@ -25,17 +25,17 @@ import { named } from "./unlisted.js";
 // would cost one call per repository per alert cadence. A user account has no
 // org-level endpoint, so it fans out; the port owns that routing.
 //
-// Two rules distinguish this lane from its Dependabot sibling, and both are
+// One rule distinguishes this lane from its Dependabot sibling, and it is
 // deliberate:
 //
 //   Every open alert is stored REGARDLESS OF REF. The default-branch
 //   condition belongs to the queue builder, so the repository page can list
 //   what the queue declines to rank rather than the row simply vanishing.
 //
-//   Some repositories are SKIPPED rather than confirmed. GitHub answers the
-//   per-repository listing with several stable refusals, none of which says a
-//   feature is switched off; a repository that answered one gets no rows and
-//   no confirmation, so it reads `unconfirmed` and never a confident zero.
+// Skipping used to be the second. It is not a distinction any more: #169 gave
+// the Dependabot lane the same rule, so all three now answer a stable refusal
+// with no rows and no confirmation, and the repository reads `unconfirmed`
+// rather than a confident zero.
 
 /**
  * What we store about one code scanning alert.

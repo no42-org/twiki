@@ -13,6 +13,7 @@ import { redact } from "../src/core/redact.js";
 import {
   CODE_SCANNING_NO_ANALYSIS_BODY,
   createTricorderAppFromEnv,
+  DEPENDABOT_ALERTS_DISABLED_BODY,
   OctokitGitHub,
   SEARCH_QUERY_MAX,
   SECRET_SCANNING_OFF_BODY,
@@ -163,6 +164,10 @@ describe("Dependabot alerts map field for field", () => {
       htmlUrl: raw.html_url,
       createdAt: raw.created_at,
     });
+    // The org path reads one listing or none, so there is no repository it
+    // could have skipped or failed to reach (#169).
+    expect(page.skipped).toEqual([]);
+    expect(page.unreachable).toEqual([]);
   });
 
   it("counts a null entry in the listing as unreadable, rather than failing the sweep", async () => {
@@ -212,6 +217,121 @@ describe("Dependabot alerts map field for field", () => {
     expect(alert?.cveId).toBe(advisory.cve_id);
     expect(alert?.epssPercentage).toBe(advisory.epss.percentage);
     expect(alert?.htmlUrl).toBe(raw.html_url);
+  });
+
+  it("skips a repository whose alerts are switched off, and does not degrade", async () => {
+    // The 403 `translateDependabotProbe` matches on. GitHub ANSWERED; what
+    // it said is that the feature is off, and most repositories on a
+    // personal account answer exactly that - so degrading on it would hold
+    // the lane partial for as long as the account exists.
+    //
+    // Before #169 this repository was dropped silently and then confirmed at
+    // `openAlerts: 0` by the lane, a measured zero for a question GitHub
+    // never answered. Named now, with GitHub's own words.
+    const message = DEPENDABOT_ALERTS_DISABLED_BODY;
+    const failing = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw Object.assign(new Error(message), { status: 403 });
+      },
+    } as unknown as Octokit;
+    const repo = { owner: "no42-org", name: "twiki" };
+
+    const page = await adapterFor(failing, "user").listDependabotAlerts(
+      "no42-org",
+      [repo],
+    );
+
+    expect(page).toEqual({
+      alerts: [],
+      unreadable: 0,
+      unreachable: [],
+      skipped: [{ repo, reason: message }],
+      notModified: false,
+      truncated: false,
+      validator: null,
+    });
+  });
+
+  it("skips a repository GitHub answered 404 about, rather than degrading", async () => {
+    // A repository renamed or deleted but left in `repos.yaml` - the likeliest
+    // trigger on a personal account, and the one nothing covered. GitHub
+    // ANSWERED, and it will answer the same next hour, so degrading on it
+    // would hold the whole installation partial for ever: no confirmations,
+    // no tombstones, no validator, every sweep. That is the defect #158
+    // patched one story earlier in this same file.
+    const failing = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw Object.assign(new Error("Not Found"), { status: 404 });
+      },
+    } as unknown as Octokit;
+    const repo = { owner: "no42-org", name: "renamed" };
+
+    const page = await adapterFor(failing, "user").listDependabotAlerts(
+      "no42-org",
+      [repo],
+    );
+
+    expect(page).toEqual({
+      alerts: [],
+      unreadable: 0,
+      unreachable: [],
+      skipped: [{ repo, reason: "Not Found" }],
+      notModified: false,
+      truncated: false,
+      validator: null,
+    });
+  });
+
+  it("calls a failure this codebase raised unreachable, never an answer", async () => {
+    // The catch also sees errors we threw: the allowlist refusal here, and
+    // the walk's non-array-body and cross-origin-link guards. None of them is
+    // GitHub answering, so none may be skipped - a skipped repository is one
+    // we stop asking about, and our own guard tripping is not a reason to
+    // stop asking. The reason is still carried, and nothing attributes it.
+    const adapter = new OctokitGitHub(
+      async () => ({}) as never,
+      // The allowlist guard, refusing before any request is made.
+      () => false,
+      async () => ({}) as never,
+      () => "user",
+    );
+    const repo = { owner: "no42-org", name: "twiki" };
+
+    const page = await adapter.listDependabotAlerts("no42-org", [repo]);
+
+    expect(page.skipped).toEqual([]);
+    expect(page.unreachable).toEqual([
+      {
+        repo,
+        reason: "Refusing to act on non-allowlisted repo no42-org/twiki",
+      },
+    ]);
+  });
+
+  it("names a repository that reached no answer as unreachable", async () => {
+    // A 502 is not an answer about the repository, and retrying it next
+    // sweep may well work: the sweep is incomplete, so it degrades. Which
+    // side of that line this falls on is unchanged by #169; what changed is
+    // that the entry carries the repository and what came back from it,
+    // instead of bumping a counter.
+    const failing = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw Object.assign(new Error("Bad gateway"), { status: 502 });
+      },
+    } as unknown as Octokit;
+
+    const page = await adapterFor(failing, "user").listDependabotAlerts(
+      "no42-org",
+      [{ owner: "no42-org", name: "twiki" }],
+    );
+
+    expect(page.unreachable).toEqual([
+      { repo: { owner: "no42-org", name: "twiki" }, reason: "Bad gateway" },
+    ]);
+    expect(page.skipped).toEqual([]);
   });
 });
 

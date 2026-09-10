@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { watchKey } from "../src/core/slug.js";
 import { alertSubject } from "../src/core/subject.js";
+import { DEPENDABOT_ALERTS_DISABLED_BODY as DISABLED } from "../src/github/octokit-adapter.js";
 import { orgAlertsUrl } from "../src/github/port.js";
 import type { AlertObservation } from "../src/tricorder/collect/dependabot-alerts.js";
 import {
@@ -103,6 +104,8 @@ describe("Dependabot alerts lane", () => {
         outcome: "ok",
         alerts: 2,
         unreadable: 0,
+        // The org path reads one listing, so it has nothing to skip.
+        skipped: 0,
       });
       expect(store.currentByType("dependabot_alert")).toHaveLength(2);
       expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
@@ -595,7 +598,147 @@ describe("Dependabot alerts lane", () => {
 
       const r = await collectOrgAlerts(deps(), "indigo423", "full");
 
-      expect(r).toMatchObject({ outcome: "ok", alerts: 1, unreadable: 0 });
+      expect(r).toEqual({
+        installation: "indigo423",
+        outcome: "ok",
+        alerts: 1,
+        unreadable: 0,
+        skipped: 1,
+      });
+    });
+
+    it("confirms nothing about a repository whose alerts are switched off", async () => {
+      // #169: the repository was DROPPED from the listing and then confirmed
+      // at zero by the pass below it - a measured zero for a question GitHub
+      // never answered. It now reads unconfirmed instead (AD-28), and its
+      // sibling with alerts on is confirmed with its real count.
+      watched.add("indigo423/benchmark");
+      watched.add("indigo423/quiet");
+      github.userAccounts.add("indigo423");
+      github.repoAlerts.set("indigo423/benchmark", [
+        makeAlert({
+          number: 1,
+          repo: { owner: "indigo423", name: "benchmark" },
+        }),
+      ]);
+      github.alertsDisabled.add("indigo423/quiet");
+
+      await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(
+        store
+          .currentByTypeForOwner("repository", "indigo423")
+          .map((c) => ({ key: c.subject.key, payload: c.payload })),
+      ).toEqual([
+        {
+          key: "indigo423/benchmark",
+          payload: {
+            repo: "indigo423/benchmark",
+            openAlerts: 1,
+            worstSeverity: "high",
+          },
+        },
+      ]);
+      // Named, quoting what GitHub said, through the helper both siblings
+      // use: an operator who knows which repository was skipped can go and
+      // switch Dependabot on for it.
+      expect(store.latestRuns(1)[0]?.detail).toBe(
+        `skipped, no listing to read: indigo423/quiet (${DISABLED})`,
+      );
+      expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
+    });
+
+    it("names every skipped repository rather than counting them", async () => {
+      watched.add("indigo423/quiet");
+      watched.add("indigo423/quieter");
+      github.userAccounts.add("indigo423");
+      github.alertsDisabled.add("indigo423/quiet");
+      github.alertsDisabled.add("indigo423/quieter");
+
+      const r = await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(r.outcome).toBe("ok");
+      // The exact sentence, both names and their order: a count is what this
+      // change removed, and asserting the absence of one is an assertion no
+      // regression could fail.
+      expect(store.latestRuns(1)[0]?.detail).toBe(
+        `skipped, no listing to read: indigo423/quiet (${DISABLED})` +
+          `, indigo423/quieter (${DISABLED})`,
+      );
+    });
+
+    it("confirms nothing at all when every watched repository is skipped", async () => {
+      // The measured shape of the one personal account: Dependabot off
+      // everywhere. Every repository reads unconfirmed, and the run is still
+      // ok, because a switched-off feature is an answer and not a failure.
+      watched.add("indigo423/quiet");
+      watched.add("indigo423/quieter");
+      github.userAccounts.add("indigo423");
+      github.alertsDisabled.add("indigo423/quiet");
+      github.alertsDisabled.add("indigo423/quieter");
+
+      const r = await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(r).toEqual({
+        installation: "indigo423",
+        outcome: "ok",
+        alerts: 0,
+        unreadable: 0,
+        skipped: 2,
+      });
+      expect(store.currentByTypeForOwner("repository", "indigo423")).toEqual(
+        [],
+      );
+    });
+
+    it("retracts the confirmation a skipped repository already had", async () => {
+      // Withholding a new one is enough only for a repository never
+      // confirmed. One confirmed at an open alert last week would otherwise
+      // keep publishing that count, attested and ageing - a confident stale
+      // number in place of the confident zero this change removed. GitHub
+      // saying it cannot list the repository is a positive statement of
+      // absence, so this is AD-23 applied, not bent.
+      watched.add("indigo423/quiet");
+      github.userAccounts.add("indigo423");
+      github.repoAlerts.set("indigo423/quiet", [
+        makeAlert({ number: 4, repo: { owner: "indigo423", name: "quiet" } }),
+      ]);
+      await collectOrgAlerts(deps(), "indigo423", "full");
+      expect(
+        store
+          .currentByTypeForOwner("repository", "indigo423")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([["indigo423/quiet", "present"]]);
+
+      github.alertsDisabled.add("indigo423/quiet");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(
+        store
+          .currentByTypeForOwner("repository", "indigo423")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([["indigo423/quiet", "resolved"]]);
+    });
+
+    it("never tombstones a skipped repository's rows", async () => {
+      // Its alerts are unlisted, not absent. Tombstoning them would report a
+      // live alert as fixed on the strength of a listing nobody read.
+      watched.add("indigo423/quiet");
+      github.userAccounts.add("indigo423");
+      github.repoAlerts.set("indigo423/quiet", [
+        makeAlert({ number: 4, repo: { owner: "indigo423", name: "quiet" } }),
+      ]);
+      await collectOrgAlerts(deps(), "indigo423", "full");
+      github.repoAlerts.delete("indigo423/quiet");
+      github.alertsDisabled.add("indigo423/quiet");
+
+      await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(
+        store
+          .currentByTypeForOwner("dependabot_alert", "indigo423")
+          .map((c) => ({ key: c.subject.key, state: c.state })),
+      ).toEqual([{ key: "indigo423/quiet#4", state: "present" }]);
     });
 
     it("still degrades when a repository could not be read for another reason", async () => {
@@ -620,9 +763,38 @@ describe("Dependabot alerts lane", () => {
       const r = await collectOrgAlerts(deps(), "indigo423", "full");
 
       expect(r.outcome).toBe("partial");
-      const detail = store.latestRuns(1)[0]?.detail ?? "";
-      expect(detail).toContain("1 repositories could not be read");
-      expect(detail).not.toContain("alert payloads");
+      // Named as well as counted, so the operator knows which one and what
+      // came back from it.
+      expect(store.latestRuns(1)[0]?.detail).toBe(
+        "1 repositories could not be read: indigo423/gone (Bad gateway)",
+      );
+    });
+
+    it("reports a skipped and an unreachable repository in their own clauses", async () => {
+      // They are different facts and only one of them degrades the run. One
+      // clause each, because an operator reading only the first would act on
+      // half the problem.
+      watched.add("indigo423/gone");
+      watched.add("indigo423/quiet");
+      github.userAccounts.add("indigo423");
+      github.unreachableRepos.add("indigo423/gone");
+      github.alertsDisabled.add("indigo423/quiet");
+
+      const r = await collectOrgAlerts(deps(), "indigo423", "full");
+
+      // Partial because of the unreachable one ALONE: the skipped one is an
+      // answer, and degrading on it would hold the lane partial for ever.
+      expect(r).toEqual({
+        installation: "indigo423",
+        outcome: "partial",
+        alerts: 0,
+        unreadable: 0,
+        skipped: 1,
+      });
+      expect(store.latestRuns(1)[0]?.detail).toBe(
+        "1 repositories could not be read: indigo423/gone (Bad gateway)" +
+          `; skipped, no listing to read: indigo423/quiet (${DISABLED})`,
+      );
     });
 
     it("never sends a validator it cannot honour for a user account", async () => {
@@ -683,7 +855,15 @@ describe("Dependabot alerts lane", () => {
       github.orgAlertNotModified.add("no42-org");
       const r = await collectOrgAlerts(deps(), "no42-org", "full");
 
-      expect(r).toMatchObject({ outcome: "ok", alerts: 1 });
+      // The whole structure: a 304 covered one listing, so nothing was
+      // asked about repository by repository and nothing was skipped.
+      expect(r).toEqual({
+        installation: "no42-org",
+        outcome: "ok",
+        alerts: 1,
+        unreadable: 0,
+        skipped: 0,
+      });
       const alertAfter = store.currentByType("dependabot_alert")[0];
       const repoAfter = store.currentByType("repository")[0];
       // No observation row: observedAt stands. Confirmed: verifiedAt moved.

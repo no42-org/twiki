@@ -21,6 +21,7 @@ import {
 import { coverageSubject } from "../src/core/subject.js";
 import type { RepoRef } from "../src/core/types.js";
 import {
+  DEPENDABOT_ALERTS_DISABLED_BODY,
   MAX_REASON_CHARS,
   OctokitGitHub,
   translateCodeScanningProbe,
@@ -53,6 +54,13 @@ const meta = (
 describe("translating the probe on observed behaviour (story 23)", () => {
   // Measured 2026-08-17 against a live installation. Both failures are 403 and
   // differ only in the message, so status alone cannot tell them apart.
+  //
+  // A `FeatureProbe` since #169, like both scanner translators, so the
+  // per-repository fan-out can classify on `answered` and quote `reason`
+  // without a second copy of either rule. The whole structure is asserted,
+  // never one field: `answered` is the field that decides whether one
+  // repository degrades a whole installation's sweep, and it was added
+  // without a single test looking at it.
   it("reads the disabled message, not just the status", () => {
     expect(
       translateDependabotProbe({
@@ -60,44 +68,95 @@ describe("translating the probe on observed behaviour (story 23)", () => {
         message:
           "Dependabot alerts are disabled for this repository. - https://docs.github.com/rest/dependabot",
       }),
-    ).toBe("alerts_disabled");
+    ).toEqual({
+      state: "feature_off",
+      // The documentation URL the client appends is gone: what GitHub said
+      // ABOUT THIS REPOSITORY is the part before it.
+      reason: "Dependabot alerts are disabled for this repository.",
+      answered: true,
+    });
   });
 
-  it("reads the not-accessible message as unreachable", () => {
+  it("reads the not-accessible message as unreachable, but as an ANSWER", () => {
+    // `unreachable` is about what GitHub said, `answered` about whether it
+    // said anything. This 403 is stable - the same words next hour - so it
+    // must not degrade a sweep, and reading the state instead of `answered`
+    // is how it once held a whole installation partial for ever (#158).
     expect(
       translateDependabotProbe({
         status: 403,
         message:
           "Resource not accessible by integration - https://docs.github.com/rest/dependabot",
       }),
-    ).toBe("unreachable");
+    ).toEqual({
+      state: "unreachable",
+      reason: "Resource not accessible by integration",
+      answered: true,
+    });
   });
 
   it("treats a 404 as unreachable, which is how GitHub hides a repository", () => {
+    // Also how it answers for one renamed or deleted but left in repos.yaml.
+    // An answer either way, so the sweep does not degrade on it.
     expect(
       translateDependabotProbe({ status: 404, message: "Not Found" }),
-    ).toBe("unreachable");
+    ).toEqual({
+      state: "unreachable",
+      reason: "Not Found",
+      answered: true,
+    });
   });
 
   it("does not throw on a rejection that is not an object", () => {
     // Aborted requests can surface null. Throwing inside a catch escapes the
     // probe and fails the whole installation run, turning one repository's odd
     // rejection into zero coverage rows for the organisation.
-    expect(translateDependabotProbe(null)).toBe("unknown");
-    expect(translateDependabotProbe(undefined)).toBe("unknown");
-    expect(translateDependabotProbe("a string")).toBe("unknown");
+    const noAnswer = { state: "unknown", reason: null, answered: false };
+    expect(translateDependabotProbe(null)).toEqual(noAnswer);
+    expect(translateDependabotProbe(undefined)).toEqual(noAnswer);
+    expect(translateDependabotProbe("a string")).toEqual(noAnswer);
+  });
+
+  it("bounds and redacts the reason it stores, on its own two branches", () => {
+    // The two branches this translator owns rather than shares with the
+    // scanners. Both used to be a second copy of the redact-and-bound step,
+    // written at the fan-out and observed by nothing: mutation showed
+    // dropping it there left the whole suite green (#169).
+    const off = translateDependabotProbe({
+      status: 403,
+      message: `${DEPENDABOT_ALERTS_DISABLED_BODY} ${"x".repeat(MAX_REASON_CHARS * 3)}`,
+    });
+    expect(off.state).toBe("feature_off");
+    expect(off.reason).toHaveLength(MAX_REASON_CHARS);
+
+    const gone = translateDependabotProbe({
+      status: 404,
+      // An auth failure can quote the credential it rejected, and this text
+      // reaches `collection_run.detail` and the operator's log (AD-16).
+      message: `Bad credentials ghp_${"A".repeat(36)}`,
+    });
+    expect(gone.state).toBe("unreachable");
+    expect(gone.reason).toBe("Bad credentials gh?_REDACTED");
   });
 
   it("refuses to guess between the two 403s when the message is new", () => {
     // Guessing produces either a false accusation about the operator's
     // settings or a false claim of inaccessibility, and both read as confident.
+    // An unrecognised 403 is still an ANSWER, though: stable, and stored with
+    // its own words. A 5xx is not.
     expect(
       translateDependabotProbe({ status: 403, message: "Something else" }),
-    ).toBe("unknown");
-    expect(translateDependabotProbe({ status: 500, message: "boom" })).toBe(
-      "unknown",
-    );
-    expect(translateDependabotProbe({})).toBe("unknown");
+    ).toEqual({ state: "unknown", reason: "Something else", answered: true });
+    expect(translateDependabotProbe({ status: 500, message: "boom" })).toEqual({
+      state: "unknown",
+      reason: "boom",
+      answered: false,
+    });
+    expect(translateDependabotProbe({})).toEqual({
+      state: "unknown",
+      reason: null,
+      answered: false,
+    });
   });
 });
 
@@ -298,6 +357,25 @@ describe("the adapter's own probe", () => {
       () => false,
     );
     expect(await gh.probeDependabotAccess(REPO)).toBe("unknown");
+  });
+
+  it("still spells a switched-off feature `alerts_disabled` for the coverage lane", async () => {
+    // The translator returns a FeatureProbe since #169, whose word for off is
+    // `feature_off`. The coverage lane's stored vocabulary predates it and is
+    // unchanged, so the two are mapped rather than merged - and a mapping
+    // nothing exercises is a rename waiting to rewrite every coverage row.
+    const gh = new OctokitGitHub(
+      async () =>
+        ({
+          request: async () => {
+            throw Object.assign(new Error(DEPENDABOT_ALERTS_DISABLED_BODY), {
+              status: 403,
+            });
+          },
+        }) as never,
+      () => true,
+    );
+    expect(await gh.probeDependabotAccess(REPO)).toBe("alerts_disabled");
   });
 
   it("does not call a resolution failure a switched-off scanner either", async () => {

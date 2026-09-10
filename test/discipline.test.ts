@@ -416,9 +416,19 @@ describe("the conditional alert listing", () => {
       tokenGen: EXPIRES,
     });
 
-    expect(page.notModified).toBe(true);
-    expect(page.alerts).toEqual([]);
-    expect(page.validator?.etag).toBe('W/"a"');
+    // The WHOLE page, not the three fields this test used to name: a 304
+    // asserts nothing about any repository, so both lists must come back
+    // empty, and a field added to the page later cannot slip past unasserted
+    // (#169).
+    expect(page).toEqual({
+      alerts: [],
+      unreadable: 0,
+      unreachable: [],
+      skipped: [],
+      notModified: true,
+      truncated: false,
+      validator: { etag: 'W/"a"', lastModified: null, tokenGen: EXPIRES },
+    });
   });
 
   it("caches a validator only for a single-page listing", async () => {
@@ -675,13 +685,14 @@ describe("the conditional alert listing", () => {
     expect(page.validator).toBeNull();
   });
 
-  it("treats alerts-switched-off as a fact and a real error as unreadable", async () => {
+  it("treats both stable 403s as answers, and neither as a failure", async () => {
     // Two 403s that differ only in message (measured 2026-08-17). One says
-    // the feature is off, which is the same fact the coverage probe
-    // records and must not degrade the sweep - most repositories on the
-    // measured personal account answer it. The other is a genuine failure
-    // and has to count, or the sweep would finish clean having read
-    // nothing and tombstone everything it did not see.
+    // the feature is off; the other says the App may not read the endpoint.
+    // Both are ANSWERS - stable, the same words next hour - so neither
+    // degrades the sweep, and each is named with its own words. Reading the
+    // state instead of `answered` is how the second one held a whole
+    // installation partial for ever, which is the defect #158 patched one
+    // story earlier and #169 finished here.
     const fail = (message: string) =>
       Object.assign(new Error(message), { status: 403 });
     const gh = {
@@ -709,10 +720,21 @@ describe("the conditional alert listing", () => {
       { owner: "indigo423", name: "fine" },
     ]);
 
-    // Switched off: skipped silently. Broken: counted as an unreachable
-    // REPOSITORY, kept apart from unreadable payloads so the operator is
-    // not pointed at a mapper bug that does not exist.
-    expect(page.unreachable).toBe(1);
+    // Both skipped, each carrying its OWN words: the two entries prove the
+    // 403s were told apart by their message, and the empty `unreachable`
+    // proves neither degrades the sweep. `unreadable` stays zero because
+    // neither is a payload the mapper choked on.
+    expect(page.skipped).toEqual([
+      {
+        repo: { owner: "indigo423", name: "off" },
+        reason: "Dependabot alerts are disabled for this repository.",
+      },
+      {
+        repo: { owner: "indigo423", name: "broken" },
+        reason: "Resource not accessible by integration",
+      },
+    ]);
+    expect(page.unreachable).toEqual([]);
     expect(page.unreadable).toBe(0);
     expect(page.alerts).toEqual([]);
   });
