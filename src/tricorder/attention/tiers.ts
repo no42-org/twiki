@@ -3,6 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 
+import {
+  COVERAGE_FEATURES,
+  type CoverageFeature,
+} from "../../core/coverage.js";
 import { NOT_APPLICABLE } from "../../core/rank.js";
 import type { SeverityReading } from "../../core/severity.js";
 import { UNKNOWN_SEVERITY, worstSeverity } from "../../core/severity.js";
@@ -50,13 +54,14 @@ export interface RepoAttention {
   /** Readable review requests open on this repository. */
   openReviews: number;
   /**
-   * Open SECURITY items in the queue for this repository: Dependabot alerts
-   * and code scanning findings alike (#156).
+   * Open SECURITY items in the queue for this repository: Dependabot alerts,
+   * code scanning findings and leaked credentials alike (#156, #158).
    *
-   * Derived from the topic rather than from a list of kinds, so the kind
-   * Story 3.4 adds joins this count by being filed under Security and not by
-   * anyone remembering to edit this line. The name is unchanged because it is
-   * what every surface calls it, and both kinds are alerts.
+   * Derived from the topic rather than from a list of kinds, which is what
+   * let Story 3.4's kind join this count by being filed under Security rather
+   * than by anyone editing this line - verified against the rendered chip,
+   * not assumed. The name is unchanged because it is what every surface calls
+   * it, and all three kinds are alerts.
    */
   openAlerts: number;
   /** The worst severity among those items, `unknown` when one is unreadable. */
@@ -74,6 +79,10 @@ const KIND_WORD: Readonly<Record<QueueItem["kind"], string>> = {
   // and a rationale saying only "alert #21" would send a reader to the wrong
   // tab.
   code_scanning: "code scanning alert",
+  // Named apart from both for the same reason: three families share one
+  // repository's `#21` space, and "alert #21" alone sends a reader to the
+  // wrong tab. The word says what leaked, never what the credential was.
+  secret_scanning: "secret scanning alert",
   // The run, not the workflow: the number beside it is the run's, and the
   // workflow's own name is in the explanation the sentence ends with. A kind
   // missing from this table prints `undefined` into the rationale rather
@@ -208,38 +217,56 @@ function judge(
  * count in no tier, no tile and no summary (AD-32). Reads through the store
  * port only; no GitHub call and no write on this path (AD-3).
  *
- * `suppressAlertsFor` names the folded slugs whose DEPENDABOT alert rows the
- * caller has positive evidence GitHub is no longer watching (AD-28): their
- * alert items are dropped before tiering, so a repository that reads `not
- * covered` cannot at the same time be `now` because of an alert nobody may
- * count. The update PRs beside them keep the terms they inherited in the
- * queue build; only the alert items go.
+ * `suppressed` names, PER FEATURE, the folded slugs whose rows the caller
+ * has positive evidence GitHub is no longer watching (AD-28): those items
+ * are dropped before tiering, so a repository that reads `not covered`
+ * cannot at the same time be `now` because of a finding nobody may count.
+ * The update PRs beside a withdrawn alert keep the terms they inherited in
+ * the queue build; only the alert items go.
  *
- * `suppressCodeScanningFor` is the same rule for the same reason, one
- * feature over (#156). Two sets rather than one, because the two features
- * are switched off independently: a repository with Dependabot off and code
- * scanning on still has real findings to count, and a single set would
- * withdraw both on evidence about either.
+ * Keyed by `CoverageFeature` rather than taken as three positional sets, and
+ * that is not cosmetic: the three are switched off independently - a
+ * repository with Dependabot off and code scanning on still has real
+ * findings to count - so they cannot be collapsed into one set, and three
+ * trailing `ReadonlySet<string>` parameters are three arguments the compiler
+ * cannot tell apart. Transposing two of them compiled clean and withdrew the
+ * wrong feature's rows, silently, on a page whose whole job is to say what
+ * it is not counting.
  */
+export type SuppressedByFeature = Partial<
+  Record<CoverageFeature, ReadonlySet<string>>
+>;
+
+/** The queue kind whose items each feature's evidence may withdraw. */
+const SUPPRESSES: Readonly<Record<CoverageFeature, QueueItem["kind"]>> = {
+  dependabot: "alert",
+  code_scanning: "code_scanning",
+  secret_scanning: "secret_scanning",
+};
+
 export function attentionByRepo(
   store: StorePort,
   watched: readonly RepoRef[],
   now: Date,
   deps: AttentionDeps,
-  suppressAlertsFor: ReadonlySet<string> = new Set(),
-  suppressCodeScanningFor: ReadonlySet<string> = new Set(),
+  suppressed: SuppressedByFeature = {},
 ): { byRepo: Map<string, RepoAttention>; queue: Queue } {
   const queue = buildQueue(store, now, deps);
 
   const itemsBySlug = new Map<string, QueueItem[]>();
   for (const repo of watched) itemsBySlug.set(watchKey(repo), []);
+  // Derived from the map rather than written as one branch per feature, so
+  // a fourth counted feature withdraws its own kind by appearing in
+  // SUPPRESSES and not by anyone remembering to add a fourth `if`.
+  const withdrawn = (item: QueueItem): boolean =>
+    COVERAGE_FEATURES.some(
+      (feature) =>
+        SUPPRESSES[feature] === item.kind &&
+        suppressed[feature]?.has(foldSlug(item.repo)) === true,
+    );
   for (const item of queue.items) {
-    const slug = foldSlug(item.repo);
-    if (item.kind === "alert" && suppressAlertsFor.has(slug)) continue;
-    if (item.kind === "code_scanning" && suppressCodeScanningFor.has(slug)) {
-      continue;
-    }
-    itemsBySlug.get(slug)?.push(item);
+    if (withdrawn(item)) continue;
+    itemsBySlug.get(foldSlug(item.repo))?.push(item);
   }
 
   const reviews = reviewsBySlug(store, new Set(itemsBySlug.keys()), now);
@@ -263,17 +290,9 @@ export function repoAttention(
   repo: RepoRef,
   now: Date,
   deps: AttentionDeps,
-  suppressAlertsFor: ReadonlySet<string> = new Set(),
-  suppressCodeScanningFor: ReadonlySet<string> = new Set(),
+  suppressed: SuppressedByFeature = {},
 ): RepoAttention {
-  const { byRepo } = attentionByRepo(
-    store,
-    [repo],
-    now,
-    deps,
-    suppressAlertsFor,
-    suppressCodeScanningFor,
-  );
+  const { byRepo } = attentionByRepo(store, [repo], now, deps, suppressed);
   const attention = byRepo.get(watchKey(repo));
   if (attention === undefined) {
     // Unreachable: the batch form seeds a group for every repository it was

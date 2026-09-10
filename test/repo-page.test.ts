@@ -3,19 +3,27 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Octokit } from "@octokit/rest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isDefaultBranchRun } from "../src/core/branch.js";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
+import { redact } from "../src/core/redact.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
+import { OctokitGitHub } from "../src/github/octokit-adapter.js";
 import {
   normalise as normaliseScan,
   summariseRepo as summariseScanRepo,
 } from "../src/tricorder/collect/code-scanning.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
 import { LANE as KEV_LANE } from "../src/tricorder/collect/kev.js";
+import {
+  collectOrgSecretScanning,
+  normalise as normaliseSecret,
+  summariseRepo as summariseSecretRepo,
+} from "../src/tricorder/collect/secret-scanning.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import {
@@ -23,7 +31,12 @@ import {
   compareRunRows,
   type RepoRunRow,
 } from "../src/tricorder/web/repo-view.js";
-import { makeAlert, makeCodeScanningAlert, primaryNav } from "./fakes.js";
+import {
+  makeAlert,
+  makeCodeScanningAlert,
+  makeSecretScanningAlert,
+  primaryNav,
+} from "./fakes.js";
 
 const NOW = new Date("2026-08-20T12:00:00.000Z");
 const SWEEP = { cadenceMs: 15 * 60_000 };
@@ -1496,10 +1509,18 @@ describe("the code scanning rows on the repository page (#156)", () => {
 
     const html = await (await app.request("/repo/no42-org/twiki")).text();
 
+    // The empty sentence names ONLY the kind that was actually measured.
+    // Naming a scanner no lane has ever run would be a confident zero, and
+    // the note below it retracts nothing: a reader meets the zero first.
+    // Both scanner lanes are silent here, and each says so for itself,
+    // because the two are separate sweeps with separate freshness.
     expect(html).toContain(
-      '<p class="attest">no open alerts or code scanning findings in this repository</p>' +
-        '<p class="attest">code scanning: not confirmed by any completed sweep</p>',
+      '<p class="attest">no open alerts in this repository</p>' +
+        '<p class="attest">code scanning: not confirmed by any completed sweep</p>' +
+        '<p class="attest">secret scanning: not confirmed by any completed sweep</p>',
     );
+    expect(html).not.toContain("no open alerts or code scanning findings");
+    expect(html).not.toContain("leaked secrets in this repository");
   });
 
   it("drops the note once a sweep has confirmed the repository", async () => {
@@ -1519,11 +1540,16 @@ describe("the code scanning rows on the repository page (#156)", () => {
     expect(html).not.toContain("code scanning: not confirmed");
   });
 
-  it("does not assert a measured empty over rows it withheld", async () => {
-    // Dependabot confirmed off, code scanning on and finding nothing. The
-    // section is no longer suppressed - a feature is still confirmed on - so
-    // the empty sentence must say what it actually looked at. "No open
-    // alerts" here would assert a zero over rows the page dropped.
+  it("says nothing is measured when every kind was withheld or never swept", async () => {
+    // Dependabot confirmed off, both scanners confirmed ON and neither lane
+    // ever swept. The section is not suppressed - `securityStanding` reads a
+    // covered scanner as `counted` - so the empty sentence is what a reader
+    // meets, and there is nothing measured for it to name: the alerts were
+    // withheld and the two scanners were never looked at.
+    //
+    // This is also the reachability proof for that branch of `securityEmpty`.
+    // Its predecessor was justified by "every kind withdrawn", which the
+    // whole-section suppression makes impossible, so the branch was dead.
     const r = store.beginRun({
       lane: "coverage",
       installation: "no42-org",
@@ -1573,17 +1599,115 @@ describe("the code scanning rows on the repository page (#156)", () => {
 
     const html = await (await app.request("/repo/no42-org/twiki")).text();
 
+    // Neither scanner lane has swept, so neither is named as a measured
+    // zero; the withdrawn Dependabot rows are not named either. That leaves
+    // nothing measured at all, which is a sentence of its own rather than a
+    // list with no items in it.
     expect(html).toContain(
-      '<p class="attest">no code scanning findings in this repository</p>',
+      '<p class="attest">nothing here is measured: every kind this section' +
+        " lists is either not covered or not yet swept</p>",
     );
     expect(html).not.toContain("no open alerts or code scanning findings");
+    expect(html).not.toContain("in this repository</p>");
     // And the withheld kind is named, rather than its rows simply vanishing.
     expect(html).toContain(
-      '<p class="attest">Dependabot alerts not listed: the feature is switched off</p>',
+      '<p class="attest">Dependabot alerts not listed: not collected for this' +
+        " repository, for the reason above</p>",
     );
     // The alert really was dropped, so the sentence is about a withheld row
     // and not a repository that happens to have none.
     expect(html).not.toContain("#7");
+  });
+
+  it("survives a confirmation whose worst severity is not a string", async () => {
+    // The boundary read AGENTS.md's rule is about. Both confirmation
+    // payloads are bare `as` casts over whatever JSON the store hands back -
+    // no guard, unlike the alert rows beside them - and `worstSeverity`
+    // calls `.trim()` on every value it is given. A stored number here threw
+    // a TypeError out of `buildRepoView` and answered 500 for the whole
+    // repository page, which is the one page an operator reaches for when a
+    // repository looks wrong.
+    const a = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(a, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        // No alert rows, so the header falls back to this payload - which is
+        // the only path that reads `worstSeverity` off it.
+        payload: { repo: "no42-org/twiki", openAlerts: 2, worstSeverity: 3 },
+      },
+    ] as never[]);
+    store.finishRun(a, "ok", "2026-08-20T11:55:00.000Z");
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    // Dropped, exactly as a non-number is dropped from the count beside it:
+    // an absent severity renders as no severity, which is an absence and not
+    // a zero.
+    expect(view.summary.worstSeverity).toBeNull();
+    // The count is still read, so the corrupt field costs only itself.
+    expect(view.summary.openAlerts).toBe(2);
+
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+    const res = await app.request("/repo/no42-org/twiki");
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("2 open alerts");
+  });
+
+  it("names a swept kind and drops an unswept one from the same sentence", async () => {
+    // The discriminating case for the attestation rule: code scanning HAS
+    // swept and found nothing, secret scanning never has. One of those is a
+    // zero this page measured and the other is a zero nobody looked for, and
+    // only the first may be said. A rule that dropped both, or neither,
+    // passes the test above and fails this one.
+    const a = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(a, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", openAlerts: 0, worstSeverity: null },
+      },
+    ] as never[]);
+    store.finishRun(a, "ok", "2026-08-20T11:55:00.000Z");
+    seedScans([]);
+
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+    const html = await (await app.request("/repo/no42-org/twiki")).text();
+
+    expect(html).toContain(
+      '<p class="attest">no open alerts or code scanning findings in this' +
+        " repository</p>",
+    );
+    // The kind nobody swept is absent from the zero and present in the note
+    // below it, which is the whole distinction.
+    expect(html).not.toContain("leaked secrets");
+    expect(html).toContain(
+      '<p class="attest">secret scanning: not confirmed by any completed' +
+        " sweep</p>",
+    );
   });
 
   it("names the code scanning findings it withheld when that feature is off", async () => {
@@ -1634,20 +1758,32 @@ describe("the code scanning rows on the repository page (#156)", () => {
 
     const html = await (await app.request("/repo/no42-org/twiki")).text();
 
+    // "Not collected", never "switched off": this feature's state is
+    // `unreachable` - GitHub refusing the endpoint to our App - and the
+    // feature may be perfectly on. Saying a switch is off sends the operator
+    // to a setting that is fine.
     expect(html).toContain(
-      '<p class="attest">code scanning findings not listed: the feature is switched off</p>',
+      '<p class="attest">code scanning findings not listed: not collected' +
+        " for this repository, for the reason above</p>",
     );
+    expect(html).not.toContain("the feature is switched off");
+    // And the reason GitHub actually gave is on the page, above it.
+    expect(html).toContain(`code scanning: ${NOT_ACCESSIBLE}`);
+    // Only the alerts are named: they were measured. Code scanning was
+    // withdrawn and no secret scanning sweep has ever confirmed this
+    // repository, and neither absence may be spelled as a zero.
     expect(html).toContain(
       '<p class="attest">no open alerts in this repository</p>',
     );
+    expect(html).not.toContain("leaked secrets in this repository");
     expect(html).not.toContain("Code scanning</th>");
   });
 
-  it("says how many listed findings the queue does not rank", async () => {
-    // The header counts the items the queue RANKS and the heading counts the
-    // rows shown, so a finding off the default branch makes them differ.
-    // Without this sentence the page read `1 open alerts` above `4 shown`
-    // and neither number was wrong.
+  it("says how many listed findings the queue does not rank, and claims nothing about a count", async () => {
+    // The sentence names the queue and nothing else. It used to end "and the
+    // count above does not include them", which contradicted the number it
+    // pointed at: the count directly above is the heading's `N shown`, which
+    // counts every row in the tables and therefore DOES include them.
     const r = store.beginRun({
       lane: "rest-org-dependabot",
       installation: "no42-org",
@@ -1682,13 +1818,18 @@ describe("the code scanning rows on the repository page (#156)", () => {
 
     const html = await (await app.request("/repo/no42-org/twiki")).text();
 
-    expect(html).toContain('<span class="shown">4 shown</span>');
-    expect(html).toContain("1 open alerts");
     expect(html).toContain(
       '<p class="attest">3 of these are not on the default branch,' +
-        " so the queue does not rank them and the count above does not" +
-        " include them</p>",
+        " so the queue does not rank them</p>",
     );
+    // The two numbers this page shows, pinned so the assertion above is read
+    // against them: the heading counts all four rows, and the header counts
+    // the one item the queue ranked. The old sentence sat under the first and
+    // described the second.
+    expect(html).toContain('<span class="shown">4 shown</span>');
+    expect(html).toContain("1 open alerts");
+    // And no claim about a count of any kind rides along with it.
+    expect(html).not.toContain("the count above");
   });
 
   it("badges an unconfirmed finding as unconfirmed, never with a freshness word", async () => {
@@ -2710,5 +2851,473 @@ describe("the per-repository page", () => {
     seedKevAndAlert({ number: 1 });
     const html = await (await app().request("/")).text();
     expect(html).toContain('href="/repo/no42-org/twiki"');
+  });
+});
+
+describe("the secret scanning rows on the repository page (#158)", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const seedSecrets = (
+    alerts: Parameters<typeof makeSecretScanningAlert>[0][],
+    withConfirmation = true,
+  ) => {
+    const built = alerts.map((a) => makeSecretScanningAlert(a));
+    const r = store.beginRun({
+      lane: "rest-org-secret-scanning",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      ...built.map(normaliseSecret),
+      ...(withConfirmation ? [summariseSecretRepo(REPO, built)] : []),
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+  };
+
+  /** The alert lane's confirmation, so the Security section is attested. */
+  const seedAlertConfirmation = () => {
+    const r = store.beginRun({
+      lane: "rest-org-dependabot",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository", key: "no42-org/twiki" },
+        payload: { repo: "no42-org/twiki", openAlerts: 0, worstSeverity: null },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+  };
+
+  const page = async () => {
+    const app = createApp({
+      defaultBranchOf: () => "main",
+      store,
+      watched: [REPO],
+      policy: SWEEP,
+      rankPolicy: DEFAULT_RANK_POLICY,
+      now: () => NOW,
+    });
+    return (await app.request("/repo/no42-org/twiki")).text();
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "secret-page-"));
+    store = SqliteStore.openForWrite(join(dir, "p.db"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("lists every stored secret with its type and validity", () => {
+    // The whole list, not one cell of it. There is no ref filter here: a
+    // secret is not on a branch, so every row this page lists is a row the
+    // queue ranks and the two counts agree by construction.
+    seedSecrets([
+      { number: 3, secretType: "Amazon AWS Access Key ID" },
+      {
+        number: 4,
+        secretType: "Slack API Token",
+        validity: "unknown",
+        publiclyLeaked: true,
+      },
+    ]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.secretScanning).toEqual([
+      {
+        number: 3,
+        secretType: "Amazon AWS Access Key ID",
+        validity: "active",
+        publiclyLeaked: false,
+        htmlUrl: "https://github.com/no42-org/twiki/security/secret-scanning/3",
+        freshness: "fresh",
+        age: "5m ago",
+      },
+      {
+        number: 4,
+        secretType: "Slack API Token",
+        validity: "unknown",
+        publiclyLeaked: true,
+        htmlUrl: "https://github.com/no42-org/twiki/security/secret-scanning/4",
+        freshness: "fresh",
+        age: "5m ago",
+      },
+    ]);
+    expect(view.secretScanningAttested).toBe(true);
+    // Both reached the queue, unlike a code scanning finding off the default
+    // branch: there is no condition here for one to fail.
+    expect(view.summary.openAlerts).toBe(2);
+  });
+
+  it("says a secret is unattested while nothing has confirmed the repository", () => {
+    // Rows without a confirmation: a partial sweep stored them and vouched
+    // for nothing. The badge must not claim an attestation nobody made.
+    seedSecrets([{ number: 3 }], false);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.secretScanning).toHaveLength(1);
+    expect(view.secretScanningAttested).toBe(false);
+  });
+
+  it("counts a stored row it cannot read rather than dropping it", () => {
+    const r = store.beginRun({
+      lane: "rest-org-secret-scanning",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "secret_scanning_alert", key: "no42-org/twiki#9" },
+        payload: { number: 9, repo: "no42-org/twiki", validity: 3 },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.secretScanning).toEqual([]);
+    expect(view.unreadable).toBe(1);
+  });
+
+  it("adds the secret lane's confirmation to the fallback, without a severity", () => {
+    // No queue item survives - the rows this confirmation counted have been
+    // tombstoned, or belong to a repository this page filtered out - so the
+    // header falls back to what the lanes confirmed. All THREE contribute,
+    // or a repository whose only findings were secrets would report `0`.
+    seedAlertConfirmation();
+    const r = store.beginRun({
+      lane: "rest-org-secret-scanning",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      summariseSecretRepo(REPO, [
+        makeSecretScanningAlert({ number: 3 }),
+        makeSecretScanningAlert({ number: 4 }),
+      ]),
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.secretScanning).toEqual([]);
+    // Zero from the alert lane plus two from this one.
+    expect(view.summary.openAlerts).toBe(2);
+    // And no severity: GitHub grades no secret, so the confirmation row
+    // carries no worst severity and this page must not invent `critical` for
+    // a count it read off an old summary.
+    expect(view.summary.worstSeverity).toBeNull();
+  });
+
+  it("withdraws the secrets alone when only that feature is off", () => {
+    // The measured `off`, on the repository that answered it live. The code
+    // scanning finding beside it survives, which is what proves the three
+    // suppression sets are not one.
+    const cov = store.beginRun({
+      lane: "coverage",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(cov, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "covered",
+          codeScanning: { state: "covered", reason: null },
+          secretScanning: { state: "feature_off", reason: SECRETS_OFF },
+        },
+      },
+    ] as never[]);
+    store.finishRun(cov, "ok", "2026-08-20T11:55:00.000Z");
+    const scan = store.beginRun({
+      lane: "rest-org-code-scanning",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(scan, "2026-08-20T11:55:00.000Z", [
+      normaliseScan(makeCodeScanningAlert({ number: 21 })),
+      summariseScanRepo(REPO, [makeCodeScanningAlert({ number: 21 })]),
+    ] as never[]);
+    store.finishRun(scan, "ok", "2026-08-20T11:55:00.000Z");
+    seedSecrets([{ number: 3 }]);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.secretScanningWithdrawn).toBe(true);
+    expect(view.secretScanning).toEqual([]);
+    // The code scanning finding is untouched, and it is what the count is.
+    expect(view.codeScanning.map((c) => c.number)).toEqual([21]);
+    expect(view.summary.openAlerts).toBe(1);
+    // The secret took its `now` with it.
+    expect(view.summary.tier).toBe("soon");
+  });
+
+  it("renders the secrets table under the Security heading, type and validity", async () => {
+    seedAlertConfirmation();
+    seedSecrets([
+      { number: 3, secretType: "Amazon AWS Access Key ID" },
+      {
+        number: 4,
+        secretType: "Slack API Token",
+        validity: "unknown",
+        publiclyLeaked: true,
+      },
+    ]);
+
+    const html = await page();
+
+    const fresh =
+      '<td role="cell"><span class="lbl hid">Last confirmed</span>' +
+      '<span class="badge fresh" title="5m ago">fresh \u00B7 5m ago</span></td>';
+    // The link carries the row's OWN number: a constant href let a renderer
+    // put one row's link on another and pass.
+    const link = (n: number) =>
+      `<a href="https://github.com/no42-org/twiki/security/secret-scanning/${n}"` +
+      ' target="_blank" rel="noopener noreferrer">' +
+      `#${n}<span class="ext" aria-hidden="true">\u202F\u2197</span>` +
+      '<span class="sr-only">, opens GitHub in a new tab</span></a>';
+    expect(html).toContain(
+      '<table class="cards" role="table"><thead role="rowgroup"><tr role="row">' +
+        '<th scope="col" role="columnheader">Secret scanning</th>' +
+        '<th scope="col" role="columnheader">Type</th>' +
+        '<th scope="col" role="columnheader">Validity</th>' +
+        '<th scope="col" role="columnheader">Last confirmed</th>' +
+        '</tr></thead><tbody role="rowgroup">' +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Secret scanning</span>${link(3)}</td>` +
+        '<td role="cell"><span class="lbl">Type</span>Amazon AWS Access Key ID</td>' +
+        '<td role="cell"><span class="lbl">Validity</span>active</td>' +
+        `${fresh}</tr>` +
+        `<tr role="row"><td role="cell"><span class="lbl hid">Secret scanning</span>${link(4)} \u00B7 publicly leaked</td>` +
+        '<td role="cell"><span class="lbl">Type</span>Slack API Token</td>' +
+        '<td role="cell"><span class="lbl">Validity</span>unknown</td>' +
+        `${fresh}</tr>` +
+        "</tbody></table>",
+    );
+    // One section, one count: the heading speaks for the rows beneath it.
+    expect(html).toContain('<span class="shown">2 shown</span>');
+    // And no page anywhere claims CISA listed a leaked credential.
+    expect(html).not.toContain("CISA");
+  });
+
+  it("names the secrets it withheld when that feature is off", async () => {
+    const r = store.beginRun({
+      lane: "coverage",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "covered",
+          codeScanning: { state: "covered", reason: null },
+          secretScanning: { state: "feature_off", reason: SECRETS_OFF },
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+    seedAlertConfirmation();
+    seedSecrets([{ number: 3 }]);
+
+    const html = await page();
+
+    expect(html).toContain(
+      '<p class="attest">secret scanning alerts not listed: not collected' +
+        " for this repository, for the reason above</p>",
+    );
+    // The rows really were dropped, so the sentence is about a withheld row
+    // and not a repository that happens to have none.
+    expect(html).not.toContain("Secret scanning</th>");
+  });
+
+  it("says one thing, not two, about a feature that is off and unswept", async () => {
+    // Both facts are true at once here - coverage says the feature is not
+    // collected, and no sweep ever confirmed this repository - and they are
+    // genuinely different facts. But the reader does not need both: once the
+    // page has said the rows are not collected, a second paragraph saying
+    // nothing swept for them is noise, and the overview's chip already
+    // withholds its own note under exactly this condition.
+    const r = store.beginRun({
+      lane: "coverage",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T11:55:00.000Z",
+    });
+    store.recordObservations(r, "2026-08-20T11:55:00.000Z", [
+      {
+        subject: { type: "repository_coverage", key: "no42-org/twiki" },
+        payload: {
+          repo: "no42-org/twiki",
+          state: "covered",
+          codeScanning: { state: "covered", reason: null },
+          secretScanning: { state: "feature_off", reason: SECRETS_OFF },
+        },
+      },
+    ] as never[]);
+    store.finishRun(r, "ok", "2026-08-20T11:55:00.000Z");
+    seedAlertConfirmation();
+    // Rows collected before the feature was switched off, and no
+    // `repository_secret_scanning` confirmation at all.
+    seedSecrets([{ number: 3 }], false);
+
+    const html = await page();
+
+    expect(html).toContain(
+      '<p class="attest">secret scanning alerts not listed: not collected' +
+        " for this repository, for the reason above</p>",
+    );
+    // The lane's silence is not repeated underneath it.
+    expect(html).not.toContain("secret scanning: not confirmed");
+    // The code scanning lane is silent too and IS covered, so its note still
+    // fires - which is what proves the suppression is per feature and not a
+    // blanket one.
+    expect(html).toContain(
+      '<p class="attest">code scanning: not confirmed by any completed' +
+        " sweep</p>",
+    );
+  });
+
+  it("says secret scanning is unconfirmed while nothing has swept it", async () => {
+    // With no findings AND no confirmation, an empty Security section would
+    // read as a measured zero for secrets; this note is what stops it.
+    seedAlertConfirmation();
+
+    const html = await page();
+
+    expect(html).toContain(
+      '<p class="attest">secret scanning: not confirmed by any completed' +
+        " sweep</p>",
+    );
+  });
+
+  it("drops the note once a sweep has confirmed the repository", async () => {
+    seedAlertConfirmation();
+    seedSecrets([]);
+
+    const html = await page();
+
+    // A confirmation and no findings: `0`, and it means zero.
+    expect(html).not.toContain("secret scanning: not confirmed");
+  });
+
+  it("badges an unconfirmed secret as unconfirmed, never with a freshness word", async () => {
+    // The mirror of the code scanning sibling above, and it was missing:
+    // forcing this table to render `FreshnessBadge` unconditionally left the
+    // whole suite green, so a credential row stored by a sweep that vouched
+    // for nothing could print `fresh · 5m ago`. The section heading attests
+    // the DEPENDABOT lane, so these rows must carry their own standing.
+    seedAlertConfirmation();
+    seedSecrets([{ number: 3 }], false);
+
+    const html = await page();
+
+    expect(html).toContain(
+      '<td role="cell"><span class="lbl hid">Last confirmed</span>' +
+        '<span class="badge unknown">unconfirmed</span></td>',
+    );
+    // The row really is there, so this is not passing on an empty table.
+    expect(html).toContain("Secret scanning</th>");
+    // And no freshness word rode along with it.
+    expect(html).not.toContain('title="5m ago">fresh · 5m ago</span></td>');
+  });
+
+  it("says no secret scanning alerts when the lane swept and found none", async () => {
+    // The positive half of the measured-zero sentence, which had only ever
+    // been asserted ABSENT. A confirmation from both lanes and no rows is the
+    // one shape in which this page may name the third feature in a zero, and
+    // nothing pinned the clause that does it.
+    seedAlertConfirmation();
+    seedSecrets([]);
+
+    const html = await page();
+
+    expect(html).toContain(
+      '<p class="attest">no open alerts or secret scanning alerts in this' +
+        " repository</p>",
+    );
+    // A sweep vouched for the repository, so no unattested note rides below
+    // it: this really is a measured zero rather than an absence.
+    expect(html).not.toContain("secret scanning: not confirmed");
+  });
+
+  it("never renders a credential the wire payload really carried", async () => {
+    // The whole chain, starting at a payload that ACTUALLY has the field.
+    //
+    // Its predecessor seeded `makeSecretScanningAlert`, whose type has no
+    // `secret` at all, and then asserted the page did not contain a
+    // credential that was never in the input: a test that asserted what its
+    // own setup made impossible. This one begins at the raw JSON GitHub
+    // sends, goes through the real mapper, the real lane and the real
+    // renderer, and only then looks.
+    const raw = JSON.parse(
+      readFileSync(
+        join(
+          import.meta.dirname,
+          "fixtures/github/secret-scanning-alert-org.schema.json",
+        ),
+        "utf8",
+      ),
+    ) as { secret: string; secret_type_display_name: string };
+    // An AWS-shaped key deliberately: `redact()` matches GitHub token
+    // prefixes and JWTs only, so this string would survive redaction
+    // untouched. Dropping it at the boundary is the rule under test, and a
+    // GitHub-shaped fixture would let redaction pass the test for the mapper.
+    expect(redact(raw.secret)).toBe(raw.secret);
+
+    // The real adapter over a stub that answers with that payload.
+    const gh = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => ({ data: [raw], headers: {} }),
+    } as unknown as Octokit;
+    const github = new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+      () => "organization",
+    );
+    const logs: string[] = [];
+    await collectOrgSecretScanning(
+      {
+        github,
+        store,
+        isWatched: () => true,
+        watchedIn: () => [REPO],
+        now: () => "2026-08-20T11:55:00.000Z",
+        log: (m: string) => logs.push(m),
+      },
+      "no42-org",
+      "full",
+    );
+    seedAlertConfirmation();
+
+    const html = await page();
+
+    // The finding really reached the page, so the searches below are not
+    // passing over an empty section.
+    expect(html).toContain("Secret scanning</th>");
+    expect(html).toContain(raw.secret_type_display_name);
+    // And nothing anywhere in the rendered document is the credential.
+    expect(html).not.toContain(raw.secret);
+    // Nor did it reach the store or the log on the way here.
+    expect(
+      JSON.stringify(store.currentByType("secret_scanning_alert")),
+    ).not.toContain(raw.secret);
+    expect(logs.join("\n")).not.toContain(raw.secret);
   });
 });

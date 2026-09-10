@@ -17,6 +17,7 @@ import type { ReasonTable } from "./rank.js";
 export type QueueKind =
   | "alert"
   | "code_scanning"
+  | "secret_scanning"
   | "ci_failure"
   | "update_pr"
   | "issue";
@@ -79,11 +80,12 @@ export const TOPICS: readonly TopicSpec[] = [
     noun: "Security",
     sentenceNoun: "security",
     query: "security",
-    // Two kinds, and the topic is what makes them one number: a Dependabot
-    // alert and a code scanning finding are both "something GitHub found in
-    // this repository", and every chip, tile and filter counts them together
-    // by reading this list rather than naming a kind (#156).
-    kinds: ["alert", "code_scanning"],
+    // Three kinds, and the topic is what makes them one number: a Dependabot
+    // alert, a code scanning finding and a leaked credential are all
+    // "something GitHub found in this repository", and every chip, tile and
+    // filter counts them together by reading this list rather than naming a
+    // kind (#156, #158).
+    kinds: ["alert", "code_scanning", "secret_scanning"],
   },
   {
     topic: "ci",
@@ -194,6 +196,33 @@ export const KIND_REASONS: Readonly<Record<QueueKind, ReasonTable>> = {
     bump: { na: "on the default branch" },
     stuck: { na: "" },
   },
+  // A leaked credential is not an advisory either, and the only two terms
+  // that speak are the ones that say what it is and why it ranks where it
+  // does.
+  //
+  // `kev` is `true` for every open secret, and its wording MUST be replaced:
+  // the chain's default for a listed KEV term is "listed in CISA KEV", and an
+  // open secret is not in CISA's catalogue of exploited vulnerabilities. The
+  // term buys the promotion - it is the one term `tier()` reads to reach
+  // `now` - and the sentence has to say what is actually true. `kevListedFor`
+  // keeps the page from shouting the badge; this keeps the rationale from
+  // writing the citation (#158).
+  //
+  // `severity` stays silent and stays `n/a`. GitHub grades no secret, so
+  // there is no grade to report; the `critical` a chip shows is the queue's
+  // display severity, which is a word about the kind rather than a rank.
+  //
+  // `broken` and `bump` are ABSENT rather than silenced, and the absence is
+  // load-bearing: the queue supplies both per item - the secret's display
+  // name in the leading slot and GitHub's validity verdict in the slot after
+  // severity - so an entry here would be overridden on every item and read
+  // as a rule nothing follows.
+  secret_scanning: {
+    kev: { listed: "an open secret is a confirmed exposure" },
+    epss: { na: "" },
+    severity: { na: "" },
+    stuck: { na: "" },
+  },
   update_pr: {},
   issue: {
     kev: { na: "untriaged issue" },
@@ -208,8 +237,15 @@ export const KIND_REASONS: Readonly<Record<QueueKind, ReasonTable>> = {
  * Whether the KEV term of this kind can mean "listed in CISA KEV".
  *
  * True only where the term is fed by a catalogue lookup on a CVE: alerts, and
- * the update PRs that inherit an alert's terms. Any other kind's KEV term is
- * `n/a` by construction, and the page must not be able to shout about it.
+ * the update PRs that inherit an alert's terms.
+ *
+ * Every other kind is false, and `secret_scanning` is why this function is
+ * not simply "does the KEV term rank above n/a" (#158). An open secret sets
+ * that term to `true` on purpose, because it is the one term `tier()`
+ * promotes on and a confirmed exposure belongs at the top of the queue. It is
+ * still not in CISA's catalogue, so the flag that makes a page print `in CISA
+ * KEV` stays false: the promotion and the citation are different things, and
+ * this is the line between them.
  */
 export function kevListedFor(kind: QueueKind): boolean {
   return kind === "alert" || kind === "update_pr";

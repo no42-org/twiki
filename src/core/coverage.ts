@@ -121,13 +121,15 @@ export type SecurityStanding = "counted" | "unconfirmed" | "not_covered";
 /**
  * The features a lane sweeps for findings today.
  *
- * Secret scanning is absent because nothing collects it yet; Story 3.4 adds
- * the lane and this list is what it edits. A feature belongs here when its
- * findings can reach the queue, never merely because coverage describes it.
+ * All three, since Story 3.4 gave secret scanning its lane (#158). A feature
+ * belongs here when its findings can reach the queue, never merely because
+ * coverage describes it - which is why this list was two entries long while
+ * `COVERAGE_FEATURES` was three, and why the two must stay separate.
  */
 const COUNTED_FEATURES: readonly CoverageFeature[] = [
   "dependabot",
   "code_scanning",
+  "secret_scanning",
 ];
 
 export function securityStanding(features: CoverageFeatures): SecurityStanding {

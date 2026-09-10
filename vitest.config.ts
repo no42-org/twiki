@@ -15,5 +15,10 @@ export default defineConfig({
     // stays fast and runs where no browser is installed.
     exclude: [...configDefaults.exclude, "test/browser/**"],
     environment: "node",
+    // Vitest's 5s default stands, deliberately. The handful of tests here
+    // that spawn real processes carry their own budgets, at the test or the
+    // describe, next to the spawn that needs them: raising the default
+    // instead would give six seconds of slack to every pure in-memory test
+    // in the suite and make a genuine hang take thirty seconds to report.
   },
 });

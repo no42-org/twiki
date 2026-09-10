@@ -1131,6 +1131,151 @@ describe("the conditional code scanning listing (#156)", () => {
   });
 });
 
+describe("the conditional secret scanning listing (#158)", () => {
+  // The sibling of the two listings above, case for case, and worth its own
+  // block for the same reason theirs was: the lane tests drive a fake that
+  // fabricates `notModified` itself, so breaking this branch would leave the
+  // suite green while production confirmed zeros and tombstoned every open
+  // secret in the estate.
+  const EXPIRES = "2026-08-18T08:00:00Z";
+
+  function stubGh(
+    handler: (
+      route: string,
+      options: Record<string, unknown>,
+    ) => { data: unknown; headers: Record<string, string> },
+  ) {
+    const seen: Record<string, unknown>[] = [];
+    const gh = {
+      auth: async () => ({ token: "ghs_x", expiresAt: EXPIRES }),
+      request: async (route: string, options: Record<string, unknown> = {}) => {
+        seen.push({ route, ...options });
+        return handler(route, options);
+      },
+    };
+    return { gh: gh as unknown as Octokit, seen };
+  }
+
+  const secretItem = {
+    number: 3,
+    state: "open",
+    secret_type_display_name: "Amazon AWS Access Key ID",
+    secret: "AKIAIOSFODNN7EXAMPLE",
+    validity: "active",
+    publicly_leaked: false,
+    repository: { name: "twiki", owner: { login: "no42-org" } },
+  };
+
+  const adapterOn = (gh: Octokit) =>
+    new OctokitGitHub(
+      async () => gh,
+      () => true,
+      async () => gh,
+    );
+
+  it("sends the validator only when the token generation still matches", async () => {
+    const { gh, seen } = stubGh(() => ({ data: [secretItem], headers: {} }));
+    const adapter = adapterOn(gh);
+
+    await adapter.listSecretScanningAlerts("no42-org", [], {
+      etag: 'W/"a"',
+      lastModified: null,
+      tokenGen: EXPIRES,
+    });
+    await adapter.listSecretScanningAlerts("no42-org", [], {
+      etag: 'W/"a"',
+      lastModified: null,
+      tokenGen: "some-older-token",
+    });
+
+    const headersOf = (i: number) =>
+      (seen[i] as { headers?: Record<string, string> }).headers ?? {};
+    expect(headersOf(0)["if-none-match"]).toBe('W/"a"');
+    // Cold: GitHub's ETags vary with the Authorization header, so a
+    // validator from another token is a guaranteed miss.
+    expect(headersOf(1)["if-none-match"]).toBeUndefined();
+  });
+
+  it("returns notModified on a 304, echoing the validator it sent", async () => {
+    const { gh } = stubGh(() => {
+      throw Object.assign(new Error("Not modified"), { status: 304 });
+    });
+
+    const page = await adapterOn(gh).listSecretScanningAlerts("no42-org", [], {
+      etag: 'W/"a"',
+      lastModified: null,
+      tokenGen: EXPIRES,
+    });
+
+    expect(page.notModified).toBe(true);
+    expect(page.alerts).toEqual([]);
+    expect(page.validator?.etag).toBe('W/"a"');
+    expect(page.skipped).toEqual([]);
+    expect(page.unreachable).toEqual([]);
+  });
+
+  it("answers a 304 to an unconditional request with a legible error", async () => {
+    // Only a conditional request may be answered 304. Treating an
+    // unsolicited one as notModified would confirm every stored secret
+    // against a validator nobody sent, and skip the tombstone pass.
+    const { gh } = stubGh(() => {
+      throw Object.assign(new Error("Not modified"), { status: 304 });
+    });
+
+    await expect(
+      adapterOn(gh).listSecretScanningAlerts("no42-org", []),
+    ).rejects.toThrow(/unconditional/);
+  });
+
+  it("caches a validator only for a single, untruncated page", async () => {
+    // Measured live on 2026-09-09: the org listing answers 200 with an ETag
+    // and no `link` header in all three organisations, so the single-page
+    // branch is the one production actually takes.
+    const single = stubGh(() => ({
+      data: [secretItem],
+      headers: { etag: 'W/"page1"' },
+    }));
+    const paged = stubGh(() => ({
+      data: [secretItem],
+      headers: {
+        etag: 'W/"page1"',
+        link: '<https://api.github.com/x?page=2>; rel="next"',
+      },
+    }));
+
+    const one = await adapterOn(single.gh).listSecretScanningAlerts(
+      "no42-org",
+      [],
+    );
+    const many = await adapterOn(paged.gh).listSecretScanningAlerts(
+      "no42-org",
+      [],
+    );
+
+    expect(one.validator).toEqual({
+      etag: 'W/"page1"',
+      lastModified: null,
+      tokenGen: EXPIRES,
+    });
+    // Each page carries its own ETag, and a 304 on page one says nothing
+    // about the pages behind it.
+    expect(many.truncated).toBe(true);
+    expect(many.validator).toBeNull();
+  });
+
+  it("keeps the credential out of the page it hands back", async () => {
+    // The wire payload carries `secret`; the mapper has no field for it. An
+    // AWS-shaped key deliberately, because `redact()` matches GitHub tokens
+    // and JWTs only and would let this one through untouched.
+    const { gh } = stubGh(() => ({ data: [secretItem], headers: {} }));
+
+    const page = await adapterOn(gh).listSecretScanningAlerts("no42-org", []);
+
+    expect(JSON.stringify(page)).not.toContain(secretItem.secret);
+    expect(page.alerts[0]?.secretType).toBe("Amazon AWS Access Key ID");
+  });
+});
+
 describe("parsing the Link header's next target", () => {
   it("handles the shapes a naive split gets wrong", () => {
     // GitHub's own emission: quoted rel, first parameter.

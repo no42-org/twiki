@@ -246,6 +246,117 @@ export interface CodeScanningAlertPage {
 }
 
 /**
+ * The validator-cache key for one organisation's secret scanning listing
+ * (#158).
+ *
+ * Same convention as orgCodeScanningUrl, and separate from it for the same
+ * reason: one cache entry per installation and request URL (AD-25). Sharing a
+ * key would have one listing's 304 confirm the other's rows.
+ */
+export function orgSecretScanningUrl(org: string): string {
+  return `/orgs/${org.toLowerCase()}/secret-scanning/alerts?state=open&per_page=100`;
+}
+
+/**
+ * One secret scanning alert as the REST listing returns it (#158).
+ *
+ * THE CREDENTIAL HAS NO FIELD HERE, and its absence is the whole design.
+ * GitHub sends `secret` on both listings; `src/core/redact.ts` matches GitHub
+ * tokens and JWTs only, so an AWS key, a Slack token or a private key would
+ * pass through redaction untouched. A field that is never mapped cannot be
+ * stored by a later edit that forgets to redact it, which is the same reason
+ * RawCodeScanningAlert omits `rule.severity`.
+ *
+ * Built from `@octokit/openapi-types`, where EVERY field of both the
+ * `secret-scanning-alert` and `organization-secret-scanning-alert` components
+ * is optional - `number` and `state` included - so the mapper handles absence
+ * everywhere rather than on the two fields a page happens to read.
+ */
+export interface RawSecretScanningAlert {
+  /** Per-repository, not global. Subject identity is repo + this (AD-22). */
+  number: number;
+  repo: RepoRef;
+  /**
+   * `open` or `resolved` as GitHub reported it, or null where it said
+   * nothing. Informational, like the two sibling alert types': the
+   * projection's own state carries the tombstone, and the lane asks only for
+   * open alerts.
+   */
+  state: string | null;
+  /**
+   * `secret_type_display_name`, the ONLY name of the finding that may reach a
+   * page: `Amazon AWS Access Key ID` rather than the key itself.
+   *
+   * Null where GitHub sent none. Never `secret_type`, which is the machine
+   * slug, and never `secret`, which is the credential.
+   */
+  secretType: string | null;
+  /**
+   * The token status at GitHub's latest validity check: `active`, `inactive`
+   * or `unknown`.
+   *
+   * Always a word, never absent. The schema makes the field optional AND
+   * gives it its own literal `"unknown"`, so GitHub can express the same
+   * fact two ways; both mean "nobody checked, or the check said nothing" to a
+   * reader, and both must store the same value or one repository's finding
+   * would read differently from its identical neighbour's. A plain string
+   * rather than the union, so a status GitHub adds tomorrow is carried
+   * through rather than dropped.
+   */
+  validity: string;
+  /**
+   * GitHub REPORTED the secret as publicly leaked.
+   *
+   * `publicly_leaked` is `boolean | null` and optional, which is four states,
+   * and only `true` is a report of a public leak. The other three are folded
+   * to false here rather than carried as a tri-state, because nothing ranks
+   * or branches on the difference and a page must never claim a public leak
+   * that was not reported.
+   */
+  publiclyLeaked: boolean;
+  htmlUrl: string | null;
+  /** Null when GitHub did not supply one; never an empty string. */
+  createdAt: string | null;
+}
+
+/**
+ * One sweep of the secret scanning listing.
+ *
+ * Term for term the code scanning page, because the two lanes answer the same
+ * shapes: an org listing that collapses into one call, a per-repository
+ * fan-out on a user account, and repositories GitHub answers without a
+ * listing to give.
+ */
+export interface SecretScanningAlertPage {
+  alerts: RawSecretScanningAlert[];
+  /** Payloads the mapper could not read. Never silently discarded. */
+  unreadable: number;
+  /**
+   * Repositories the fan-out reached NO ANSWER about: a transport failure, a
+   * 5xx, a token that could not be minted. The sweep is incomplete, so the
+   * caller degrades and tombstones nothing.
+   */
+  unreachable: UnlistedRepo[];
+  /**
+   * Repositories the fan-out asked and GitHub ANSWERED without a listing.
+   * `404 "Secret scanning is disabled on this repository."` is the measured
+   * one, live on `CoolModFiles` on 2026-09-09. Not a failure: the answer is
+   * stable, so degrading on it would hold the lane partial for as long as
+   * that repository exists.
+   *
+   * A repository here gets no rows and no confirmation, so it reads
+   * `unconfirmed` rather than a confident zero (AD-28).
+   */
+  skipped: UnlistedRepo[];
+  /** True when GitHub answered 304 against the cached validator. */
+  notModified: boolean;
+  /** True when pagination stopped at the safety cap with more pages claimed. */
+  truncated: boolean;
+  /** The validator to cache, or null when this response must not be revalidated against. */
+  validator: RequestValidator | null;
+}
+
+/**
  * Reads only, of one named repository.
  *
  * Every method here names the repository it acts on, so its installation
@@ -498,6 +609,23 @@ export interface GitHubAccountReadPort {
     repos: readonly RepoRef[],
     cached?: RequestValidator | null,
   ): Promise<CodeScanningAlertPage>;
+
+  /**
+   * Open secret scanning alerts across every repository in the org (#158).
+   *
+   * Needs no new App permission: `secret_scanning_alerts` is already held and
+   * already required by `doctor`, because the coverage lane's probe reads
+   * this same endpoint one alert at a time.
+   *
+   * `repos` is the watched set for this installation, used only when the
+   * account has no org-level endpoint to collapse into, exactly as on the two
+   * listings beside it.
+   */
+  listSecretScanningAlerts(
+    installation: string,
+    repos: readonly RepoRef[],
+    cached?: RequestValidator | null,
+  ): Promise<SecretScanningAlertPage>;
 }
 
 /** Every read, both halves. What gitricorder's collector consumes. */

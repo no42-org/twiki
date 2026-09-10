@@ -22,6 +22,7 @@ import {
   type QueueKind,
 } from "../../core/topics.js";
 import type { RepoRef } from "../../core/types.js";
+import { VALIDITY_INACTIVE } from "../../core/validity.js";
 import type { UpdateStatusObservation } from "../collect/update-status.js";
 import type { WorkflowRunObservation } from "../collect/workflow-runs.js";
 import type { CurrentValue, StorePort } from "../store/port.js";
@@ -41,6 +42,7 @@ import {
   readCodeScanningAlert,
   readIssue,
   readPr,
+  readSecretScanningAlert,
   readStatus,
   readWorkflowRun,
 } from "./payloads.js";
@@ -56,31 +58,34 @@ export interface QueueItem {
   kind: QueueKind;
   /**
    * The subject key: `owner/name#number` for Dependabot alerts, the node id
-   * for PRs and issues, `owner/name#workflow:<id>` for a CI failure and
-   * `owner/name#code-scanning:<n>` for a code scanning finding.
+   * for PRs and issues, `owner/name#workflow:<id>` for a CI failure,
+   * `owner/name#code-scanning:<n>` for a code scanning finding and
+   * `owner/name#secret-scanning:<n>` for a leaked credential.
    *
-   * Two kinds carry a key that is not a stored row's, for two reasons.
+   * Three kinds carry a key that is not a stored row's, for two reasons.
    *
    * A `ci_failure` is not a stored row at all: it is one workflow's
    * standing, and a rerun that breaks the same workflow again is the same
    * thing needing the same attention. Keyed by the workflow rather than by
    * the run, so a rerun replaces the item instead of adding a second one.
    *
-   * A `code_scanning` finding IS a stored row, but `alertSubject` puts the
-   * discriminating type OUTSIDE the key, so alert 21 and code scanning alert
-   * 21 in one repository store under the same key under different types.
-   * They are distinct subjects there and would be one key here, which
-   * collides as a render key, ties the queue's final tiebreak and, in Epic 4
-   * where item keys become notification keys, would have one finding
-   * suppress the other.
+   * A `code_scanning` finding and a `secret_scanning` alert ARE stored rows,
+   * but `alertSubject` puts the discriminating type OUTSIDE the key, so all
+   * three alert families store number 21 in one repository under one key
+   * under three types. They are distinct subjects there and would be one key
+   * here, which collides as a render key, ties the queue's final tiebreak
+   * and, in Epic 4 where item keys become notification keys, would have one
+   * finding suppress the other.
    */
   key: string;
   repo: string;
   number: number;
   packageName: string | null;
   /**
-   * The issue title, or the workflow's name on a CI failure. Null for alerts
-   * and PRs, whose package says enough.
+   * The issue title, the workflow's name on a CI failure, the rule id on a
+   * code scanning finding, or the secret's display name on a leaked
+   * credential - never the credential itself, which nothing in this system
+   * ever mapped. Null for alerts and PRs, whose package says enough.
    */
   title: string | null;
   /** The advisory id shown to the reader: CVE when present, else GHSA. */
@@ -97,7 +102,9 @@ export interface QueueItem {
    * The severity a chip may show for this item, as the chain's own signal so
    * the display and the rank are one value (AD-20):
    *
-   *   a word    the graded severity
+   *   a word    the graded severity, or `critical` on a leaked credential,
+   *             whose word is a statement about the kind rather than a grade
+   *             GitHub sent: its severity TERM stays `n/a` and ranks nothing
    *   `n/a`     the item carries no severity to grade, which is a FACT and
    *             not a gap: a code scanning tool that grades nothing produces
    *             this, and three of the estate's 73 findings are in it
@@ -450,6 +457,114 @@ export function buildQueue(
       ranking,
       // The lane runs on the alert cadence, so its rows are judged on the
       // same budget as the Dependabot alerts beside them.
+      freshness: freshness(row.verifiedAt, now, deps.policy),
+      age: ageLabel(row.verifiedAt, now),
+    });
+  }
+
+  // The leaked credentials (#158). No branch guard has an analogue here: a
+  // secret scanning alert carries no ref at all, so there is nothing to
+  // filter on and every stored row that reads is an item.
+  //
+  // Every term is a fact of absence EXCEPT `kev`, and that one term is the
+  // whole ranking of this kind: `tier()` promotes on a broken branch, a
+  // listed KEV term or an EPSS band, the KEV scale is `[false, true]`, so
+  // `true` is the only rank above unknown and is exactly what reaches `now`.
+  // What the term must NOT do is make a page cite CISA: `kevListed` stays
+  // false and the kind's reason table replaces the chain's default sentence.
+  for (const row of store.currentByType("secret_scanning_alert")) {
+    if (row.state !== "present") continue;
+    const alert = readSecretScanningAlert(row.payload);
+    if (alert === null) {
+      unreadable++;
+      continue;
+    }
+
+    // The PROJECTION's state is the authority, and it is the `present` check
+    // above. The payload's own `state` is informational and is deliberately
+    // not read here: the lane asks GitHub only for open alerts, so a row we
+    // last saw is one GitHub last listed as open, and a row it stopped
+    // listing is tombstoned by the lane's own reconciliation. Gating on the
+    // payload instead would hide a live finding on the strength of a word
+    // captured at the last sweep, which is the reverse of what this
+    // dashboard is for - and the two sibling alert kinds ignore it for the
+    // same reason.
+    const slug = foldSlug(alert.repo);
+    const ranking = rank(
+      {
+        broken: NOT_APPLICABLE,
+        // The promotion, and the only term that says anything - but only
+        // while the credential might still work.
+        //
+        // GitHub keeps an alert `state: "open"` after its OWN validity check
+        // reports the credential dead, and it stays open until a human
+        // closes it by hand, so an unconditional `true` here held a rotated
+        // secret above every live KEV-listed CVE in the estate for as long
+        // as nobody tidied up on github.com. `inactive` therefore drops to
+        // `n/a`: the finding is still collected, still listed and still
+        // ranked, but it lands in `soon` rather than `now`.
+        //
+        // `unknown` counts as active, and that direction is deliberate: a
+        // credential GitHub could not verify is one we must assume still
+        // works. Absence maps to `unknown` at the boundary, so an old row or
+        // a payload with no validity field is treated as live too.
+        kev: alert.validity === VALIDITY_INACTIVE ? NOT_APPLICABLE : true,
+        epss: NOT_APPLICABLE,
+        // `n/a`, not a grade: GitHub grades no secret, and the `critical` the
+        // chip shows below is a word about the kind rather than a rank
+        // anything fed. A severity term here would put this finding on the
+        // advisory scale it is not on.
+        severity: NOT_APPLICABLE,
+        bump: NOT_APPLICABLE,
+        stuck: NOT_APPLICABLE,
+      },
+      deps.rankPolicy,
+      {
+        ...KIND_REASONS.secret_scanning,
+        // Per item, in the chain's leading slot, so the sentence opens with
+        // what leaked. `secret_type_display_name` is the ONLY name of the
+        // finding that may reach a reader; the credential itself was never
+        // mapped, so there is nothing here to leak by accident.
+        broken: { na: alert.secretType ?? "secret scanning alert" },
+        // The slot after severity, as the code scanning kind uses it for its
+        // branch phrase: GitHub's own validity check, which is what a
+        // maintainer acts on differently AND what decides the KEV term
+        // above, so the sentence names the value that did the deciding.
+        // `unknown` covers both the literal and an absent field, which mean
+        // the same thing to a reader.
+        bump: { na: `validity ${alert.validity}` },
+      },
+    );
+
+    items.push({
+      kind: "secret_scanning",
+      // The kind is IN the key, for the collision `alertSubject` leaves open:
+      // it puts the type outside the stored key, so secret scanning alert 21
+      // and Dependabot alert 21 in one repository would share a render key,
+      // tie the queue's final tiebreak, and in Epic 4 have one suppress the
+      // other's notification.
+      key: `${slug}#secret-scanning:${alert.number}`,
+      repo: alert.repo,
+      number: alert.number,
+      packageName: null,
+      // The display name, never the secret and never `secret_type`.
+      title: alert.secretType,
+      advisory: null,
+      htmlUrl: safeUrl(alert.htmlUrl),
+      explanation: ranking.explanation,
+      // False, and this is the line the whole kind turns on. Its KEV TERM is
+      // true, because that is what reaches `now`; the DISPLAY FLAG is what
+      // makes a page print "in CISA KEV", and an open secret is not in
+      // CISA's catalogue of exploited vulnerabilities.
+      kevListed: kevListedFor("secret_scanning"),
+      // A word, not a grade. The chip reads `1 critical` because a live
+      // credential is the finding that stops everything; the severity TERM
+      // above stays `n/a` and contributes no rank, so the two never pretend
+      // to be one number.
+      displaySeverity: "critical",
+      ranking,
+      // The lane runs on the alert cadence, so its rows are judged on the
+      // same budget as the alerts beside them.
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
     });

@@ -6,8 +6,10 @@
 import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { components } from "@octokit/openapi-types";
 import type { Octokit } from "@octokit/rest";
 import { describe, expect, it } from "vitest";
+import { redact } from "../src/core/redact.js";
 import {
   CODE_SCANNING_NO_ANALYSIS_BODY,
   createTricorderAppFromEnv,
@@ -50,6 +52,47 @@ const recorded = <T = Record<string, unknown>>(name: string): T =>
  */
 const derived = <T = Record<string, unknown>>(name: string): T =>
   recorded<T>(name);
+
+/**
+ * A payload built from the OpenAPI SCHEMA, for an endpoint NO PAYLOAD OF THIS
+ * KIND HAS EVER BEEN OBSERVED FROM on this estate.
+ *
+ * This is the weakest of the three tiers and must read as the weakest. A
+ * `recorded` fixture is what GitHub sent; a `derived` one starts from what
+ * GitHub sent and changes documented fields; this one was never anywhere near
+ * the live API. The org secret scanning listing answers 200 with an empty
+ * array in all three installed organisations, measured 2026-09-09, so there
+ * is no alert to record and Story 3.2's "translate on what GitHub is observed
+ * to send" cannot be followed here.
+ *
+ * The next best source is `@octokit/openapi-types`: a pinned devDependency,
+ * the schema the Octokit client we call is generated against, and something
+ * Dependabot keeps current - so a drift between it and the live API surfaces
+ * as a version bump or a type error rather than silently.
+ *
+ * That promise is only real if the types are LOAD-BEARING, so the callers
+ * below name the component and the fixture is typed as it. An earlier version
+ * of this helper described the provenance in prose and typed the fixtures
+ * against an interface written in this file: the package appeared nowhere but
+ * a comment, nothing imported it, and neither of the two things the tier
+ * promises could have happened.
+ *
+ * The `.schema.json` suffix is checked rather than merely conventional, for
+ * the same reason - a marker nothing enforces is decoration, and the point of
+ * the tier is that a reader can tell a recording from a document AT THE CALL
+ * SITE.
+ */
+const schema = <K extends keyof components["schemas"]>(
+  name: string,
+  _component: K,
+): components["schemas"][K] => {
+  if (!name.endsWith(".schema.json")) {
+    throw new Error(
+      `${name} is not a .schema.json fixture; the schema tier is for payloads no live API here has produced`,
+    );
+  }
+  return recorded<components["schemas"][K]>(name);
+};
 
 /** An Octokit whose every REST read answers with one payload. */
 function restStub(data: unknown, headers: Record<string, string> = {}) {
@@ -119,6 +162,24 @@ describe("Dependabot alerts map field for field", () => {
       htmlUrl: raw.html_url,
       createdAt: raw.created_at,
     });
+  });
+
+  it("counts a null entry in the listing as unreadable, rather than failing the sweep", async () => {
+    // The widest-coverage lane of the three, and the last to get the guard
+    // its two siblings already had - which is worse than never having it,
+    // because two guarded mappers beside one unguarded one read as if the
+    // rule were universal. A null entry threw a TypeError out of the whole
+    // call and failed the installation's sweep, where `unreadable` promises
+    // one payload counted and the rest of the listing kept.
+    const raw = recorded("alert-org.json");
+    const adapter = adapterFor(restStub([null, raw]), "organization");
+
+    const page = await adapter.listDependabotAlerts("no42-org", []);
+
+    expect(page.unreadable).toBe(1);
+    // The real alert beside it survived, which is the half a thrown error
+    // took with it.
+    expect(page.alerts.map((a) => a.number)).toEqual([raw.number]);
   });
 
   it("maps the per-repository listing, which names no repository at all", async () => {
@@ -276,6 +337,28 @@ describe("code scanning alerts map field for field", () => {
     expect(page.alerts[0]?.state).toBeNull();
   });
 
+  it("counts a null entry in the listing as unreadable, rather than failing the sweep", async () => {
+    // `unreadable` promises one payload we could not read, counted, and the
+    // rest of the listing kept. The mapper cast `raw` and dereferenced it, so
+    // a null entry threw a TypeError out of the whole call and failed the
+    // installation's sweep - which writes no confirmations, reconciles no
+    // tombstones and caches no validator for every repository in it.
+    const raw = recorded<RecordedScan>("code-scanning-alert-org.json");
+    const adapter = adapterFor(restStub([null, raw]), "organization");
+
+    const page = await adapter.listCodeScanningAlerts("no42-org", []);
+
+    expect(page.unreadable).toBe(1);
+    // The real alert beside it survived, which is the half a thrown error
+    // took with it.
+    expect(page.alerts).toEqual([
+      wholeOf(raw, {
+        owner: raw.repository?.owner.login ?? "",
+        name: raw.repository?.name ?? "",
+      }),
+    ]);
+  });
+
   it("skips a repository GitHub answered with no analysis, and does not degrade", async () => {
     // The fan-out's own 404, translated by the probe translator that already
     // owns this body. GitHub answered; what it said is that there is nothing
@@ -382,6 +465,367 @@ describe("code scanning alerts map field for field", () => {
 
     // Named, not counted: a bare integer cannot say which repository failed
     // or what came back, which is the whole of what an operator asks first.
+    expect(page.unreachable).toEqual([
+      { repo: { owner: "no42-org", name: "twiki" }, reason: "Bad gateway" },
+    ]);
+    expect(page.skipped).toEqual([]);
+  });
+});
+
+describe("secret scanning alerts map field for field (#158)", () => {
+  /**
+   * The shape of the schema fixtures, as far as the mapper reads them.
+   *
+   * The two components differ in exactly one field the mapper reads:
+   * `repository` is on the organisation variant and absent from the
+   * per-repository one, which is the asymmetry `knownRepo` exists for. Named
+   * from the package rather than restated here, so a Dependabot bump that
+   * moves either shape moves these tests with it - `secret`, and the rule
+   * that the mapper must never carry it, included.
+   */
+  type OrgSecret = components["schemas"]["organization-secret-scanning-alert"];
+  type RepoSecret = components["schemas"]["secret-scanning-alert"];
+
+  const wholeOf = (
+    raw: OrgSecret | RepoSecret,
+    repo: { owner: string; name: string },
+  ) => ({
+    number: raw.number,
+    repo,
+    state: raw.state ?? null,
+    secretType: raw.secret_type_display_name ?? null,
+    // Absent and the literal are one answer; see the two cases below for
+    // what each of them is guarding.
+    validity: raw.validity ?? "unknown",
+    // Only a reported `true`. The other three states are not reports.
+    publiclyLeaked: raw.publicly_leaked === true,
+    htmlUrl: raw.html_url ?? null,
+    createdAt: raw.created_at ?? null,
+  });
+
+  /** The owner and name an ORG payload names, which the per-repo one cannot. */
+  const repoOf = (raw: OrgSecret) => ({
+    owner: raw.repository?.owner.login ?? "",
+    name: raw.repository?.name ?? "",
+  });
+
+  it("maps the org listing, which names the repository on every alert", async () => {
+    const raw = schema(
+      "secret-scanning-alert-org.schema.json",
+      "organization-secret-scanning-alert",
+    );
+    const adapter = adapterFor(restStub([raw]), "organization");
+
+    const page = await adapter.listSecretScanningAlerts("no42-org", []);
+
+    expect(page.unreadable, "a schema-shaped payload must map").toBe(0);
+    // The whole mapped object against the fixture, never one field of it.
+    expect(page.alerts[0]).toEqual(wholeOf(raw, repoOf(raw)));
+    // A single-page listing is the only one that earns a validator, and this
+    // stub sends no ETag, so it earns none.
+    expect(page.validator).toBeNull();
+    expect(page.skipped).toEqual([]);
+    expect(page.unreachable).toEqual([]);
+  });
+
+  it("drops the credential the payload carried, rather than redacting it", async () => {
+    const raw = schema(
+      "secret-scanning-alert-org.schema.json",
+      "organization-secret-scanning-alert",
+    );
+    // `?? ""` because the SCHEMA makes every field optional, this one
+    // included; if the fixture ever loses it the assertion below fails
+    // loudly rather than the test quietly checking nothing.
+    const secret = raw.secret ?? "";
+    expect(secret, "fixture must carry a credential to drop").toBe(
+      "AKIAIOSFODNN7EXAMPLE",
+    );
+    // Deliberately an AWS-shaped key: `redact()` matches GitHub token
+    // prefixes and JWTs only, so this string would pass through redaction
+    // untouched. Dropping it at the boundary is the whole rule, and a
+    // fixture carrying a GitHub token would have let redaction pass the test
+    // for the mapper.
+    expect(redact(secret)).toBe(secret);
+    const adapter = adapterFor(restStub([raw]), "organization");
+
+    const page = await adapter.listSecretScanningAlerts("no42-org", []);
+
+    // Not "the field is absent": the whole serialised alert, so a credential
+    // smuggled into any field at all - a title, a url, a display name -
+    // fails this.
+    expect(JSON.stringify(page.alerts[0])).not.toContain(secret);
+    // And the display name IS carried, so this is not passing by mapping
+    // nothing at all.
+    expect(page.alerts[0]?.secretType).toBe("Amazon AWS Access Key ID");
+  });
+
+  it("maps the per-repository listing, which names no repository at all", async () => {
+    // The shape the Dependabot fan-out once shipped broken on: `repository`
+    // is absent here, because the URL already said which repository it is.
+    const raw = schema(
+      "secret-scanning-alert-repo.schema.json",
+      "secret-scanning-alert",
+    );
+    // A property test rather than a value one: the per-repository component
+    // has no `repository` key at all, so the shape is now enforced by the
+    // type and this pins that the FIXTURE matches it.
+    expect("repository" in raw, "fixture must be the per-repo shape").toBe(
+      false,
+    );
+    const repo = { owner: "no42-org", name: "twiki" };
+    const adapter = adapterFor(restStub([raw]), "user");
+
+    const page = await adapter.listSecretScanningAlerts("no42-org", [repo]);
+
+    expect(page.unreadable).toBe(0);
+    // Attributed from the repository the caller asked about, since the
+    // payload cannot say. Without the fallback every alert from a personal
+    // account fails to map and the lane reports a confident zero.
+    expect(page.alerts[0]).toEqual(wholeOf(raw, repo));
+    // `publicly_leaked` is ABSENT on this fixture, which is one of the three
+    // states that is not a report of a leak.
+    expect("publicly_leaked" in raw).toBe(false);
+    expect(page.alerts[0]?.publiclyLeaked).toBe(false);
+  });
+
+  it("reads the literal `unknown` validity and a null leak flag", async () => {
+    const raw = schema(
+      "secret-scanning-alert-unknown-validity.schema.json",
+      "organization-secret-scanning-alert",
+    );
+    expect(raw.validity, "fixture must state the literal").toBe("unknown");
+    expect(raw.publicly_leaked, "fixture must carry the null").toBeNull();
+    const adapter = adapterFor(restStub([raw]), "organization");
+
+    const page = await adapter.listSecretScanningAlerts("no42-org", []);
+
+    expect(page.alerts[0]).toEqual(wholeOf(raw, repoOf(raw)));
+    // Spelled out beside the whole-object assertion, because `wholeOf`
+    // computes the same fallbacks and could agree with a broken mapper.
+    expect(page.alerts[0]?.validity).toBe("unknown");
+    // Null is not a report of a public leak, and must never read as one.
+    expect(page.alerts[0]?.publiclyLeaked).toBe(false);
+    expect(JSON.stringify(page.alerts[0])).not.toContain(raw.secret);
+  });
+
+  it("reads an absent validity as the same answer as the literal", async () => {
+    // The other spelling of one fact. Both mean "nobody checked, or the check
+    // said nothing" to a reader, so two identical findings must not read
+    // differently because GitHub omitted a key on one of them.
+    const raw = schema(
+      "secret-scanning-alert-bare.schema.json",
+      "organization-secret-scanning-alert",
+    );
+    expect("validity" in raw, "fixture must carry no validity key").toBe(false);
+    const adapter = adapterFor(restStub([raw]), "organization");
+
+    const page = await adapter.listSecretScanningAlerts("no42-org", []);
+
+    expect(page.alerts[0]).toEqual(wholeOf(raw, repoOf(raw)));
+    expect(page.alerts[0]?.validity).toBe("unknown");
+    // The one state that IS a report of a public leak.
+    expect(page.alerts[0]?.publiclyLeaked).toBe(true);
+    // No `created_at` on this fixture: null, never an empty string, which
+    // reaches core/stamp.ts and throws there instead of being visibly absent.
+    expect(page.alerts[0]?.createdAt).toBeNull();
+    expect(JSON.stringify(page.alerts[0])).not.toContain(raw.secret);
+  });
+
+  it("counts a null entry in the listing as unreadable, rather than failing the sweep", async () => {
+    // The same hole as its code scanning sibling, guarded the same way: a
+    // null entry is a payload we cannot read, which is what `unreadable`
+    // counts, not a reason to abandon the listing around it.
+    const raw = schema(
+      "secret-scanning-alert-org.schema.json",
+      "organization-secret-scanning-alert",
+    );
+    const adapter = adapterFor(restStub([null, raw]), "organization");
+
+    const page = await adapter.listSecretScanningAlerts("no42-org", []);
+
+    expect(page.unreadable).toBe(1);
+    expect(page.alerts).toEqual([wholeOf(raw, repoOf(raw))]);
+  });
+
+  it("reads a validity of the wrong type as unknown, rather than storing a number", async () => {
+    // `validity` is the one non-nullable string in our type AND the field the
+    // queue reads to decide whether a finding reaches `now`. A `3` on the
+    // wire sailed through `?? VALIDITY_UNKNOWN` - which catches only
+    // `undefined` and `null` - into the stored payload, where
+    // `readSecretScanningAlert` rejected it on EVERY read: a real open secret
+    // vanished from the queue and the page and surfaced only as an
+    // `unreadable` tick.
+    const raw = schema(
+      "secret-scanning-alert-org.schema.json",
+      "organization-secret-scanning-alert",
+    );
+    const wrong = { ...raw, validity: 3 as unknown as OrgSecret["validity"] };
+    const adapter = adapterFor(restStub([wrong]), "organization");
+
+    const page = await adapter.listSecretScanningAlerts("no42-org", []);
+
+    // Mappable, not unreadable: everything the subject key needs is there.
+    expect(page.unreadable).toBe(0);
+    expect(page.alerts[0]?.validity).toBe("unknown");
+    // A string, so the payload guard on the read side accepts the row.
+    expect(typeof page.alerts[0]?.validity).toBe("string");
+  });
+
+  it("reads an empty string as absent on every field that can carry one", async () => {
+    // `??` never caught the empty string, and one of these three is the risk
+    // the mapper's own comment already claimed to have handled: an empty
+    // `created_at` is not a date, and it reaches core/stamp.ts and throws
+    // there rather than being visibly absent here.
+    const raw = schema(
+      "secret-scanning-alert-org.schema.json",
+      "organization-secret-scanning-alert",
+    );
+    const blank = {
+      ...raw,
+      secret_type_display_name: "",
+      validity: "" as unknown as OrgSecret["validity"],
+      created_at: "",
+    };
+    const adapter = adapterFor(restStub([blank]), "organization");
+
+    const page = await adapter.listSecretScanningAlerts("no42-org", []);
+
+    expect(page.alerts[0]).toEqual({
+      ...wholeOf(raw, repoOf(raw)),
+      // All three read exactly as the absent field reads.
+      secretType: null,
+      validity: "unknown",
+      createdAt: null,
+    });
+  });
+
+  it("counts a payload with no alert number as unreadable, rather than keying it wrong", async () => {
+    // Every field of both components is optional, `number` included, and
+    // this one is half the subject key: a row we cannot key is a row we
+    // cannot reconcile or tombstone.
+    const raw = schema(
+      "secret-scanning-alert-org.schema.json",
+      "organization-secret-scanning-alert",
+    );
+    const { number: _dropped, ...noNumber } = raw;
+    const adapter = adapterFor(restStub([noNumber]), "organization");
+
+    const page = await adapter.listSecretScanningAlerts("no42-org", []);
+
+    expect(page.alerts).toEqual([]);
+    expect(page.unreadable).toBe(1);
+  });
+
+  it("skips a repository whose secret scanning is switched off, and does not degrade", async () => {
+    // The measured body, live on `CoolModFiles` on 2026-09-09 and the first
+    // confirmed `off` any story in this epic has had. GitHub answered; what
+    // it said is that there is nothing to list. Counting it as unreachable
+    // would hold the lane partial for as long as the repository exists.
+    const body = recorded<{ message: string }>("secret-scanning-404.json");
+    expect(body.message.toLowerCase()).toContain(SECRET_SCANNING_OFF_BODY);
+    const failing = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw Object.assign(new Error(body.message), { status: 404 });
+      },
+    } as unknown as Octokit;
+    const repo = { owner: "no42-org", name: "CoolModFiles" };
+
+    const page = await adapterFor(failing, "user").listSecretScanningAlerts(
+      "no42-org",
+      [repo],
+    );
+
+    expect(page).toEqual({
+      alerts: [],
+      unreadable: 0,
+      unreachable: [],
+      // Named, with GitHub's own words: the run detail quotes what came back
+      // rather than a sentence we invented for it.
+      skipped: [{ repo, reason: body.message }],
+      notModified: false,
+      truncated: false,
+      validator: null,
+    });
+  });
+
+  it("fans out one call per watched repository on a user account", async () => {
+    // A user account has no org-level endpoint, so the only route is one call
+    // per WATCHED repository. The bound is the allowlist, not the
+    // installation.
+    const paths: string[] = [];
+    const raw = schema(
+      "secret-scanning-alert-repo.schema.json",
+      "secret-scanning-alert",
+    );
+    const counting = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async (path: string) => {
+        paths.push(path);
+        return { data: [raw], headers: {} };
+      },
+    } as unknown as Octokit;
+
+    const page = await adapterFor(counting, "user").listSecretScanningAlerts(
+      "no42-org",
+      [
+        { owner: "no42-org", name: "twiki" },
+        { owner: "no42-org", name: "packyard" },
+      ],
+    );
+
+    expect(paths).toEqual([
+      "GET /repos/{owner}/{repo}/secret-scanning/alerts",
+      "GET /repos/{owner}/{repo}/secret-scanning/alerts",
+    ]);
+    // Each repository's alert is attributed to the repository asked about.
+    expect(page.alerts.map((a) => a.repo.name)).toEqual(["twiki", "packyard"]);
+    // No validator: each repository carries its own ETag, and one cached
+    // value cannot describe a set of them.
+    expect(page.validator).toBeNull();
+  });
+
+  it("skips a repository the App may not read at all, quoting what GitHub said", async () => {
+    // The SECOND answer that lands in `skipped`, and a different problem for
+    // the operator: `403 Resource not accessible by integration` is a
+    // credential fault they can fix, where the 404 above is a repository
+    // setting. Both are stable answers, so both skip rather than degrade -
+    // and the reason is carried verbatim, because a run detail that said
+    // "the feature is off" over this would send them to a setting that is
+    // fine.
+    const message = "Resource not accessible by integration";
+    const failing = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw Object.assign(new Error(message), { status: 403 });
+      },
+    } as unknown as Octokit;
+    const repo = { owner: "no42-org", name: "twiki" };
+
+    const page = await adapterFor(failing, "user").listSecretScanningAlerts(
+      "no42-org",
+      [repo],
+    );
+
+    expect(page.skipped).toEqual([{ repo, reason: message }]);
+    expect(page.unreachable).toEqual([]);
+  });
+
+  it("counts a repository that reached no answer as unreachable", async () => {
+    // A 502 is not an answer about the repository, and retrying it next
+    // sweep may well work: the sweep is incomplete, so it degrades.
+    const failing = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async () => {
+        throw Object.assign(new Error("Bad gateway"), { status: 502 });
+      },
+    } as unknown as Octokit;
+
+    const page = await adapterFor(failing, "user").listSecretScanningAlerts(
+      "no42-org",
+      [{ owner: "no42-org", name: "twiki" }],
+    );
+
     expect(page.unreachable).toEqual([
       { repo: { owner: "no42-org", name: "twiki" }, reason: "Bad gateway" },
     ]);

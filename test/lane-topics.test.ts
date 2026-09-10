@@ -47,7 +47,7 @@ describe("lane-topics (AD-32)", () => {
   it("maps every LANE exported under collect/, and nothing else", async () => {
     const lanes = await exportedLanes();
 
-    // Nine today. A count pins the walk itself: a directory read that found
+    // Ten today. A count pins the walk itself: a directory read that found
     // nothing would otherwise pass the exhaustiveness check vacuously.
     expect([...lanes.values()].sort()).toEqual(
       [
@@ -60,6 +60,7 @@ describe("lane-topics (AD-32)", () => {
         "rest-actions-runs",
         "rest-org-code-scanning",
         "rest-org-dependabot",
+        "rest-org-secret-scanning",
       ].sort(),
     );
     for (const [file, lane] of lanes) {
@@ -79,6 +80,10 @@ describe("lane-topics (AD-32)", () => {
       [
         "rest-org-code-scanning",
         { topic: "security", word: "code scanning", installation: null },
+      ],
+      [
+        "rest-org-secret-scanning",
+        { topic: "security", word: "secret scanning", installation: null },
       ],
       [
         "graphql-update-prs",

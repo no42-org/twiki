@@ -4,7 +4,13 @@
  */
 
 import { isDefaultBranchRef, isDefaultBranchRun } from "../../core/branch.js";
-import { coverageNotes, isOff, securityStanding } from "../../core/coverage.js";
+import {
+  COVERAGE_FEATURES,
+  type CoverageFeature,
+  coverageNotes,
+  isOff,
+  securityStanding,
+} from "../../core/coverage.js";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import {
   DEFAULT_HUNG_AFTER_MS,
@@ -38,6 +44,7 @@ import {
   readIssue,
   readPr,
   readReviewRequest,
+  readSecretScanningAlert,
   readStatus,
   readWorkflowRun,
 } from "../attention/payloads.js";
@@ -53,6 +60,7 @@ import {
   REVIEWS_INSTALLATION,
   LANE as REVIEWS_LANE,
 } from "../collect/review-requests.js";
+import type { RepoSecretScanningObservation } from "../collect/secret-scanning.js";
 import { LANE as UPDATE_PR_LANE } from "../collect/update-prs.js";
 import { LANE as ACTIONS_LANE } from "../collect/workflow-runs.js";
 import type { CurrentValue, StorePort } from "../store/port.js";
@@ -96,6 +104,29 @@ export interface RepoCodeScanningRow {
   ref: string | null;
   /** Whether the queue ranks it, decided by the same predicate the queue uses. */
   onDefaultBranch: boolean;
+  htmlUrl: string | null;
+  freshness: Freshness;
+  age: string;
+}
+
+/**
+ * One stored secret scanning alert (#158).
+ *
+ * No severity column and no ref column, because a secret has neither: GitHub
+ * grades none, and the finding is about a credential rather than a branch.
+ * What a maintainer acts on is WHAT leaked and whether the token still works,
+ * so those are the two columns. `secretType` is
+ * `secret_type_display_name`; the credential itself was never mapped, so
+ * there is nothing on this row that could print it.
+ */
+export interface RepoSecretScanningRow {
+  number: number;
+  /** The secret's display name, or null where GitHub sent none. */
+  secretType: string | null;
+  /** `active`, `inactive` or `unknown` for both absence and that literal. */
+  validity: string;
+  /** GitHub reported a public leak. Null, false and absent are all false. */
+  publiclyLeaked: boolean;
   htmlUrl: string | null;
   freshness: Freshness;
   age: string;
@@ -249,6 +280,8 @@ export interface RepoView {
   alertsWithdrawn: boolean;
   /** The same rule one feature over: code scanning is confirmed off. */
   codeScanningWithdrawn: boolean;
+  /** And once more: secret scanning is confirmed off (#158). */
+  secretScanningWithdrawn: boolean;
   /**
    * The header line: the tier, its rationale, and the counts.
    *
@@ -281,6 +314,20 @@ export interface RepoView {
    * `unconfirmed` rather than a freshness word nobody earned.
    */
   codeScanningAttested: boolean;
+  /**
+   * Every stored secret scanning alert for this repository (#158). No ref
+   * filter has an analogue here: a secret is not on a branch, so the queue
+   * ranks every row this list shows and the two counts agree by
+   * construction.
+   */
+  secretScanning: RepoSecretScanningRow[];
+  /**
+   * A present `repository_secret_scanning` confirmation exists: something
+   * swept this repository for leaked credentials. Its own flag for the same
+   * reason `codeScanningAttested` is - the section header attests the
+   * Dependabot lane, and these rows must not borrow it.
+   */
+  secretScanningAttested: boolean;
   updatePrs: RepoPrRow[];
   prSection: SectionState;
   /**
@@ -444,6 +491,11 @@ export function buildRepoView(
   // two are one number today because one schedule entry says so, and the day
   // that changes this is the name that has to move.
   const codeScanningPolicy = deps.policy;
+  // The secret scanning lane runs on the alert cadence too, and is named for
+  // the same reason: the three are one number today because one schedule
+  // entry says so, and the day that changes this is the name that has to
+  // move.
+  const secretScanningPolicy = deps.policy;
   const updatePrPolicy = deps.policy;
   const issuePolicy = deps.policy;
   const reviewPolicy = deps.policy;
@@ -475,9 +527,21 @@ export function buildRepoView(
   // blanking on it would let one dead coverage lane wipe correct counts off
   // every page in the estate (AD-28). Decided here, once, so the renderer
   // cannot reach a different conclusion from the same data.
-  const dependabotOff = features !== null && isOff(features.dependabot.state);
-  const codeScanningOff =
-    features !== null && isOff(features.code_scanning.state);
+  const withdrawn = (feature: CoverageFeature): boolean =>
+    features !== null && isOff(features[feature].state);
+  const dependabotOff = withdrawn("dependabot");
+  const codeScanningOff = withdrawn("code_scanning");
+  const secretScanningOff = withdrawn("secret_scanning");
+  // This page is about ONE repository, so each feature's evidence names at
+  // most this one slug. Keyed by feature rather than passed as three
+  // positional sets, which the compiler could not tell apart: transposing
+  // two of them compiled clean and withdrew the wrong feature's rows.
+  const suppressed = Object.fromEntries(
+    COVERAGE_FEATURES.filter(withdrawn).map((feature) => [
+      feature,
+      new Set([slug]),
+    ]),
+  );
   // Story 3.2's precedence generalised over every feature (#156), decided by
   // the one function the overview's chip reads, so the two surfaces agree by
   // construction rather than by two people remembering the same rule. The
@@ -511,8 +575,7 @@ export function buildRepoView(
       // value, not the resolver (AD-33).
       defaultBranchOf: () => defaultBranch,
     },
-    dependabotOff ? new Set([slug]) : undefined,
-    codeScanningOff ? new Set([slug]) : undefined,
+    suppressed,
   );
   // Counted from the same items the tier was judged on, so the sentence
   // beside the chip cannot disagree with it (AD-32). With no alert items
@@ -606,12 +669,54 @@ export function buildRepoView(
   }
   codeScanningRows.sort((a, b) => a.number - b.number);
 
+  // The leaked credentials (#158). Attributed by SUBJECT KEY like the two
+  // lists above and for the same reason, and suppressed on the same evidence
+  // the tier suppression uses, so the page cannot list rows the chip beside
+  // it refuses to count.
+  //
+  // No ref filter and no `onDefaultBranch` column: a secret is not on a
+  // branch, so every row here is a row the queue ranks.
+  const secretScanningRows: RepoSecretScanningRow[] = [];
+  for (const value of secretScanningOff
+    ? []
+    : store.currentByTypeForOwner("secret_scanning_alert", installation)) {
+    if (value.state !== "present") continue;
+    const keyRepo = value.subject.key.split("#")[0]?.toLowerCase() ?? "";
+    if (keyRepo !== slug) continue;
+    const alert = readSecretScanningAlert(value.payload);
+    if (alert === null) {
+      unreadable++;
+      continue;
+    }
+    if (alert.repo.toLowerCase() !== slug) {
+      // The key says this repository and the payload says another. Both are
+      // written from one RepoRef at ingest (AD-22), so the row is corrupt.
+      unreadable++;
+      continue;
+    }
+    secretScanningRows.push({
+      number: alert.number,
+      secretType: alert.secretType,
+      validity: alert.validity,
+      publiclyLeaked: alert.publiclyLeaked,
+      htmlUrl: safeUrl(alert.htmlUrl),
+      freshness: freshness(value.verifiedAt, now, secretScanningPolicy),
+      age: ageLabel(value.verifiedAt, now),
+    });
+  }
+  secretScanningRows.sort((a, b) => a.number - b.number);
+
   // Whether anything has swept THIS repository for findings. The lane's own
   // per-repository confirmation, not its run: a bounded sweep reaches some
   // repositories and skips others GitHub gave no listing for, so a lane-wide
   // verdict would vouch for one it never listed.
   const codeScanningConfirmation = store
     .currentByType("repository_code_scanning")
+    .find((v) => v.state === "present" && v.subject.key === slug);
+
+  /** The same question of the secret scanning lane's own confirmation. */
+  const secretScanningConfirmation = store
+    .currentByType("repository_secret_scanning")
     .find((v) => v.state === "present" && v.subject.key === slug);
 
   // What dependabotUpdate said per alert, read for the one thing this page
@@ -764,9 +869,13 @@ export function buildRepoView(
   const scanPayload = codeScanningConfirmation?.payload as
     | RepoCodeScanningObservation
     | undefined;
+  const secretPayload = secretScanningConfirmation?.payload as
+    | RepoSecretScanningObservation
+    | undefined;
   const fallbackCounts = [
     dependabotOff ? undefined : summaryPayload?.openAlerts,
     codeScanningOff ? undefined : scanPayload?.openAlerts,
+    secretScanningOff ? undefined : secretPayload?.openAlerts,
   ].filter((n): n is number => typeof n === "number");
   // Null, not zero: no confirmation from either lane is "nobody has looked",
   // which the header renders as `alert count not collected` (AD-28).
@@ -774,11 +883,27 @@ export function buildRepoView(
     fallbackCounts.length === 0
       ? null
       : fallbackCounts.reduce((sum, n) => sum + n, 0);
+  // Two contributors, not three: the secret scanning confirmation carries no
+  // worst severity because GitHub grades no secret. Its findings still show
+  // `critical` on the chip, but only through a queue ITEM's display
+  // severity - a confirmation row has no item to read one from, and
+  // inventing `critical` here would report a severity for a repository whose
+  // secrets we are only counting from an old summary.
+  //
+  // Filtered on the TYPE, not on null, because these two payloads are bare
+  // `as` casts over whatever JSON the store handed back - the boundary read
+  // AGENTS.md's rule is about. The alert rows beside them go through
+  // `readAlert` and `readCodeScanningAlert`; these confirmations go through
+  // nothing, and `worstSeverity` calls `.trim()` on every value it is given,
+  // so one stored number here answered 500 for the whole repository page. A
+  // non-string is dropped rather than counted, exactly as the non-number is
+  // dropped from `fallbackCounts` above: an absent severity renders as no
+  // severity, which is an absence and not a zero.
   const fallbackWorst = worstSeverity(
     [
       dependabotOff ? null : (summaryPayload?.worstSeverity ?? null),
       codeScanningOff ? null : (scanPayload?.worstSeverity ?? null),
-    ].filter((s): s is string => s !== null),
+    ].filter((s): s is string => typeof s === "string"),
   );
 
   return {
@@ -787,6 +912,7 @@ export function buildRepoView(
     notCovered,
     alertsWithdrawn: dependabotOff,
     codeScanningWithdrawn: codeScanningOff,
+    secretScanningWithdrawn: secretScanningOff,
     summary: {
       tier: attention.tier,
       tierReason: attention.reason,
@@ -805,6 +931,8 @@ export function buildRepoView(
     alerts,
     codeScanning: codeScanningRows,
     codeScanningAttested: codeScanningConfirmation !== undefined,
+    secretScanning: secretScanningRows,
+    secretScanningAttested: secretScanningConfirmation !== undefined,
     updatePrs,
     prSection: laneAttestation(
       store,

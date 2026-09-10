@@ -21,10 +21,16 @@ import {
 } from "../src/tricorder/attention/queue.js";
 import { normalise as normaliseScan } from "../src/tricorder/collect/code-scanning.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
+import { normalise as normaliseSecret } from "../src/tricorder/collect/secret-scanning.js";
 import type { UpdatePrObservation } from "../src/tricorder/collect/update-prs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
-import { makeAlert, makeCodeScanningAlert, primaryNav } from "./fakes.js";
+import {
+  makeAlert,
+  makeCodeScanningAlert,
+  makeSecretScanningAlert,
+  primaryNav,
+} from "./fakes.js";
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 const SWEEP = { cadenceMs: 15 * 60_000 };
@@ -72,6 +78,17 @@ describe("the ranked queue (CAP-6)", () => {
       run(),
       at,
       alerts.map((a) => normaliseScan(makeCodeScanningAlert(a))),
+    );
+  };
+
+  const seedSecrets = (
+    alerts: Parameters<typeof makeSecretScanningAlert>[0][],
+    at = "2026-08-17T11:55:00.000Z",
+  ) => {
+    store.recordObservations(
+      run(),
+      at,
+      alerts.map((a) => normaliseSecret(makeSecretScanningAlert(a))),
     );
   };
 
@@ -261,6 +278,226 @@ describe("the ranked queue (CAP-6)", () => {
       // items would collide as render keys, tie the queue's final tiebreak,
       // and in Epic 4 have one finding suppress the other's notification.
       expect(queue.items.map((i) => [i.kind, i.key])).toEqual([
+        ["alert", "no42-org/twiki#21"],
+        ["code_scanning", "no42-org/twiki#code-scanning:21"],
+      ]);
+    });
+  });
+
+  describe("leaked credentials (#158)", () => {
+    it("ranks an open secret now, on the KEV term, without claiming CISA listed it", () => {
+      // The whole story in one assertion. The KEV TERM is `true`, because
+      // that is the one term `tier()` promotes on and an open secret is a
+      // confirmed exposure. `kevListed` is FALSE, because that flag is what
+      // makes a page print "in CISA KEV" and this finding is not in CISA's
+      // catalogue. Every other term is a fact of absence, severity included:
+      // GitHub grades no secret.
+      seedSecrets([
+        {
+          number: 3,
+          secretType: "Amazon AWS Access Key ID",
+          validity: "active",
+        },
+      ]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      // The WHOLE item, ranking included: a toMatchObject here would leave
+      // the link, the freshness, the age and every term of the chain unbound.
+      expect(queue.items).toEqual([
+        {
+          kind: "secret_scanning",
+          // NOT the stored row's key, which is `no42-org/twiki#3` and is
+          // shared with both sibling alert families of the same number.
+          key: "no42-org/twiki#secret-scanning:3",
+          repo: "no42-org/twiki",
+          number: 3,
+          packageName: null,
+          // The display name, never `secret_type` and never the credential.
+          title: "Amazon AWS Access Key ID",
+          advisory: null,
+          htmlUrl:
+            "https://github.com/no42-org/twiki/security/secret-scanning/3",
+          explanation:
+            "Amazon AWS Access Key ID, an open secret is a confirmed" +
+            " exposure, validity active",
+          // The line this kind turns on: the term promotes, the flag does
+          // not cite.
+          kevListed: false,
+          // A word about the kind, not a grade GitHub sent.
+          displaySeverity: "critical",
+          ranking: {
+            // One rank above least-known, and it is the KEV term's. The KEV
+            // scale is [false, true], so `true` is the first known rank.
+            key: [0, 2, 0, 0, 0, 0],
+            terms: [
+              { name: "broken", rank: 0, reason: "Amazon AWS Access Key ID" },
+              {
+                name: "kev",
+                rank: 2,
+                // NEVER the chain's default, "listed in CISA KEV".
+                reason: "an open secret is a confirmed exposure",
+              },
+              { name: "epss", rank: 0, reason: "" },
+              { name: "severity", rank: 0, reason: "" },
+              { name: "bump", rank: 0, reason: "validity active" },
+              { name: "stuck", rank: 0, reason: "" },
+            ],
+            explanation:
+              "Amazon AWS Access Key ID, an open secret is a confirmed" +
+              " exposure, validity active",
+          },
+          freshness: "fresh",
+          age: "5m ago",
+        },
+      ]);
+      expect(tier(queue.items[0]?.ranking as Ranking, CUT)).toBe("now");
+    });
+
+    it("never prints CISA's name, in the explanation or anywhere on the item", () => {
+      // The fabricated citation this story exists to refuse, asserted over
+      // the whole serialised item rather than over the one field we happened
+      // to think of.
+      seedSecrets([{ number: 3 }]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(JSON.stringify(queue.items[0])).not.toContain("CISA");
+      expect(JSON.stringify(queue.items[0])).not.toContain("KEV");
+    });
+
+    it("treats an unknown validity as active, and still ranks now", () => {
+      // The direction is deliberate: a credential GitHub could not verify is
+      // one we must assume still works. Absence maps to `unknown` at the
+      // boundary, so an old row or a payload with no validity field takes
+      // this branch too.
+      seedSecrets([{ number: 4, validity: "unknown" }]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(queue.items[0]?.explanation).toBe(
+        "GitHub Personal Access Token, an open secret is a confirmed" +
+          " exposure, validity unknown",
+      );
+      expect(tier(queue.items[0]?.ranking as Ranking, CUT)).toBe("now");
+    });
+
+    it("keeps an inactive secret in the queue but out of now", () => {
+      // The renegotiated rule (#158). GitHub keeps the alert `state: "open"`
+      // after its OWN validity check reports the credential dead, and it
+      // stays open until a human closes it by hand - so an unconditional KEV
+      // term held a rotated secret above every live KEV-listed CVE in the
+      // estate for as long as nobody tidied up on github.com.
+      seedSecrets([{ number: 5, validity: "inactive" }]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      // Still collected, still an item, still ranked - and the sentence names
+      // the value that cost it its urgency.
+      expect(queue.items.map((i) => i.number)).toEqual([5]);
+      expect(queue.items[0]?.explanation).toBe(
+        "GitHub Personal Access Token, no CVE to check against KEV," +
+          " validity inactive",
+      );
+      // The KEV term is the only thing that changed, and it is the only
+      // thing that could have reached `now`.
+      expect(queue.items[0]?.ranking.terms).toContainEqual({
+        name: "kev",
+        rank: 0,
+        reason: "no CVE to check against KEV",
+      });
+      // NOT `soon`, which is what the spec's renegotiated rule says this
+      // should land in, and the gap is a fact about `tier()` rather than a
+      // choice made here. With the KEV term at `n/a` every one of this
+      // kind's six terms is `n/a`, which is LEAST_KNOWN, and `tier()` reads
+      // "every term at least-known" as `quiet` by definition. Reaching
+      // `soon` needs some term above LEAST_KNOWN, and this kind has none to
+      // give: severity is forbidden by the frozen block, and `null` on the
+      // KEV term would mean "we failed to collect it" when GitHub told us
+      // plainly. Pinned as it actually behaves, and raised rather than
+      // papered over.
+      expect(tier(queue.items[0]?.ranking as Ranking, CUT)).toBe("quiet");
+    });
+
+    it("sorts a live secret above a rotated one", () => {
+      // The whole point of the split, seen from the reader's side: two
+      // findings of one kind, and the one that can still be used is first.
+      seedSecrets([
+        { number: 5, validity: "inactive" },
+        { number: 3, validity: "active" },
+      ]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(
+        queue.items.map((i) => [i.number, tier(i.ranking as Ranking, CUT)]),
+      ).toEqual([
+        [3, "now"],
+        [5, "quiet"],
+      ]);
+    });
+
+    it("falls back to a name of its own when GitHub sent no display name", () => {
+      // The leading slot must say something: an empty one would open the
+      // sentence with a comma. Never the credential, which was never mapped.
+      seedSecrets([{ number: 5, secretType: null }]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(queue.items[0]?.title).toBeNull();
+      expect(queue.items[0]?.explanation).toBe(
+        "secret scanning alert, an open secret is a confirmed exposure," +
+          " validity active",
+      );
+    });
+
+    it("refuses a javascript: href on a secret, as it does on the two siblings", () => {
+      seedSecrets([
+        { number: 3, htmlUrl: "javascript:alert(1)" as unknown as string },
+      ]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(queue.items[0]?.htmlUrl).toBeNull();
+      expect(queue.items[0]?.number).toBe(3);
+    });
+
+    it("counts a row it cannot read and never renders it as an item", () => {
+      store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+        {
+          subject: { type: "secret_scanning_alert", key: "no42-org/twiki#9" },
+          // `publiclyLeaked` is not a boolean, so this is not a row this
+          // system wrote and the queue must not rank it.
+          payload: {
+            number: 9,
+            repo: "no42-org/twiki",
+            validity: "active",
+            publiclyLeaked: "yes",
+          },
+        },
+      ] as never[]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      expect(queue.items).toEqual([]);
+      expect(queue.unreadable).toBe(1);
+    });
+
+    it("keeps all three alert families of one number apart", () => {
+      // Three subject types over one key space: `alertSubject` puts the type
+      // OUTSIDE the key, so all three store under `no42-org/twiki#21` and
+      // would collide as render keys, tie the queue's final tiebreak, and in
+      // Epic 4 have one finding suppress another's notification.
+      seedAlerts([{ number: 21, epssPercentage: 0.02, severity: "high" }]);
+      seedScans([{ number: 21, securitySeverity: "high" }]);
+      seedSecrets([{ number: 21 }]);
+
+      const queue = buildQueue(store, NOW, DEPS);
+
+      // The secret sorts first, because its KEV term outranks everything
+      // beside it - which is the point of setting that term at all.
+      expect(queue.items.map((i) => [i.kind, i.key])).toEqual([
+        ["secret_scanning", "no42-org/twiki#secret-scanning:21"],
         ["alert", "no42-org/twiki#21"],
         ["code_scanning", "no42-org/twiki#code-scanning:21"],
       ]);
@@ -1616,6 +1853,45 @@ describe("the queue page", () => {
     // And it really is in the table below, so the count is not a zero of a
     // different kind that happens to read 1.
     expect(html).toContain('<span class="badge">scan</span>');
+  });
+
+  it("renders a leaked credential with its own badge and no KEV styling", async () => {
+    // The badge is the only thing that tells the three alert families apart
+    // at a glance: all three carry a `#N` in one repository's number space,
+    // and this is the one whose row is at the top of the queue. Relabelling
+    // it to `alert` made a leaked credential render identically to a
+    // Dependabot alert and the whole suite stayed green.
+    store.recordObservations(run(), "2026-08-17T11:55:00.000Z", [
+      normaliseSecret(
+        makeSecretScanningAlert({
+          number: 3,
+          secretType: "Amazon AWS Access Key ID",
+        }),
+      ),
+    ]);
+
+    const html = await (await app().request("/queue")).text();
+
+    expect(html).toContain('<span class="badge">secret</span>');
+    // Never the sibling badges, so a relabel to either fails here.
+    expect(html).not.toContain('<span class="badge">scan</span>');
+    // The rationale cell carries the ORDINARY class. `kev-hit` is what the
+    // page uses to shout "in CISA KEV", and this kind sets the KEV term
+    // without earning that claim - the whole point of keeping the term and
+    // the display flag apart.
+    expect(html).toContain(
+      '<div class="why-rank">Amazon AWS Access Key ID, an open secret is a' +
+        " confirmed exposure, validity active</div>",
+    );
+    // Asserted as the whole cell rather than as an absence of `kev-hit`:
+    // that class name is in the page's stylesheet either way, and "CISA"
+    // appears in the footer's own description of the ordering policy, so
+    // both absences would be about the wrong thing. The cell is the claim.
+    expect(html).not.toContain('<div class="kev-hit">Amazon AWS');
+    // And it counts under Security like its two siblings.
+    expect(html).toContain(
+      "1 open alerts · 0 broken builds · 0 update PRs · 0 untriaged issues",
+    );
   });
 
   it("labels the ordering a local policy, never SSVC (AD-20)", async () => {

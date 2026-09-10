@@ -58,6 +58,10 @@ import {
   loop,
 } from "./tricorder/collect/scheduler.js";
 import {
+  collectOrgSecretScanning,
+  LANE as SECRET_SCANNING_LANE,
+} from "./tricorder/collect/secret-scanning.js";
+import {
   collectUpdatePRs,
   LANE as UPDATE_PR_LANE,
 } from "./tricorder/collect/update-prs.js";
@@ -228,6 +232,8 @@ export function buildSchedules(deps: {
   alerts: (installation: string) => Promise<{ outcome: RunOutcome }>;
   /** Code scanning findings, on the alert cadence and the same installations. */
   codeScanning: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  /** Leaked credentials, on the same cadence and the same installations. */
+  secretScanning: (installation: string) => Promise<{ outcome: RunOutcome }>;
   coverage: (installation: string) => Promise<{ outcome: RunOutcome }>;
   kev: (scope: RunScope) => Promise<{ outcome: RunOutcome }>;
   /** Null when no bot actors are configured: the lane is absent, loudly. */
@@ -279,6 +285,18 @@ export function buildSchedules(deps: {
       cadenceMs: ALERT_CADENCE_MS,
       installations: deps.installations,
       run: deps.codeScanning,
+    },
+    // The alert cadence again, for the same three reasons: one org-level call
+    // per installation, the Security topic, and a finding that ranked on a
+    // slower clock than the alert beside it would read stale on a page that
+    // called the other fresh (AD-11). No `lanePolicies` entry, because
+    // `policy` already is this cadence.
+    {
+      lane: SECRET_SCANNING_LANE,
+      scope: "full",
+      cadenceMs: ALERT_CADENCE_MS,
+      installations: deps.installations,
+      run: deps.secretScanning,
     },
     ...(deps.updatePrs === null
       ? []
@@ -749,6 +767,8 @@ async function main(): Promise<void> {
         collectOrgAlerts(laneDeps, installation, "full"),
       codeScanning: (installation) =>
         collectOrgCodeScanning(laneDeps, installation, "full"),
+      secretScanning: (installation) =>
+        collectOrgSecretScanning(laneDeps, installation, "full"),
       coverage: (installation) =>
         collectCoverage(laneDeps, installation, "full"),
       kev: (scope) =>
