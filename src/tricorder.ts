@@ -47,6 +47,10 @@ import {
   type KevDeps,
 } from "./tricorder/collect/kev.js";
 import {
+  collectPullRequests,
+  LANE as PULL_REQUEST_LANE,
+} from "./tricorder/collect/pull-requests.js";
+import {
   collectReviewRequests,
   REVIEWS_INSTALLATION,
   LANE as REVIEWS_LANE,
@@ -240,6 +244,13 @@ export function buildSchedules(deps: {
   updatePrs:
     | ((installation: string) => Promise<{ outcome: RunOutcome }>)
     | null;
+  /**
+   * Plain pull requests (#167). NEVER null, and deliberately not gated on
+   * `bots` the way `updatePrs` is: with no bot actor configured, every open
+   * pull request is a human one, so this is exactly the configuration where
+   * the lane has the most to collect.
+   */
+  pullRequests: (installation: string) => Promise<{ outcome: RunOutcome }>;
   issues: (installation: string) => Promise<{ outcome: RunOutcome }>;
   /** Null when no reviewers are configured: the lane is absent, loudly. */
   reviewRequests: (() => Promise<{ outcome: RunOutcome }>) | null;
@@ -324,6 +335,19 @@ export function buildSchedules(deps: {
             run: deps.reviewRequests,
           },
         ]),
+    // The alert cadence again, and one search per installation. It shares
+    // that cadence with the update-PR lane beside it for the reason the
+    // security lanes share it: the two collect the two halves of one set,
+    // and a human pull request that ranked on a slower clock than the
+    // dependency one beside it would read stale on a page that called the
+    // other fresh (AD-11).
+    {
+      lane: PULL_REQUEST_LANE,
+      scope: "full",
+      cadenceMs: ALERT_CADENCE_MS,
+      installations: deps.installations,
+      run: deps.pullRequests,
+    },
     {
       lane: ISSUE_LANE,
       scope: "full",
@@ -795,6 +819,15 @@ async function main(): Promise<void> {
                 "full",
               )
           : null,
+      // Not gated on `config.bots`, unlike `updatePrs` above: the bots are
+      // what this lane EXCLUDES, so an empty list means every open pull
+      // request is a human one and the lane has more to do, not less.
+      pullRequests: (installation) =>
+        collectPullRequests(
+          { ...laneDeps, bots: config.bots },
+          installation,
+          "full",
+        ),
       issues: (installation) => collectIssues(laneDeps, installation, "full"),
       reviewRequests:
         config.reviewers.length > 0
@@ -895,7 +928,8 @@ async function main(): Promise<void> {
       // Absent, loudly. A lane that silently does not exist is how "no update
       // PRs" and "we never looked" become the same picture (AD-19, AD-28).
       log(
-        "no bot actors configured; the update-PR lane is disabled. Set bots: in repos.yaml.",
+        "no bot actors configured; the update-PR lane is disabled. Set bots: in repos.yaml." +
+          " Every open pull request is collected as a human one; none appears twice.",
       );
     }
 

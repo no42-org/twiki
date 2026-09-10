@@ -9,6 +9,7 @@ import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
 import { LANE as ALERTS_LANE } from "../collect/dependabot-alerts.js";
 import { LANE as ISSUES_LANE } from "../collect/issues.js";
 import { KEV_INSTALLATION, LANE as KEV_LANE } from "../collect/kev.js";
+import { LANE as PULL_REQUESTS_LANE } from "../collect/pull-requests.js";
 import {
   REVIEWS_INSTALLATION,
   LANE as REVIEWS_LANE,
@@ -67,6 +68,10 @@ export const LANE_TOPIC: ReadonlyMap<string, LaneTopic> = new Map<
   [
     UPDATE_STATUS_LANE,
     { topic: "dependencies", word: "update status", installation: null },
+  ],
+  [
+    PULL_REQUESTS_LANE,
+    { topic: "pulls", word: "pull requests", installation: null },
   ],
   [ISSUES_LANE, { topic: "issues", word: "issues", installation: null }],
   [

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { RunRecord, StorePort } from "../store/port.js";
+import type { CurrentValue, RunRecord, StorePort } from "../store/port.js";
 import {
   ageLabel,
   type Freshness,
@@ -25,6 +25,37 @@ export interface SectionState {
   attested: boolean;
   freshness: Freshness;
   age: string;
+}
+
+/**
+ * Whether one repository's own confirmation row still vouches for a count.
+ *
+ * Presence is not enough, and that is the whole of this function: a lane
+ * that died days ago leaves its last confirmation behind, and reading it as
+ * an attestation makes a page say `none` where the overview - which judges
+ * the same row on the same cadence - says `unconfirmed`. `actionsVouched`
+ * states the same rule for the Actions lane, with a payload check this one
+ * has no analogue for: this confirmation carries only a count, and a
+ * confirmation that reached the repository and found nothing is exactly the
+ * `0` we want to publish.
+ *
+ * Takes a CURRENT, present row: the callers drop tombstones on the way in,
+ * because a tombstoned confirmation is a retracted assertion rather than a
+ * stale one, and they also have to tell "retracted" from "never written".
+ * Checking the state again here would be a second guard for one rule, which
+ * is how both end up unpinned by any test.
+ *
+ * A type predicate, so a caller that goes on to read the vouching row's
+ * `verifiedAt` narrows here rather than asserting the row back into
+ * existence beside the call that just checked it.
+ */
+export function confirmationVouches(
+  value: CurrentValue | undefined,
+  now: Date,
+  policy: FreshnessPolicy,
+): value is CurrentValue {
+  if (value === undefined) return false;
+  return freshness(value.verifiedAt, now, policy) === "fresh";
 }
 
 /** The newest full-scope run of a lane on an installation, if any. */

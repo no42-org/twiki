@@ -12,6 +12,7 @@ import {
   epssRank,
   NOT_APPLICABLE,
 } from "../src/core/rank.js";
+import { watchKey } from "../src/core/slug.js";
 import { alertSubject, coverageSubject } from "../src/core/subject.js";
 import { DEFAULT_NOW_EPSS } from "../src/core/tier.js";
 import type { Topic } from "../src/core/topics.js";
@@ -78,9 +79,10 @@ const daysAgo = (days: number): string =>
 const hoursAgo = (hours: number): string =>
   new Date(NOW.getTime() - hours * 60 * 60_000).toISOString();
 
-// The two absences, spelled here rather than imported: a constant asserted
-// against itself cannot fail.
-const NO_COLLECTOR = "no collector for this topic yet";
+// The one absence left, spelled here rather than imported: a constant
+// asserted against itself cannot fail. `no collector for this topic yet` is
+// gone with #167 - every topic in the queue has a lane now, so a chip or a
+// tile with no number is always one no sweep has spoken for.
 const NO_SWEEP = "not confirmed by any completed sweep";
 
 const absent = (reason: string, caveat: string | null = null): Chip => ({
@@ -94,8 +96,6 @@ const absent = (reason: string, caveat: string | null = null): Chip => ({
 /** The Dependabot probe reached no answer, spelled rather than imported. */
 const NO_ALERT_ANSWER =
   "GitHub did not say whether Dependabot alerts are readable";
-/** A topic that has no collector yet: Pull requests. */
-const NO_LANE = absent(NO_COLLECTOR);
 /** A topic whose lane has not completed a current sweep here. */
 const UNSWEPT = absent(NO_SWEEP);
 const ZERO: Chip = {
@@ -168,11 +168,12 @@ const REST_TOPICS: Topic[] = [
 /** The six chips of a row that only the alert lane has confirmed. */
 const alertsOnly = (security: Chip): BoardRow["chips"] => ({
   security,
-  // CI has a lane now, so its absence is the same absence Dependencies has:
-  // no sweep confirmed this repository, not "nobody collects this".
+  // CI has a lane, and so does Pull requests (#167), so every absence here
+  // is the same one Dependencies has: no sweep confirmed this repository,
+  // not "nobody collects this".
   ci: UNSWEPT,
   dependencies: UNSWEPT,
-  pulls: NO_LANE,
+  pulls: UNSWEPT,
   issues: UNSWEPT,
   reviews: UNSWEPT,
 });
@@ -182,7 +183,7 @@ const TILE_FACTS: Record<Topic, [label: string, href: string, absent: string]> =
     security: ["Security", "/queue?topic=security", NO_SWEEP],
     ci: ["CI", "/queue?topic=ci", NO_SWEEP],
     dependencies: ["Dependencies", "/queue?topic=dependencies", NO_SWEEP],
-    pulls: ["Pull requests", "/queue?topic=pulls", NO_COLLECTOR],
+    pulls: ["Pull requests", "/queue?topic=pulls", NO_SWEEP],
     issues: ["Issues", "/queue?topic=issues", NO_SWEEP],
     reviews: ["Reviews", "/reviews", NO_SWEEP],
   };
@@ -597,7 +598,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           security: unswept(ZERO),
           ci: UNSWEPT,
           dependencies: UNSWEPT,
-          pulls: NO_LANE,
+          pulls: UNSWEPT,
           issues: UNSWEPT,
           reviews: linked(1, "/reviews"),
         },
@@ -677,7 +678,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             security: unswept(ZERO),
             ci: linked(1, CI),
             dependencies: UNSWEPT,
-            pulls: NO_LANE,
+            pulls: UNSWEPT,
             issues: UNSWEPT,
             reviews: UNSWEPT,
           },
@@ -1704,7 +1705,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
               1,
               "/queue?repo=no42-org%2Ftwiki&topic=dependencies",
             ),
-            pulls: NO_LANE,
+            pulls: UNSWEPT,
             issues: UNSWEPT,
             reviews: linked(2, "/reviews"),
           },
@@ -1720,6 +1721,154 @@ describe("buildBoard (AD-32, AD-35)", () => {
           age: "5m ago",
         },
       ]);
+    });
+
+    describe("the Pull requests chip (#167)", () => {
+      /**
+       * One plain-pull-request sweep: the repositories it covered, each with
+       * its own confirmation, plus the rows it found.
+       *
+       * The confirmation is per repository because the search withholds one
+       * for a repository whose `repo:` qualifier could not fit a query, and
+       * the run still finishes `ok`. A chip read off the lane's run would
+       * vouch for exactly the repository nobody asked about.
+       */
+      const pullSweep = (
+        confirmed: RepoRef[],
+        prs: { repo: RepoRef; number: number; headRef?: string | null }[] = [],
+        at = AT,
+      ) =>
+        seed(
+          "graphql-pull-requests",
+          "no42-org",
+          [
+            ...confirmed.map((repo) => ({
+              subject: {
+                type: "repository_pull_requests",
+                key: watchKey(repo),
+              },
+              payload: {
+                repo: watchKey(repo),
+                openPullRequests: prs.filter(
+                  (p) => watchKey(p.repo) === watchKey(repo),
+                ).length,
+              },
+            })),
+            ...prs.map(({ repo, number, headRef = null }) => ({
+              subject: { type: "pull_request", key: `PR_${number}` },
+              payload: {
+                repo: watchKey(repo),
+                number,
+                title: "Fix the thing",
+                author: "a-contributor",
+                htmlUrl: `https://github.com/${watchKey(repo)}/pull/${number}`,
+                createdAt: AT,
+                headRef,
+              },
+            })),
+          ],
+          at,
+        );
+
+      /**
+       * Lifts a repository off `quiet` so its row is on the board at all.
+       *
+       * A pull request whose checks are stuck reaches `soon` on its own, but
+       * the cases here are about the CHIP rather than the item, and two of
+       * them deliberately have no pull request to be lifted by.
+       */
+      const lift = (repo: RepoRef, number: number) =>
+        seed("graphql-review-requests", "reviews", [overdue(repo, number)]);
+
+      it("counts, and links, once this repository's own confirmation is current", () => {
+        sweep([{ repo: REPO, alerts: [] }]);
+        pullSweep([REPO], [{ repo: REPO, number: 7 }]);
+        lift(REPO, 12);
+
+        const row = buildBoard(store, [REPO], NOW, DEPS).rows[0];
+
+        expect(row?.chips.pulls).toEqual(
+          linked(1, "/queue?repo=no42-org%2Ftwiki&topic=pulls"),
+        );
+      });
+
+      it("says a measured zero for a repository the search covered and found none in", () => {
+        // The confirmation is the whole difference between this `0` and the
+        // `unconfirmed` below: both have no rows (AD-28).
+        sweep([{ repo: REPO, alerts: [] }]);
+        pullSweep([REPO]);
+        lift(REPO, 12);
+
+        const row = buildBoard(store, [REPO], NOW, DEPS).rows[0];
+
+        // A zero carries no link, like every other zero chip: there is
+        // nothing on the other side of it.
+        expect(row?.chips.pulls).toEqual(ZERO);
+      });
+
+      it("stays unconfirmed for the repository the search could not cover", () => {
+        // The lane ran, finished `ok`, and confirmed the OTHER repository.
+        // A chip read off the run would publish a confident zero here.
+        sweep([
+          { repo: REPO, alerts: [] },
+          { repo: OTHER, alerts: [] },
+        ]);
+        pullSweep([OTHER]);
+        lift(REPO, 12);
+        lift(OTHER, 13);
+
+        const rows = buildBoard(store, [REPO, OTHER], NOW, DEPS).rows;
+        const chipOf = (slug: string) =>
+          rows.find((r) => r.slug === slug)?.chips.pulls;
+
+        expect(chipOf("no42-org/quiet")).toEqual(ZERO);
+        // The lane's run says `ok` for this installation and says nothing
+        // about this repository. `unconfirmed`, never `0`.
+        expect(chipOf("no42-org/twiki")).toEqual(UNSWEPT);
+      });
+
+      it("lifts the repository to soon on stuck checks, and says which pull request", () => {
+        // The one term this kind speaks with, end to end: the retained
+        // pull-request check decides the rank, the tier follows, and the
+        // rationale names the pull request apart from an update PR - the
+        // two share one repository's `#number` space.
+        sweep([{ repo: REPO, alerts: [] }]);
+        pullSweep([REPO], [{ repo: REPO, number: 7, headRef: "feature" }]);
+        seed("rest-actions-runs", "no42-org", [
+          {
+            subject: { type: "pull_request_workflow_run", key: "WFR_3" },
+            payload: {
+              repo: "no42-org/twiki",
+              workflowId: 1,
+              workflowName: "CI",
+              runNumber: 3,
+              status: "completed",
+              conclusion: "failure",
+              headBranch: "feature",
+              event: "pull_request",
+              htmlUrl: "https://github.com/no42-org/twiki/actions/runs/3",
+              createdAt: AT,
+            },
+          },
+        ]);
+
+        const row = buildBoard(store, [REPO], NOW, DEPS).rows[0];
+
+        expect(row?.tier).toBe("soon");
+        expect(row?.reason).toBe("pull request #7: checks failed");
+      });
+
+      it("goes back to unconfirmed once the confirmation ages out", () => {
+        // A lane that died days ago must not keep badging its last word as
+        // though it were this sweep's (AD-11).
+        sweep([{ repo: REPO, alerts: [] }]);
+        pullSweep([REPO], [{ repo: REPO, number: 7 }], daysAgo(2));
+        lift(REPO, 12);
+
+        const row = buildBoard(store, [REPO], NOW, DEPS).rows[0];
+
+        expect(row?.chips.pulls).toEqual(absent("last confirmed 2d ago"));
+      });
     });
 
     it("links a counted Issues chip and badges the row by its newest confirmation", () => {
@@ -1741,7 +1890,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             security: unswept(ZERO),
             ci: UNSWEPT,
             dependencies: UNSWEPT,
-            pulls: NO_LANE,
+            pulls: UNSWEPT,
             issues: linked(1, "/queue?repo=no42-org%2Ftwiki&topic=issues"),
             reviews: linked(1, "/reviews"),
           },
@@ -1780,7 +1929,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             security: UNSWEPT,
             ci: UNSWEPT,
             dependencies: UNSWEPT,
-            pulls: NO_LANE,
+            pulls: UNSWEPT,
             issues: linked(1, "/queue?repo=no42-org%2Ftwiki&topic=issues"),
             reviews: UNSWEPT,
           },
@@ -1811,7 +1960,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             security: unswept(ZERO),
             ci: UNSWEPT,
             dependencies: UNSWEPT,
-            pulls: NO_LANE,
+            pulls: UNSWEPT,
             issues: absent("last confirmed 5d ago"),
             reviews: linked(1, "/reviews"),
           },

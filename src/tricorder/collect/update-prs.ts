@@ -4,6 +4,7 @@
  */
 
 import { safeLog } from "../../core/log.js";
+import { classifyPullRequest } from "../../core/pr-classifier.js";
 import { classifyBump, parseDependency } from "../../core/semver.js";
 import { nodeSubject } from "../../core/subject.js";
 import type { BumpLevel, RepoRef } from "../../core/types.js";
@@ -123,7 +124,24 @@ export async function collectUpdatePRs(
       // filter is the write-path defence, so a renamed or transferred repo the
       // search echoes back under another name cannot slip into the store.
       const watched = page.prs.filter((pr) => deps.isWatched(pr.repo));
-      const observations = watched.map(normalisePr);
+      // The classifier, which is NEW behaviour for this lane (#167): it used
+      // to pass `bots` to the search as `author:` qualifiers and never look
+      // at an author again. It looks now because the plain pull-request lane
+      // beside it collects the complement, and the two searches must
+      // partition the open pull requests rather than each deciding for
+      // itself what a bot is. One function, called by both, so GitHub's
+      // reading of a configured login and ours cannot drift apart silently.
+      //
+      // It rejects nothing GitHub's own `author:` qualifier accepted, on
+      // every spelling measured on this estate: `app/dependabot` in config
+      // against `dependabot[bot]` in the payload folds to one actor. A
+      // rejection here is therefore a disagreement worth logging, not a
+      // routine filter.
+      const bots = watched.filter(
+        (pr) =>
+          classifyPullRequest(pr.author, deps.bots) === "dependency_update_pr",
+      );
+      const observations = bots.map(normalisePr);
 
       // Truncation degrades the run exactly as unreadable nodes do: both mean
       // the result set is incomplete, and a tombstone pass over an incomplete
@@ -131,6 +149,17 @@ export async function collectUpdatePRs(
       // Three ways the result set can be incomplete, all of which must stop
       // the tombstone pass: unreadable nodes, GitHub's search ceiling, and a
       // repository whose qualifier could not fit in any query at all.
+      //
+      // The third is where this lane DIVERGES from `pull-requests.ts`, which
+      // shares its search shape and its `unsearchable` field (#167). That
+      // lane treats an unsearchable repository as an answer about that
+      // repository - no rows, no confirmation, no tombstones - and keeps the
+      // run `ok`, because it writes a per-repository confirmation and can
+      // therefore withhold one. This lane writes none: it has nothing
+      // per-repository to withhold, so the only honest way to say "the
+      // answer is incomplete" is to degrade the whole run. The divergence is
+      // deliberate and is stated at both lanes rather than looking like one
+      // of them forgot.
       const outcome =
         page.unreadable > 0 || page.truncated || page.unsearchable.length > 0
           ? "partial"
@@ -161,6 +190,9 @@ export async function collectUpdatePRs(
       log(
         `${LANE} ${installation}: ${observations.length} update PRs` +
           `, ${page.prs.length - watched.length} outside the allowlist` +
+          (watched.length - bots.length > 0
+            ? `, ${watched.length - bots.length} whose author is not a configured bot`
+            : "") +
           (page.unreadable > 0 ? `, ${page.unreadable} unreadable` : ""),
       );
       return {

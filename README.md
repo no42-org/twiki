@@ -149,6 +149,11 @@ Dependency-update pull requests are collected for the bot actors named under `bo
 There is no default: AD-19 forbids a bot login in source, so an absent list disables the lane and the collector says so at startup.
 A PR inherits the risk of what it fixes: when its package matches an open alert, the alert's KEV, EPSS and severity rank the PR; otherwise it is a plain update ranked by bump size.
 
+Every other open pull request — the ones a human is waiting on — is collected by a second lane that excludes exactly those actors, and shows under Pull requests rather than Dependencies.
+One pull request reaches one of the two and never both.
+That lane runs whatever `bots:` says: with no actor configured, nothing is a bot and every open pull request is a human one.
+Its only ranking term is whether its checks are stuck, read from the workflow runs the Actions lane already retains — no checks API call is made.
+
 `web` serves two pages on the loopback bind: `/` lists every watched repository with its alert count and freshness, and `/queue` is one cross-repository list ordered by the ranking chain, each row saying why it ranks where it does.
 The ordering is a local policy, not SSVC or any published standard: a broken default branch, then CISA KEV listing, then EPSS, then severity, then update size, then whether GitHub could prepare the update.
 A failed or hung workflow run on a repository's default branch leads the chain, because nothing ships from a red main whatever else is open.
@@ -169,7 +174,7 @@ Create a new GitHub App and grant **read-only** on exactly these, nothing more:
 | Code scanning alerts | `security_events` | security sweep |
 | Secret scanning alerts | `secret_scanning_alerts` | security sweep |
 | Actions | `actions` | workflow run status |
-| Pull requests | `pull_requests` | dependency-update PRs and the review queue |
+| Pull requests | `pull_requests` | dependency-update PRs, open human PRs and the review queue |
 | Issues | `issues` | untriaged issues |
 
 Grant no write permission at all, and subscribe to no webhook events: nothing

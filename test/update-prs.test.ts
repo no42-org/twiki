@@ -165,6 +165,54 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     expect(current()).toHaveLength(1);
   });
 
+  it("discards a PR whose author no configured actor matches", async () => {
+    // NEW behaviour (#167): this lane used to pass `bots` to the search as
+    // `author:` qualifiers and never look at an author again. It classifies
+    // now, because the plain pull-request lane collects the complement and
+    // the two must partition the open pull requests rather than each
+    // deciding for itself what a bot is.
+    //
+    // It should discard NOTHING in production - GitHub's `author:` qualifier
+    // and `classifyPullRequest` agree on every spelling measured on this
+    // estate - so this pins the direction the filter actually points.
+    github.updatePrs.set("no42-org", [
+      makeUpdatePr({ number: 1 }),
+      makeUpdatePr({ number: 2, nodeId: "PR_2", author: "a-contributor" }),
+    ]);
+
+    const r = await collectUpdatePRs(deps(), "no42-org", "full");
+
+    expect(r.prs).toBe(1);
+    expect(current().map((c) => c.subject.key)).toEqual(["PR_1"]);
+    expect(
+      logs.some((l) => l.includes("1 whose author is not a configured bot")),
+    ).toBe(true);
+  });
+
+  it("TOMBSTONES a stored PR whose author stops matching, which is the risk", async () => {
+    // The failure mode worth writing down, because it is a disappearance
+    // rather than an error. `seen` is built from the survivors of the
+    // classifier, so a PR this filter drops is also one the tombstone pass
+    // concludes is gone - and the plain lane's `-author:` excludes the same
+    // PR server-side, so it would then appear on no page at all.
+    //
+    // Reachable only if `normaliseActor` ever fails to fold a spelling
+    // GitHub's `author:` qualifier does match. Driven here by renaming the
+    // configured actor, which is the same shape from the lane's side.
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
+    await collectUpdatePRs(deps(), "no42-org", "full");
+    expect(current()).toHaveLength(1);
+
+    const r = await collectUpdatePRs(
+      deps(["app/other-bot"]),
+      "no42-org",
+      "full",
+    );
+
+    expect(r.outcome).toBe("ok");
+    expect(current()).toHaveLength(0);
+  });
+
   it("tombstones a PR a clean full sweep no longer sees", async () => {
     github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
     await collectUpdatePRs(deps(), "no42-org", "full");

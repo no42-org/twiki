@@ -6,6 +6,7 @@
 import type { CodeScanningAlertObservation } from "../collect/code-scanning.js";
 import type { AlertObservation } from "../collect/dependabot-alerts.js";
 import type { IssueObservation } from "../collect/issues.js";
+import type { PullRequestObservation } from "../collect/pull-requests.js";
 import type { ReviewRequestObservation } from "../collect/review-requests.js";
 import type { SecretScanningAlertObservation } from "../collect/secret-scanning.js";
 import type { UpdatePrObservation } from "../collect/update-prs.js";
@@ -114,7 +115,7 @@ export function readPr(payload: unknown): UpdatePrObservation | null {
   const p = payload as UpdatePrObservation | null | undefined;
   if (!p || typeof p !== "object") return null;
   if (typeof p.number !== "number" || typeof p.repo !== "string") return null;
-  if (typeof p.title !== "string" || typeof p.author !== "string") return null;
+  if (typeof p.title !== "string") return null;
   if (typeof p.htmlUrl !== "string") return null;
   if (p.packageName !== null && typeof p.packageName !== "string") return null;
   if (
@@ -125,6 +126,37 @@ export function readPr(payload: unknown): UpdatePrObservation | null {
   ) {
     return null;
   }
+  return p;
+}
+
+/**
+ * The plain pull-request shape check, same posture as the rest: counted, not
+ * guessed at (#167).
+ *
+ * `headRef` is the one field allowed to be null: the GraphQL schema says
+ * non-null and the adapter still checks the type, because this is a boundary
+ * read. Null reaches the queue's `stuck` term as `checks not observed`,
+ * which is the honest answer for a pull request whose head ref we cannot
+ * name - so a row is not refused over it.
+ *
+ * `createdAt` is checked even though NOTHING reads it. No surface renders it:
+ * `RepoPullRow` has no such field and the queue takes freshness from the
+ * row's own `verifiedAt`. It is checked because the lane always writes it,
+ * so a payload without one is a payload this system did not write - the same
+ * rule the two scanner guards state about their required fields. That is a
+ * claim about provenance, not about a reader, and the earlier version of
+ * this sentence said the repository page renders it, which was simply false.
+ */
+export function readPullRequest(
+  payload: unknown,
+): PullRequestObservation | null {
+  const p = payload as PullRequestObservation | null | undefined;
+  if (!p || typeof p !== "object") return null;
+  if (typeof p.number !== "number" || typeof p.repo !== "string") return null;
+  if (typeof p.title !== "string" || typeof p.author !== "string") return null;
+  if (typeof p.htmlUrl !== "string") return null;
+  if (typeof p.createdAt !== "string") return null;
+  if (!stringOrNull(p.headRef)) return null;
   return p;
 }
 

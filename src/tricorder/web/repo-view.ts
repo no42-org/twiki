@@ -29,6 +29,7 @@ import {
 import type { RepoRef } from "../../core/types.js";
 import { actionsVouched } from "../attention/actions-confirmation.js";
 import {
+  confirmationVouches,
   laneAttestation,
   type SectionState,
 } from "../attention/attestation.js";
@@ -43,6 +44,7 @@ import {
   readCodeScanningAlert,
   readIssue,
   readPr,
+  readPullRequest,
   readReviewRequest,
   readSecretScanningAlert,
   readStatus,
@@ -143,6 +145,24 @@ export interface RepoPrRow {
    * beside a PR GitHub never linked to it.
    */
   linkedAlerts: number[];
+  htmlUrl: string | null;
+  freshness: Freshness;
+  age: string;
+}
+
+/**
+ * One plain pull request: open, and opened by nobody the config names as a
+ * dependency-update bot (#167).
+ *
+ * No `packageName` and no `linkedAlerts`: a human pull request is not an
+ * update, so both columns would be an invariant "unknown" and "none on
+ * record" beside every row. The author is here instead, because "who is
+ * waiting on you" is what the section is for.
+ */
+export interface RepoPullRow {
+  number: number;
+  title: string;
+  author: string;
   htmlUrl: string | null;
   freshness: Freshness;
   age: string;
@@ -331,11 +351,22 @@ export interface RepoView {
   updatePrs: RepoPrRow[];
   prSection: SectionState;
   /**
-   * Plain pull requests. No lane collects them until Epic 3, so the list is
-   * empty by construction and the section is never attested: the page says
-   * `not confirmed by any completed sweep`, never `0` (AD-28).
+   * Plain pull requests on this repository (#167).
+   *
+   * Deduplicated against `updatePrs` by node id, preferring the dependency
+   * listing, under exactly the rule the queue applies to its items. It is
+   * NOT enough to leave the two lists to the collection layer: `bots:`
+   * emptied after a sweep disables the only lane that tombstones a
+   * `dependency_update_pr` row, so both rows sit in the store at once, and
+   * without this the page would list one pull request twice while the
+   * overview chip - which reads the deduplicated queue - showed a different
+   * number for the same repository.
+   *
+   * Scoped to this pair, like the queue's rule and for the same reason: a
+   * `review_request` row shares a node id with a `dependency_update_pr` one
+   * deliberately, and the Reviews section below still lists it.
    */
-  pulls: never[];
+  pulls: RepoPullRow[];
   pullsSection: SectionState;
   issues: RepoIssueRow[];
   issueSection: SectionState;
@@ -497,6 +528,11 @@ export function buildRepoView(
   // move.
   const secretScanningPolicy = deps.policy;
   const updatePrPolicy = deps.policy;
+  // The plain pull-request lane runs on the alert cadence too, and is named
+  // for the reason its neighbours are: the lanes are one number today
+  // because one schedule entry says so, and the day that changes this is the
+  // name that has to move.
+  const pullPolicy = deps.policy;
   const issuePolicy = deps.policy;
   const reviewPolicy = deps.policy;
   const runPolicy = actionsPolicy;
@@ -772,6 +808,42 @@ export function buildRepoView(
     }))
     .sort((a, b) => a.number - b.number);
 
+  const pullResult = forRepo(
+    store.currentByType("pull_request"),
+    slug,
+    readPullRequest,
+  );
+  unattributable += pullResult.unattributable;
+  // The same "never twice" rule the queue enforces over its items, applied
+  // over the ROWS this page lists. Both surfaces need it and neither can
+  // stand in for the other: the queue's rule decides what is ranked, this
+  // one decides what is listed, and the configuration they both exist for -
+  // `bots:` emptied after a sweep - leaves the store holding both rows with
+  // nothing able to tombstone either.
+  const claimedByDependencies = new Set(
+    prResult.rows.map(({ value }) => value.subject.key),
+  );
+  const pulls = pullResult.rows
+    .filter(({ value }) => !claimedByDependencies.has(value.subject.key))
+    .map(({ value, payload }) => ({
+      number: payload.number,
+      title: payload.title,
+      author: payload.author,
+      htmlUrl: safeUrl(payload.htmlUrl),
+      freshness: freshness(value.verifiedAt, now, pullPolicy),
+      age: ageLabel(value.verifiedAt, now),
+    }))
+    .sort((a, b) => a.number - b.number);
+
+  // Whether the search actually covered THIS repository. The lane's own
+  // per-repository confirmation, not its run: a repository whose `repo:`
+  // qualifier could not fit a query gets no rows and no confirmation while
+  // the run still finishes `ok`, so a lane-wide verdict would attest an
+  // empty table for the one repository nobody searched (#167).
+  const pullsConfirmation = store
+    .currentByType("repository_pull_requests")
+    .find((v) => v.state === "present" && v.subject.key === slug);
+
   const issueResult = forRepo(store.currentByType("issue"), slug, readIssue);
   unattributable += issueResult.unattributable;
   const issues = issueResult.rows
@@ -941,15 +1013,30 @@ export function buildRepoView(
       now,
       updatePrPolicy,
     ),
-    pulls: [],
-    // No lane, no run rows, nothing to attest. Spelled out rather than read
-    // from a lane that does not exist, so the section cannot be mistaken
-    // for one whose lane merely has not run yet.
-    pullsSection: {
-      attested: false,
-      freshness: "unknown",
-      age: ageLabel(null, now),
-    },
+    pulls,
+    // This repository's OWN confirmation, and NO fall-back to the lane -
+    // which is where this section differs from the Actions one below (#167).
+    //
+    // That lane sweeps every watched repository, so "no confirmation" there
+    // means "not swept yet" and consulting the run is honest. This one
+    // withholds a confirmation for a repository whose `repo:` qualifier
+    // could not fit a query, while the run still finishes `ok` for the rest
+    // of the installation. Falling back would read that `ok` as an
+    // attestation and print `no open pull requests in this repository`
+    // under the one repository nobody searched - the confident zero this
+    // whole design refuses (AD-28).
+    pullsSection: pullsConfirmation
+      ? {
+          // Freshness, not mere presence, and through the same function the
+          // overview's chip calls: a lane that died days ago must not leave
+          // this section saying `no open pull requests in this repository`
+          // under a chip that already reads `unconfirmed` off the very same
+          // row (AD-11, AD-28).
+          attested: confirmationVouches(pullsConfirmation, now, pullPolicy),
+          freshness: freshness(pullsConfirmation.verifiedAt, now, pullPolicy),
+          age: ageLabel(pullsConfirmation.verifiedAt, now),
+        }
+      : { attested: false, freshness: "unknown", age: ageLabel(null, now) },
     issues,
     issueSection: laneAttestation(
       store,

@@ -89,22 +89,44 @@ function unsearchableNotes(repos: readonly UnlistedRepo[]): string[] {
 interface SearchSweep {
   truncated: boolean;
   unreadable: number;
+  /**
+   * REQUIRED, deliberately, even though one lane always passes an empty
+   * array.
+   *
+   * `update-prs.ts` and `issues.ts` degrade on an unsearchable repository,
+   * so it belongs in the same sentence as the other two shortfalls and under
+   * the same trailing "nothing tombstoned". `pull-requests.ts` treats it as
+   * an answer about those repositories - no rows, no confirmation, no
+   * tombstones, run still `ok` - so putting it here would make that clause
+   * say the opposite of what happened, and it names them itself through
+   * `named()` (#167).
+   *
+   * Making the field optional for that one lane was the obvious move and the
+   * wrong one: it removes the compile-time demand that a search lane say
+   * what it could not cover, and a future lane that simply forgot would then
+   * be indistinguishable from this deliberate omission. It stays required,
+   * and the one lane that reports them elsewhere passes `[]` at a call site
+   * that says why.
+   */
   unsearchable: readonly UnlistedRepo[];
 }
 
 /**
- * The run detail both search lanes write, given the word for what a node is
- * in that lane.
+ * The run detail a search lane writes, given the word for what a node is in
+ * that lane.
  *
- * Shared because the two lanes wrote it identically: the same three ways a
- * search can fall short, in the same order, differing only in `PR nodes`
- * against `issue nodes`. One clause per way, because they can happen
- * together and an operator reading only the first would act on half the
- * problem.
+ * Shared because the lanes wrote it identically: the same ways a search can
+ * fall short, in the same order, differing only in `PR nodes` against `issue
+ * nodes`. One clause per way, because they can happen together and an
+ * operator reading only the first would act on half the problem.
  *
- * The three conditions are exactly the ones that make the outcome partial,
- * so a detail exists precisely when nothing may be tombstoned, and the
- * trailing clause is said once rather than per note.
+ * Every condition REPORTED HERE is one that makes the caller's outcome
+ * partial, so a detail exists precisely when nothing may be tombstoned, and
+ * the trailing clause is said once rather than per note. The lane for which
+ * an unsearchable repository is an ANSWER rather than a failure therefore
+ * passes an empty `unsearchable` and names those repositories beside this
+ * sentence instead of inside it - explicitly, at a call site that says so,
+ * because the field stays required.
  */
 export function searchRunDetail(
   sweep: SearchSweep,

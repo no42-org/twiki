@@ -20,6 +20,7 @@ export type QueueKind =
   | "secret_scanning"
   | "ci_failure"
   | "update_pr"
+  | "pull_request"
   | "issue";
 
 /** The six topics, in the order every surface shows them. */
@@ -56,22 +57,22 @@ export interface TopicSpec {
    */
   readonly query: string | null;
   /**
-   * The queue kinds that count under this topic. Empty for Pull requests
-   * until its lane exists, and permanently empty for Reviews, which is never
-   * in the queue.
+   * The queue kinds that count under this topic. Permanently empty for
+   * Reviews, which is never in the queue.
    */
   readonly kinds: readonly QueueKind[];
 }
 
 /**
- * Pull requests has no queue kind until Epic 3. Its entry stays in the table
- * so every surface already has the column, and its empty `kinds` is what
- * makes a tile or chip read `unconfirmed` rather than `0` (AD-28): no sweep
- * has confirmed anything about it.
+ * CI's emptiness ended with Story 2.3 and Pull requests' with Story 3.5.
+ * Both now carry a kind, and both tell their absences apart the way
+ * Security's are told apart: by whether the topic's own lane confirmed this
+ * repository, not by whether a kind exists (AD-28).
  *
- * CI's emptiness ended with Story 2.3. It now carries `ci_failure`, and its
- * absences are told apart the way Security's are: by whether the Actions
- * lane confirmed this repository, not by whether a kind exists.
+ * Reviews is the one entry that stays empty, and permanently: review
+ * requests are collected estate-wide, without the allowlist filter every
+ * other lane applies, and have their own page rather than a place in the
+ * ranked queue.
  */
 export const TOPICS: readonly TopicSpec[] = [
   {
@@ -109,7 +110,9 @@ export const TOPICS: readonly TopicSpec[] = [
     noun: "Pull request",
     sentenceNoun: "pull request",
     query: "pulls",
-    kinds: [],
+    // One kind, and it is the complement of `update_pr` rather than a
+    // sibling of it: a pull request is one or the other, never both (#167).
+    kinds: ["pull_request"],
   },
   {
     topic: "issues",
@@ -224,6 +227,26 @@ export const KIND_REASONS: Readonly<Record<QueueKind, ReasonTable>> = {
     stuck: { na: "" },
   },
   update_pr: {},
+  // A human pull request is not an advisory, not an update and not a
+  // statement about main. Five of the six terms are silenced, and the sixth
+  // is the whole kind: whether its checks are stuck.
+  //
+  // `stuck` is ABSENT rather than worded here, and the absence is
+  // load-bearing, exactly as `broken` and `bump` are absent from
+  // `secret_scanning` above: the queue supplies the whole entry per item,
+  // because all four of its states say something this table cannot know.
+  // True says which way the run went (`checks failed` against `checks
+  // hung`), and `n/a` has TWO readings that must not be collapsed - the
+  // checks are still running, or no run was ever observed on this head ref.
+  // An entry here would be overridden on every item and read as a rule
+  // nothing follows.
+  pull_request: {
+    broken: { na: "" },
+    kev: { na: "" },
+    epss: { na: "" },
+    severity: { na: "" },
+    bump: { na: "" },
+  },
   issue: {
     kev: { na: "untriaged issue" },
     epss: { na: "" },
