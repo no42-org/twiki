@@ -13,10 +13,10 @@ import {
   type GitHubReadPort,
   orgCodeScanningUrl,
   type RawCodeScanningAlert,
-  type UnlistedRepo,
 } from "../../github/port.js";
 import type { ObservationInput, RunScope } from "../store/port.js";
 import { type LaneRunDeps, withLaneRun } from "./lifecycle.js";
+import { named } from "./unlisted.js";
 
 // The REST org-level lane, for code scanning alerts (#156).
 //
@@ -269,18 +269,11 @@ export async function collectOrgCodeScanning(
           ? "partial"
           : "ok";
       const skippedSlugs = page.skipped.map((s) => watchKey(s.repo));
-      // What GitHub said, per repository, never a sentence of ours: the
-      // refusals differ (`no analysis found`, `Resource not accessible by
+      // `named` quotes what GitHub said, per repository: the refusals here
+      // differ (`no analysis found`, `Resource not accessible by
       // integration`, an Advanced Security message) and a detail that named
       // one of them for all of them would send the operator to the wrong
       // setting.
-      const named = (repos: readonly UnlistedRepo[]): string =>
-        repos
-          .map(
-            (r) =>
-              `${watchKey(r.repo)} (${r.reason ?? "no message from GitHub"})`,
-          )
-          .join(", ");
       const notes = [
         page.truncated
           ? "code scanning listing truncated at the pagination cap; nothing tombstoned"

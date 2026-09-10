@@ -14,6 +14,7 @@ import {
   CODE_SCANNING_NO_ANALYSIS_BODY,
   createTricorderAppFromEnv,
   OctokitGitHub,
+  SEARCH_QUERY_MAX,
   SECRET_SCANNING_OFF_BODY,
 } from "../src/github/octokit-adapter.js";
 
@@ -950,6 +951,137 @@ describe("GraphQL nodes map field for field", () => {
       htmlUrl: node.url,
       createdAt: node.createdAt,
     });
+  });
+
+  /**
+   * The one reason either search port gives for a repository it could not
+   * cover, spelled out here rather than imported: this is the file that
+   * pins the sentence, and the lane suites feed their fakes a short
+   * arbitrary reason instead of coupling to it.
+   */
+  const CAP_REASON =
+    "its repo: qualifier does not fit alongside the query base under " +
+    `the ${SEARCH_QUERY_MAX}-character search cap`;
+
+  /** The qualifier the packer measures, for sizing a slug against the cap. */
+  const qualifierFor = (owner: string, name: string) =>
+    ` repo:${owner}/${name}`;
+
+  /**
+   * A name exactly one character too long for the room `base` leaves.
+   *
+   * Derived from SEARCH_QUERY_MAX rather than hard-coded, so that raising
+   * the cap or adding a qualifier to a base fails these tests legibly,
+   * instead of quietly leaving the "oversized" slug searchable and testing
+   * nothing at all.
+   */
+  const nameOverflowing = (base: string, owner: string) =>
+    "x".repeat(
+      SEARCH_QUERY_MAX - base.length - qualifierFor(owner, "").length + 1,
+    );
+
+  /** The PR search's base, as the adapter builds it from configured bots. */
+  const prBase = (bots: readonly string[]) =>
+    ["is:pr", "is:open", ...bots.map((b) => `author:${b}`)].join(" ");
+
+  /** The issue search's base, which is a constant in the adapter. */
+  const ISSUE_BASE = "is:issue is:open no:assignee";
+
+  it("names the repositories the PR search could not cover, never counts them", async () => {
+    // Story 3.1 declared this list and shipped a count: the RepoRef[] does
+    // exist inside the adapter, and was reduced with .length before it
+    // crossed the port, so a caller could learn that SOME repository went
+    // unasked and never which (#162). This is the contract test that
+    // criterion asked for and never got, and it fails if the field goes
+    // back to a number.
+    //
+    // Constructed, not recorded: the cap is a property of the query WE
+    // build, so no payload GitHub sends can carry it. The slug is sized
+    // from SEARCH_QUERY_MAX and the base this bot list produces.
+    const node = recorded<SearchNode>("search-pr-node.json");
+    const adapter = adapterFor(graphqlStub(searchAnswer(node)), "organization");
+    const fits = { owner: "no42-org", name: "blittermib" };
+    const bots = Array.from({ length: 8 }, (_, i) => `app/bot-number-${i}`);
+    const huge = {
+      owner: "no42-org",
+      name: nameOverflowing(prBase(bots), "no42-org"),
+    };
+    // A slug GitHub would actually create: it caps a repository name at
+    // 100. This page's field is reachable in production, because the PR
+    // base grows with every configured bot login.
+    expect(huge.name.length).toBeLessThanOrEqual(100);
+
+    const page = await adapter.listOpenUpdatePRs([fits, huge], bots);
+
+    expect(page.unsearchable).toEqual([{ repo: huge, reason: CAP_REASON }]);
+    // And the one that fit was still searched: setting a repository aside
+    // must not cost the others.
+    expect(page.prs).toHaveLength(1);
+  });
+
+  it("names EVERY repository it could not cover, not just the first", async () => {
+    // The single-repository cases above cannot tell a list from its head:
+    // with one entry, reporting only the first is the same as reporting all
+    // of them. Two oversized repositories is the smallest input where the
+    // difference shows, and a sweep that named one of five while silently
+    // dropping four would be the confident-partial-answer this field exists
+    // to prevent.
+    const node = recorded<SearchNode>("search-pr-node.json");
+    const adapter = adapterFor(graphqlStub(searchAnswer(node)), "organization");
+    const fits = { owner: "no42-org", name: "blittermib" };
+    const bots = Array.from({ length: 8 }, (_, i) => `app/bot-number-${i}`);
+    const overflowing = nameOverflowing(prBase(bots), "no42-org");
+    const huge = { owner: "no42-org", name: overflowing };
+    const alsoHuge = { owner: "no42-org", name: `y${overflowing.slice(1)}` };
+
+    const page = await adapter.listOpenUpdatePRs([fits, huge, alsoHuge], bots);
+
+    expect(page.unsearchable).toEqual([
+      { repo: huge, reason: CAP_REASON },
+      { repo: alsoHuge, reason: CAP_REASON },
+    ]);
+    expect(page.prs).toHaveLength(1);
+  });
+
+  it("names the repositories the issue search could not cover, never counts them", async () => {
+    // THIS INPUT CANNOT OCCUR IN PRODUCTION, and the next reader should not
+    // mistake it for a real shape. The issue base is the fixed
+    // 28-character `is:issue is:open no:assignee`, and GitHub caps an owner
+    // at 39 characters and a name at 100, so the longest qualifier it can
+    // ever build is 146: 174 against a cap of 256, with 82 to spare. The
+    // name below is longer than GitHub would let anyone create, which the
+    // assertion states rather than leaves to be counted.
+    //
+    // The test earns its place as a CONTRACT test: the field is a list on
+    // both search pages, filled by the same packer, and this is what stops
+    // the issue page drifting back to a count on its own.
+    const node = recorded<SearchNode>("search-issue-node.json");
+    const adapter = adapterFor(graphqlStub(searchAnswer(node)), "organization");
+    const fits = { owner: "no42-org", name: "CoolModFiles" };
+    const huge = {
+      owner: "no42-org",
+      name: nameOverflowing(ISSUE_BASE, "no42-org"),
+    };
+    expect(huge.name.length).toBeGreaterThan(100);
+
+    const page = await adapter.listUntriagedIssues([fits, huge]);
+
+    expect(page.unsearchable).toEqual([{ repo: huge, reason: CAP_REASON }]);
+    expect(page.issues).toHaveLength(1);
+  });
+
+  it("covers every repository when each one fits, and says so with an empty list", async () => {
+    // The other half of the contract: `unsearchable` is a list that can be
+    // empty, not an optional field and not a zero.
+    const node = recorded<SearchNode>("search-pr-node.json");
+    const adapter = adapterFor(graphqlStub(searchAnswer(node)), "organization");
+
+    const page = await adapter.listOpenUpdatePRs(
+      [{ owner: "no42-org", name: "blittermib" }],
+      ["app/dependabot"],
+    );
+
+    expect(page.unsearchable).toEqual([]);
   });
 
   const alertsAnswer = (node: unknown) => ({

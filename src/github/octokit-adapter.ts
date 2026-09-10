@@ -214,9 +214,10 @@ export interface SearchPlan {
   queries: string[];
   /**
    * Repositories whose own qualifier cannot fit alongside the base, so no
-   * chunking can include them. Counted, never dropped: a repository we did
-   * not search must not be indistinguishable from one we searched and found
-   * clean, and its presence makes the sweep incomplete.
+   * chunking can include them. Named, never dropped and never reduced to a
+   * count: a repository we did not search must not be indistinguishable
+   * from one we searched and found clean, its presence makes the sweep
+   * incomplete, and the caller has to be able to say which one it was.
    */
   unsearchable: RepoRef[];
 }
@@ -284,6 +285,23 @@ export function searchQueries(
     repos.map((repo) => ` repo:${repo.owner}/${repo.name}`),
   );
   return { queries, unsearchable: repos.filter((_, i) => oversized.has(i)) };
+}
+
+/**
+ * Why a repository could not be searched, said in the same shape the REST
+ * fan-outs use for repositories they could not read.
+ *
+ * `packQualifiers` judges each qualifier on its own against the cap, so
+ * there is exactly ONE way into this set and the reason is a fact rather
+ * than a guess: this repository's `repo:` qualifier cannot share a query
+ * with the base, however the rest are packed. The operator can act on it -
+ * shorten the slug, or configure fewer bot logins into the base.
+ */
+function tooLongToSearch(repos: readonly RepoRef[]): UnlistedRepo[] {
+  return repos.map((repo) => ({
+    repo,
+    reason: `its repo: qualifier does not fit alongside the query base under the ${SEARCH_QUERY_MAX}-character search cap`,
+  }));
 }
 
 /**
@@ -713,7 +731,7 @@ export class OctokitGitHub implements GitHubPort {
       );
     }
     if (repos.length === 0) {
-      return { prs: [], unreadable: 0, truncated: false, unsearchable: 0 };
+      return { prs: [], unreadable: 0, truncated: false, unsearchable: [] };
     }
     const gh = await this.orgOctokitFor(repos[0]?.owner ?? "");
     // Search with explicit logins, never @me: an installation token has no
@@ -739,7 +757,7 @@ export class OctokitGitHub implements GitHubPort {
       prs,
       unreadable,
       truncated,
-      unsearchable: plan.unsearchable.length,
+      unsearchable: tooLongToSearch(plan.unsearchable),
     };
   }
 
@@ -750,7 +768,7 @@ export class OctokitGitHub implements GitHubPort {
       );
     }
     if (repos.length === 0)
-      return { issues: [], unreadable: 0, truncated: false, unsearchable: 0 };
+      return { issues: [], unreadable: 0, truncated: false, unsearchable: [] };
     const gh = await this.orgOctokitFor(repos[0]?.owner ?? "");
 
     // One search per query chunk, scoped by repo: qualifiers rather than
@@ -772,7 +790,7 @@ export class OctokitGitHub implements GitHubPort {
       issues,
       unreadable,
       truncated,
-      unsearchable: plan.unsearchable.length,
+      unsearchable: tooLongToSearch(plan.unsearchable),
     };
   }
 

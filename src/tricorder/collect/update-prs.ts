@@ -11,6 +11,7 @@ import type { GitHubReadPort, RawUpdatePr } from "../../github/port.js";
 import type { RunScope } from "../store/port.js";
 import { type LaneRunDeps, withLaneRun } from "./lifecycle.js";
 import { nodeTombstones } from "./node-reconcile.js";
+import { searchRunDetail } from "./unlisted.js";
 
 // The dependency-update PR lane (CAP-3).
 //
@@ -131,16 +132,13 @@ export async function collectUpdatePRs(
       // the tombstone pass: unreadable nodes, GitHub's search ceiling, and a
       // repository whose qualifier could not fit in any query at all.
       const outcome =
-        page.unreadable > 0 || page.truncated || page.unsearchable > 0
+        page.unreadable > 0 || page.truncated || page.unsearchable.length > 0
           ? "partial"
           : "ok";
-      const detail = page.truncated
-        ? "search results truncated at GitHub's ceiling; nothing tombstoned"
-        : page.unsearchable > 0
-          ? `${page.unsearchable} repositories could not be searched under the configured query; nothing tombstoned`
-          : page.unreadable > 0
-            ? `${page.unreadable} PR nodes could not be read`
-            : undefined;
+      // Which repositories went unasked, not how many: the slug is the whole
+      // of what the operator can act on. Written by the shared helper both
+      // search lanes use, which spells the three clauses identically.
+      const detail = searchRunDetail(page, "PR");
 
       deps.store.recordObservations(run, deps.now(), observations);
 

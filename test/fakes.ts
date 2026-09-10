@@ -407,7 +407,12 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   updatePrs = new Map<string, RawUpdatePr[]>();
   updatePrUnreadable = new Map<string, number>();
   updatePrTruncated = new Set<string>();
-  updatePrUnsearchable = new Map<string, number>();
+  /**
+   * Repositories the search could not cover, per org. Named, not counted:
+   * the port hands the lane a list, and a fake that reduced it to a number
+   * would let the lane's detail go back to counting with its tests green.
+   */
+  updatePrUnsearchable = new Map<string, UnlistedRepo[]>();
   updatePrQueries: {
     repos: readonly RepoRef[];
     authors: readonly string[];
@@ -423,7 +428,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       prs: this.updatePrs.get(org) ?? [],
       unreadable: this.updatePrUnreadable.get(org) ?? 0,
       truncated: this.updatePrTruncated.has(org),
-      unsearchable: this.updatePrUnsearchable.get(org) ?? 0,
+      unsearchable: this.updatePrUnsearchable.get(org) ?? [],
     };
   }
 
@@ -453,6 +458,8 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   issues = new Map<string, RawIssue[]>();
   issueUnreadable = new Map<string, number>();
   issueTruncated = new Set<string>();
+  /** Repositories the issue search could not cover, per org. */
+  issueUnsearchable = new Map<string, UnlistedRepo[]>();
   issueQueries: { repos: readonly RepoRef[] }[] = [];
 
   async listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage> {
@@ -462,7 +469,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       issues: this.issues.get(org) ?? [],
       unreadable: this.issueUnreadable.get(org) ?? 0,
       truncated: this.issueTruncated.has(org),
-      unsearchable: 0,
+      unsearchable: this.issueUnsearchable.get(org) ?? [],
     };
   }
 
