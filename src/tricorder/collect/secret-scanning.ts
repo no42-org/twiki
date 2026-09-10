@@ -11,10 +11,10 @@ import {
   type GitHubReadPort,
   orgSecretScanningUrl,
   type RawSecretScanningAlert,
-  type UnlistedRepo,
 } from "../../github/port.js";
 import type { ObservationInput, RunScope } from "../store/port.js";
 import { type LaneRunDeps, withLaneRun } from "./lifecycle.js";
+import { named } from "./unlisted.js";
 
 // The REST org-level lane, for secret scanning alerts (#158).
 //
@@ -250,18 +250,11 @@ export async function collectOrgSecretScanning(
           ? "partial"
           : "ok";
       const skippedSlugs = page.skipped.map((s) => watchKey(s.repo));
-      // What GitHub said, per repository, never a sentence of ours. The one
-      // measured refusal here names itself - `Secret scanning is disabled on
-      // this repository.` - but a second one would read differently, and a
-      // detail that named one of them for all of them would send the
-      // operator to the wrong setting.
-      const named = (repos: readonly UnlistedRepo[]): string =>
-        repos
-          .map(
-            (r) =>
-              `${watchKey(r.repo)} (${r.reason ?? "no message from GitHub"})`,
-          )
-          .join(", ");
+      // `named` quotes what GitHub said, per repository. The one measured
+      // refusal here names itself - `Secret scanning is disabled on this
+      // repository.` - but a second one would read differently, and a detail
+      // that named one of them for all of them would send the operator to
+      // the wrong setting.
       const notes = [
         page.truncated
           ? "secret scanning listing truncated at the pagination cap; nothing tombstoned"

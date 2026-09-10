@@ -194,12 +194,18 @@ export interface RawCodeScanningAlert {
 }
 
 /**
- * One repository the fan-out could not list, and what came back from it.
+ * One repository a sweep could not speak for, and why.
  *
- * The reason is GitHub's own message, redacted and bounded, or null where it
- * sent none. Carried rather than dropped because this is exactly the boundary
- * read the house rule is about: an error that names neither the repository
- * nor the answer sends an operator nowhere.
+ * The reason has two legitimate sources and no third. Where GitHub answered,
+ * it is GitHub's own message, redacted and bounded. Where the failure is
+ * ours and its cause is knowable - a `repo:` qualifier that cannot fit a
+ * query, say - it is the sentence the port wrote for that one cause. It is
+ * null only where neither exists.
+ *
+ * What it must never be is a guess: a lane never invents a reason and never
+ * rewrites the one it was handed. Carried rather than dropped because this
+ * is exactly the boundary read the house rule is about: an error that names
+ * neither the repository nor the answer sends an operator nowhere.
  */
 export interface UnlistedRepo {
   repo: RepoRef;
@@ -782,11 +788,18 @@ export interface UpdatePrPage {
   unreadable: number;
   /**
    * Repositories that could not be searched at all, because their own
-   * `repo:` qualifier does not fit alongside the query base (a long slug
-   * against a base grown by many configured bot logins). Counted so the
-   * sweep is incomplete rather than quietly missing a repository.
+   * `repo:` qualifier does not fit alongside the query base: a long slug
+   * against a base that grows with every configured bot login. Reachable in
+   * production, unlike the issue page's identical field.
+   *
+   * Named rather than counted, like `unreachable` on the REST pages. A
+   * count says the sweep is incomplete and nothing else: the operator
+   * cannot see which repository to rename or shorten, and a caller that
+   * withholds a confirmation per repository cannot tell which one to
+   * withhold. There is one and only one way in, so the reason is knowable
+   * rather than invented.
    */
-  unsearchable: number;
+  unsearchable: UnlistedRepo[];
   /**
    * True when GitHub returned fewer results than the query matched.
    *
@@ -843,11 +856,21 @@ export interface IssuePage {
   unreadable: number;
   /**
    * Repositories that could not be searched at all, because their own
-   * `repo:` qualifier does not fit alongside the query base (a long slug
-   * against a base grown by many configured bot logins). Counted so the
-   * sweep is incomplete rather than quietly missing a repository.
+   * `repo:` qualifier does not fit alongside the query base.
+   *
+   * IT CANNOT FIRE IN PRODUCTION, and is kept for the contract rather than
+   * for the case. This base is fixed at 28 characters (`is:issue is:open
+   * no:assignee`), and GitHub caps an owner at 39 characters and a
+   * repository name at 100, so the longest qualifier it can ever build is
+   * 146: 174 against a 256-character cap, with 82 to spare. Only the PR
+   * page's identical field is reachable, because its base grows with every
+   * configured bot login.
+   *
+   * Kept, and kept a list, because the two search pages are read together
+   * and a caller that withholds a confirmation per unsearchable repository
+   * must not have to special-case which page it is holding.
    */
-  unsearchable: number;
+  unsearchable: UnlistedRepo[];
   /** True when GitHub returned fewer results than the query matched. */
   truncated: boolean;
 }

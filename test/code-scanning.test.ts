@@ -464,7 +464,7 @@ describe("code scanning lane", () => {
       expect(result.outcome).toBe("partial");
       expect(store.latestRuns(1)[0]?.detail).toBe(
         "1 repositories could not be read:" +
-          " no42-org/other (no message from GitHub)",
+          " no42-org/other (no reason recorded)",
       );
     });
   });

@@ -16,6 +16,12 @@ import { collectIssues, LANE } from "../src/tricorder/collect/issues.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { FakeGitHubReadPort, makeRawIssue } from "./fakes.js";
 
+/**
+ * A reason, not THE reason. The port's real sentence is pinned once, in the
+ * contract test; here it is data the test feeds the fake.
+ */
+const REASON = "slug too long";
+
 describe("the untriaged-issue lane (CAP-2)", () => {
   let dir: string;
   let store: SqliteStore;
@@ -135,6 +141,85 @@ describe("the untriaged-issue lane (CAP-2)", () => {
     expect(r.outcome).toBe("partial");
     expect(current()).toHaveLength(1);
     expect(store.latestRuns(1)[0]?.detail).toContain("truncated");
+  });
+
+  it("names the repositories it could not search, and tombstones nothing", async () => {
+    // The issue search has no unsearchable test at the lane at all: the
+    // field was a number nothing here ever set, so the whole path was
+    // exercised only through the PR lane. Two repositories, because that is
+    // where a count and a list stop agreeing.
+    github.issues.set("no42-org", [makeRawIssue({ number: 1 })]);
+    await collectIssues(deps(), "no42-org", "full");
+
+    github.issues.set("no42-org", []);
+    github.issueUnsearchable.set("no42-org", [
+      { repo: { owner: "no42-org", name: "LongOne" }, reason: REASON },
+      { repo: { owner: "no42-org", name: "long-two" }, reason: REASON },
+    ]);
+    const r = await collectIssues(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    expect(current()).toHaveLength(1);
+    // The cause once, both slugs after it, in GitHub's own casing.
+    expect(store.latestRuns(1)[0]?.detail).toBe(
+      `repositories that could not be searched (${REASON}): ` +
+        "no42-org/LongOne, no42-org/long-two; nothing tombstoned",
+    );
+  });
+
+  it("blames nobody for a repository no reason came with", async () => {
+    // The shared helper serves lanes where GitHub answered and said nothing
+    // AND lanes where GitHub was never asked, because the qualifier did not
+    // fit. It must not blame GitHub for a repository it never saw.
+    github.issueUnsearchable.set("no42-org", [
+      { repo: { owner: "no42-org", name: "long-one" }, reason: null },
+    ]);
+
+    await collectIssues(deps(), "no42-org", "full");
+
+    const detail = store.latestRuns(1)[0]?.detail ?? "";
+    expect(detail).toBe(
+      "repositories that could not be searched (no reason recorded): " +
+        "no42-org/long-one; nothing tombstoned",
+    );
+    expect(detail).not.toContain("GitHub");
+  });
+
+  it("reports an unsearchable repository and an unreadable node in their own clauses", async () => {
+    github.issueUnreadable.set("no42-org", 2);
+    github.issueUnsearchable.set("no42-org", [
+      { repo: { owner: "no42-org", name: "long-one" }, reason: REASON },
+    ]);
+
+    await collectIssues(deps(), "no42-org", "full");
+
+    expect(store.latestRuns(1)[0]?.detail).toBe(
+      `repositories that could not be searched (${REASON}): no42-org/long-one` +
+        "; 2 issue nodes could not be read; nothing tombstoned",
+    );
+  });
+
+  it("tells an unreadable-only sweep that nothing was tombstoned", async () => {
+    // The clause used to be spelled per note, so this sweep - partial, with
+    // the tombstone pass skipped exactly as on the other two - said only
+    // that some nodes could not be read.
+    github.issueUnreadable.set("no42-org", 2);
+
+    const r = await collectIssues(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    expect(store.latestRuns(1)[0]?.detail).toBe(
+      "2 issue nodes could not be read; nothing tombstoned",
+    );
+  });
+
+  it("says nothing about unsearchable repositories when every one fit", async () => {
+    github.issues.set("no42-org", [makeRawIssue({ number: 1 })]);
+
+    const r = await collectIssues(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("ok");
+    expect(store.latestRuns(1)[0]?.detail ?? null).toBeNull();
   });
 
   it("does not tombstone another installation's issues", async () => {

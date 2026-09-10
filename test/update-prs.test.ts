@@ -8,7 +8,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/core/config.js";
-import { OctokitGitHub } from "../src/github/octokit-adapter.js";
+import {
+  OctokitGitHub,
+  SEARCH_QUERY_MAX,
+} from "../src/github/octokit-adapter.js";
 import {
   bumpFromTitle,
   collectUpdatePRs,
@@ -48,6 +51,14 @@ describe("bump from the PR title", () => {
     });
   });
 });
+
+/**
+ * A reason, not THE reason. The port's real sentence is pinned once, in the
+ * contract test; here it is data the test feeds the fake, and coupling these
+ * suites to the adapter's wording would make a change to the search cap break
+ * four files at once.
+ */
+const REASON = "slug too long";
 
 describe("the update-PR lane (CAP-3, AD-19)", () => {
   let dir: string;
@@ -217,19 +228,116 @@ describe("the update-PR lane (CAP-3, AD-19)", () => {
     expect(current()).toHaveLength(1);
   });
 
-  it("does not tombstone when a repository could not be searched at all", async () => {
+  it("names the repository it could not search, and tombstones nothing", async () => {
     // Its qualifier did not fit in any query, so nothing was learned about
-    // it. Absence from a sweep that never asked means nothing (AD-23).
+    // it. Absence from a sweep that never asked means nothing (AD-23), and
+    // WHICH repository went unasked is the whole of what the operator can
+    // act on: a count sends them to look through the allowlist themselves.
     github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
     await collectUpdatePRs(deps(), "no42-org", "full");
 
     github.updatePrs.set("no42-org", []);
-    github.updatePrUnsearchable.set("no42-org", 1);
+    github.updatePrUnsearchable.set("no42-org", [
+      { repo: { owner: "no42-org", name: "LongName" }, reason: REASON },
+    ]);
     const r = await collectUpdatePRs(deps(), "no42-org", "full");
 
     expect(r.outcome).toBe("partial");
     expect(current()).toHaveLength(1);
-    expect(store.latestRuns(1)[0]?.detail).toContain("could not be searched");
+    // GitHub's own casing, not the folded watch key: `no42-org/longname` is
+    // a repository that does not exist, and an operator following it goes
+    // looking for the wrong thing.
+    expect(store.latestRuns(1)[0]?.detail).toBe(
+      `repositories that could not be searched (${REASON}): ` +
+        "no42-org/LongName; nothing tombstoned",
+    );
+  });
+
+  it("names every repository it could not search, never a count of them", async () => {
+    // Two of them, which is where a count and a list stop agreeing: "2
+    // repositories" names neither, and the operator has to shorten both.
+    github.updatePrUnsearchable.set("no42-org", [
+      { repo: { owner: "no42-org", name: "long-one" }, reason: REASON },
+      { repo: { owner: "no42-org", name: "long-two" }, reason: REASON },
+    ]);
+
+    const r = await collectUpdatePRs(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    const detail = store.latestRuns(1)[0]?.detail ?? "";
+    // The cause once, the slugs after it: the reason is invariant across the
+    // set and repeating it per repository buries the only part that differs.
+    expect(detail).toBe(
+      `repositories that could not be searched (${REASON}): ` +
+        "no42-org/long-one, no42-org/long-two; nothing tombstoned",
+    );
+    // The shape a count would leave behind, in either grammar.
+    expect(detail).not.toMatch(/\b2 repositories\b/);
+  });
+
+  it("names ten and counts the rest when a whole allowlist goes unasked", async () => {
+    // The pathological case the field exists for: a base too long to carry
+    // any repository puts every watched one in the list on the same sweep.
+    // The detail is stored and rendered untruncated into a health-table
+    // cell, so it names enough to act on and says how many more there are.
+    github.updatePrUnsearchable.set(
+      "no42-org",
+      Array.from({ length: 13 }, (_, i) => ({
+        repo: { owner: "no42-org", name: `repo-${i}` },
+        reason: REASON,
+      })),
+    );
+
+    await collectUpdatePRs(deps(), "no42-org", "full");
+
+    const detail = store.latestRuns(1)[0]?.detail ?? "";
+    expect(detail).toBe(
+      `repositories that could not be searched (${REASON}): ` +
+        "no42-org/repo-0, no42-org/repo-1, no42-org/repo-2, no42-org/repo-3, " +
+        "no42-org/repo-4, no42-org/repo-5, no42-org/repo-6, no42-org/repo-7, " +
+        "no42-org/repo-8, no42-org/repo-9 and 3 more; nothing tombstoned",
+    );
+  });
+
+  it("reports an unsearchable repository and an unreadable node in their own clauses", async () => {
+    // Both can happen in one sweep, and they are different problems with
+    // different fixes. An either/or detail reported the first and buried
+    // the second.
+    github.updatePrUnreadable.set("no42-org", 3);
+    github.updatePrUnsearchable.set("no42-org", [
+      { repo: { owner: "no42-org", name: "long-one" }, reason: REASON },
+    ]);
+
+    await collectUpdatePRs(deps(), "no42-org", "full");
+
+    expect(store.latestRuns(1)[0]?.detail).toBe(
+      `repositories that could not be searched (${REASON}): no42-org/long-one` +
+        "; 3 PR nodes could not be read; nothing tombstoned",
+    );
+  });
+
+  it("tells an unreadable-only sweep that nothing was tombstoned", async () => {
+    // The clause used to be spelled per note, so this sweep - partial, with
+    // the tombstone pass skipped exactly as on the other two - said only
+    // that some nodes could not be read and left the operator to infer the
+    // rest. It is one sentence now, said once, on all three.
+    github.updatePrUnreadable.set("no42-org", 2);
+
+    const r = await collectUpdatePRs(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("partial");
+    expect(store.latestRuns(1)[0]?.detail).toBe(
+      "2 PR nodes could not be read; nothing tombstoned",
+    );
+  });
+
+  it("says nothing about unsearchable repositories when every one fit", async () => {
+    github.updatePrs.set("no42-org", [makeUpdatePr({ number: 1 })]);
+
+    const r = await collectUpdatePRs(deps(), "no42-org", "full");
+
+    expect(r.outcome).toBe("ok");
+    expect(store.latestRuns(1)[0]?.detail ?? null).toBeNull();
   });
 
   it("does not tombstone when the search hit GitHub's result ceiling", async () => {
@@ -346,9 +454,9 @@ describe("the PR search across chunks", () => {
   });
 
   it("reports the repositories it could not search onto the page", async () => {
-    // The count has to reach the lane through the page, not just exist in
-    // the plan: it is what degrades the sweep to partial and stops the
-    // tombstone pass.
+    // The list has to reach the lane through the page, not just exist in
+    // the plan: it is what degrades the sweep to partial, stops the
+    // tombstone pass, and names the repository in the run detail.
     const { gh, queries } = stubGh([{ issueCount: 1, nodes: [node(1)] }]);
     const adapter = new OctokitGitHub(
       async () => gh,
@@ -363,7 +471,15 @@ describe("the PR search across chunks", () => {
       bots,
     );
 
-    expect(page.unsearchable).toBe(1);
+    // The whole entry, not its length: the slug is what the operator acts
+    // on, and the reason names the cap that set it aside. The sentence
+    // itself is pinned once, in the contract test.
+    expect(page.unsearchable).toEqual([
+      {
+        repo: huge,
+        reason: expect.stringContaining(`${SEARCH_QUERY_MAX}-character`),
+      },
+    ]);
     // The searchable one was still collected: setting a repository aside
     // must not cost the others.
     expect(queries.join(" ")).toContain("repo:no42-org/twiki");
@@ -391,7 +507,7 @@ describe("the PR search across chunks", () => {
       prs: [],
       unreadable: 0,
       truncated: false,
-      unsearchable: 0,
+      unsearchable: [],
     });
   });
 });
