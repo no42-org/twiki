@@ -247,7 +247,11 @@ describe("applyQueueFilter", () => {
     );
   });
 
-  it("topic with no collector yet: not collected, never a zero (AD-28)", () => {
+  it("Pull requests reads as a queue with none open, not as uncollected (#167)", () => {
+    // `not collected yet` was this topic's answer while it had no lane. It
+    // has one now, so the sentence is the same claim every other topic
+    // makes: the list under it is empty. Whether anybody looked is the
+    // overview's question, and it answers `unconfirmed` off the same store.
     expect(
       applyQueueFilter(
         queueOf(all),
@@ -255,10 +259,7 @@ describe("applyQueueFilter", () => {
         WATCHED,
       ),
     ).toEqual(
-      nothing(
-        counted,
-        "Pull request items are not collected yet in no42-org/twiki.",
-      ),
+      nothing(counted, "No pull request items open in no42-org/twiki."),
     );
     expect(
       applyQueueFilter(
@@ -266,7 +267,7 @@ describe("applyQueueFilter", () => {
         parseQueueFilter("pulls", undefined, WATCHED),
         WATCHED,
       ),
-    ).toEqual(nothing(counted, "Pull request items are not collected yet."));
+    ).toEqual(nothing(counted, "No pull request items open."));
   });
 
   it("CI has a kind now, so an empty CI filter reads as no items open", () => {

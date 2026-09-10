@@ -62,7 +62,24 @@ export const SUBJECT_TYPES = [
   // (AD-28). A third subject rather than a field on either sibling, because
   // all three lanes have their own freshness and none may vouch for another.
   "repository_secret_scanning",
+  // Per-repository confirmation from the plain pull-request lane (#167), for
+  // the reason its three siblings exist: a repository whose only open pull
+  // requests are dependency updates has no `pull_request` row, and without a
+  // confirmation that is indistinguishable from one the search never covered
+  // (AD-28). A fourth subject rather than a field on any of them, because
+  // four lanes have four freshnesses and none may vouch for another - and
+  // this one withholds its confirmation per repository, for the repositories
+  // whose `repo:` qualifier did not fit a query.
+  "repository_pull_requests",
   "issue",
+  // An open pull request that is not a dependency update (#167). Its own type
+  // rather than a flavour of dependency_update_pr, and the pair is EXCLUSIVE:
+  // `classifyPullRequest` decides which of the two a pull request is, and no
+  // pull request may produce a queue item under both. That exclusivity is
+  // about this pair only - `review_request` below shares node ids with
+  // `dependency_update_pr` deliberately - so the rule lives where the items
+  // are emitted rather than being stated as a rule about node ids.
+  "pull_request",
   // A pull request awaiting the maintainer's review (CAP-5). Its own type
   // rather than a flavour of dependency_update_pr: these are collected
   // WITHOUT the allowlist filter every other lane applies, so mixing them
@@ -150,6 +167,17 @@ export function secretScanningSubject(repo: RepoRef): Subject {
   return { type: "repository_secret_scanning", key: subjectSlug(repo) };
 }
 
+/**
+ * One repository's plain pull-request sweep confirmation. Same key space.
+ *
+ * Written only for a repository the search actually covered: a repository
+ * whose `repo:` qualifier could not fit a query was never asked about, and
+ * confirming it would publish a zero nobody measured (#162, AD-28).
+ */
+export function pullRequestsSubject(repo: RepoRef): Subject {
+  return { type: "repository_pull_requests", key: subjectSlug(repo) };
+}
+
 export function alertSubject(
   type: "dependabot_alert" | "code_scanning_alert" | "secret_scanning_alert",
   repo: RepoRef,
@@ -171,6 +199,7 @@ export function alertSubject(
 export function nodeSubject(
   type:
     | "dependency_update_pr"
+    | "pull_request"
     | "workflow_run"
     | "pull_request_workflow_run"
     | "issue"

@@ -154,19 +154,22 @@ export function applyQueueFilter(
 /**
  * Why nothing is shown, without claiming a zero nobody measured (AD-28).
  *
- * A topic with no collector yet has not been counted, so `No pull request
- * items open` would be a confident zero; it reads `not collected yet`. A
- * de-listed repository with open items is not "nothing open" either: the
+ * A de-listed repository with open items is not "nothing open": the
  * unfiltered page lists them, so the sentence says why this filter cannot.
  *
- * CI has a collector now and so reads `No CI items open`, which is a claim
- * about the QUEUE and not about the estate. It is deliberately not made
- * conditional on a sweep: this function is handed a built queue and a
- * filter, and the confirmations that would answer "did anyone look" are
- * per repository, so the honest form of the sentence cannot be written from
- * what is here. The overview is where absence is told from zero (AD-28), and
- * it says `unconfirmed` for the same store; the sentence below says only
- * that the list it sits under is empty, exactly as it does for issues.
+ * `not collected yet` used to be one of the answers here, for a topic with
+ * no kind behind it. Nothing can reach it now (#167): every topic a
+ * `?topic=` value can name has a lane, and Reviews - the one topic left with
+ * no kind - has no query value, so `parseQueueFilter` can never hand it over.
+ *
+ * Every other topic reads `No <noun> items open`, which is a claim about the
+ * QUEUE and not about the estate. It is deliberately not made conditional on
+ * a sweep: this function is handed a built queue and a filter, and the
+ * confirmations that would answer "did anyone look" are per repository, so
+ * the honest form of the sentence cannot be written from what is here. The
+ * overview is where absence is told from zero (AD-28), and it says
+ * `unconfirmed` for the same store; the sentence below says only that the
+ * list it sits under is empty.
  */
 function emptySentence(
   queue: Queue,
@@ -174,9 +177,6 @@ function emptySentence(
   nounOf: string | null,
   where: string,
 ): string {
-  if (filter.topic !== null && filter.topic.kinds.length === 0) {
-    return `${filter.topic.noun} items are not collected yet${where}.`;
-  }
   if (filter.unknownRepo !== null) {
     const folded = foldSlug(filter.unknownRepo);
     if (queue.items.some((i) => slugOf(i) === folded)) {

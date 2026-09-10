@@ -542,6 +542,35 @@ export interface GitHubAccountReadPort {
   listUntriagedIssues(repos: readonly RepoRef[]): Promise<IssuePage>;
 
   /**
+   * Open pull requests in the given repositories that none of `excludeAuthors`
+   * opened (#167).
+   *
+   * The authors are the same configured logins `listOpenUpdatePRs` requires,
+   * passed through verbatim and negated with `-author:` (AD-19). Server-side,
+   * not client-side, and the difference is not cosmetic: measured on this
+   * estate 2026-09-10, all 19 open pull requests across the three watched
+   * repositories are `dependabot[bot]`, so a search that asked for every open
+   * pull request and discarded the bots afterwards would spend the
+   * 1000-result ceiling on the rows it throws away, and a repository with a
+   * long dependency backlog would truncate before one human pull request was
+   * seen. The negation costs query length: `is:pr is:open` is 13 characters
+   * and grows to 57 with two configured bots, which is 7 repositories per
+   * query instead of 9 - more queries, and no new unsearchable repositories
+   * for slugs of ordinary length.
+   *
+   * An EMPTY `excludeAuthors` is legitimate here, unlike on the update-PR
+   * search: with no actor configured as a bot, every open pull request is a
+   * human one and the base is simply unnegated.
+   *
+   * Scoped per repository for the reason the two searches beside it are:
+   * the 1000-result ceiling is spent only on repositories somebody watches.
+   */
+  listOpenPullRequests(
+    repos: readonly RepoRef[],
+    excludeAuthors: readonly string[],
+  ): Promise<PullRequestPage>;
+
+  /**
    * Open pull requests awaiting review from any of `reviewers` (CAP-5).
    *
    * Deliberately NOT scoped to the allowlist, unlike every other search
@@ -808,6 +837,65 @@ export interface UpdatePrPage {
    * flag a capped sweep looks complete and the tombstone pass concludes every
    * PR beyond the cap was closed.
    */
+  truncated: boolean;
+}
+
+/**
+ * An open pull request that is not a dependency update, as the search
+ * returned it (#167).
+ *
+ * The same node shape as `RawUpdatePr` plus the one field the stuck term
+ * needs. Kept as its own interface rather than an alias, because the two
+ * lanes disagree about what they are looking at: one collects the pull
+ * requests a configured actor opened, the other every pull request no
+ * configured actor opened, and a shared name would invite one lane's guard
+ * to be reused on the other's rows.
+ */
+export interface RawOpenPullRequest {
+  /** GraphQL node id: the PR's stable identity (AD-22). */
+  nodeId: string;
+  repo: RepoRef;
+  number: number;
+  title: string;
+  /** The author login GitHub reports, e.g. `a-contributor`. */
+  author: string;
+  htmlUrl: string;
+  createdAt: string;
+  /**
+   * `headRefName`: the branch the pull request is from, or null where the
+   * node did not carry one.
+   *
+   * The one field beyond the shared node shape, and it is here for exactly
+   * one reader: the queue's `stuck` term looks up the retained
+   * `pull_request_workflow_run` row for this ref (#161). Nullable because
+   * this is a boundary read - the schema says non-null, and a payload that
+   * disagrees must leave the term reading `checks not observed` rather than
+   * matching a row keyed by `undefined`.
+   */
+  headRef: string | null;
+}
+
+/**
+ * One sweep of the plain pull-request search (#167).
+ *
+ * Term for term the update-PR page's shape, because the two searches fall
+ * short in the same three ways. What differs is what the LANE does with
+ * `unsearchable`: this one treats it as an answer about those repositories
+ * and keeps the run `ok`, where `listOpenUpdatePRs`'s caller degrades. See
+ * the divergence note on both lanes.
+ */
+export interface PullRequestPage {
+  prs: RawOpenPullRequest[];
+  /** Nodes the mapper could not read. Never silently discarded. */
+  unreadable: number;
+  /**
+   * Repositories that could not be searched at all, because their own
+   * `repo:` qualifier does not fit alongside the query base. The base here
+   * grows with every configured bot login, exactly as the update-PR base
+   * does, because the logins are negated rather than required.
+   */
+  unsearchable: UnlistedRepo[];
+  /** True when GitHub returned fewer results than the query matched. */
   truncated: boolean;
 }
 

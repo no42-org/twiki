@@ -67,6 +67,12 @@ repos:
 # search qualifiers. Configuration and only configuration: no bot login exists
 # in the source, so an empty or absent list disables the lane, loudly.
 # Adding an actor here makes its pull requests appear with no code change.
+#
+# The same list decides what the plain pull-request lane EXCLUDES, so the two
+# partition the open pull requests: an actor named here shows under
+# Dependencies, everyone else under Pull requests, and nobody under both.
+# That second lane runs whatever this list says - with no actor configured,
+# nothing is a bot and every open pull request is a human one.
 bots:
   - app/dependabot
   - app/renovate

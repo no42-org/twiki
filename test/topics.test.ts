@@ -37,8 +37,10 @@ describe("TOPICS", () => {
       ["security", ["alert", "code_scanning", "secret_scanning"]],
       ["ci", ["ci_failure"]],
       ["dependencies", ["update_pr"]],
-      // Pull requests has no lane until Epic 3; Reviews never joins the queue.
-      ["pulls", []],
+      // Pull requests has a lane now (#167), and its kind is the COMPLEMENT
+      // of `update_pr`: a pull request is one or the other, never both.
+      // Reviews stays empty permanently - it never joins the queue.
+      ["pulls", ["pull_request"]],
       ["issues", ["issue"]],
       ["reviews", []],
     ]);
@@ -47,6 +49,7 @@ describe("TOPICS", () => {
     expect(topicOf("secret_scanning")).toBe("security");
     expect(topicOf("ci_failure")).toBe("ci");
     expect(topicOf("update_pr")).toBe("dependencies");
+    expect(topicOf("pull_request")).toBe("pulls");
     expect(topicOf("issue")).toBe("issues");
     expect(() => topicOf("workflow" as never)).toThrow(/belongs to no topic/);
   });
@@ -80,6 +83,9 @@ describe("kevListedFor", () => {
     ["alert", true],
     ["update_pr", true],
     ["issue", false],
+    // Nor is a human pull request. Its KEV term is n/a by construction, and
+    // the one term it speaks with is `stuck` (#167).
+    ["pull_request", false],
     // A build is not an advisory: its KEV term is n/a by construction, so
     // the page never gets a chance to shout about it.
     ["ci_failure", false],
@@ -102,6 +108,7 @@ describe("KIND_REASONS", () => {
       "ci_failure",
       "code_scanning",
       "issue",
+      "pull_request",
       "secret_scanning",
       "update_pr",
     ]);
@@ -129,6 +136,18 @@ describe("KIND_REASONS", () => {
       severity: { na: "no severity from the tool" },
       bump: { na: "on the default branch" },
       stuck: { na: "" },
+    });
+    // Five terms silenced and `stuck` deliberately ABSENT (#167): the queue
+    // supplies its whole entry per item, because all four of its states say
+    // something this table cannot know - which way a broken run went, and
+    // which of the two `n/a` readings applies (checks running, or no run
+    // observed on this head ref).
+    expect(KIND_REASONS.pull_request).toEqual({
+      broken: { na: "" },
+      kev: { na: "" },
+      epss: { na: "" },
+      severity: { na: "" },
+      bump: { na: "" },
     });
     // The one table that rewords a term's KNOWN state rather than its
     // absence, and the reason it exists at all. An open secret sets the KEV

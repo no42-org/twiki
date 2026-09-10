@@ -89,6 +89,11 @@ const KIND_WORD: Readonly<Record<QueueItem["kind"], string>> = {
   // than failing, which is why the record is keyed by the whole union.
   ci_failure: "workflow run",
   update_pr: "update PR",
+  // Named apart from the update PR, even though both are pull requests and
+  // both carry a `#number` in the same space: the two are exclusive by
+  // construction (#167), so a rationale saying "PR #12" would be ambiguous
+  // about which list the reader should open.
+  pull_request: "pull request",
   issue: "issue",
 };
 

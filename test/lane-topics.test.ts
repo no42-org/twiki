@@ -47,12 +47,13 @@ describe("lane-topics (AD-32)", () => {
   it("maps every LANE exported under collect/, and nothing else", async () => {
     const lanes = await exportedLanes();
 
-    // Ten today. A count pins the walk itself: a directory read that found
-    // nothing would otherwise pass the exhaustiveness check vacuously.
+    // Eleven today. A count pins the walk itself: a directory read that
+    // found nothing would otherwise pass the exhaustiveness check vacuously.
     expect([...lanes.values()].sort()).toEqual(
       [
         "coverage",
         "graphql-issues",
+        "graphql-pull-requests",
         "graphql-review-requests",
         "graphql-update-prs",
         "graphql-update-status",
@@ -92,6 +93,10 @@ describe("lane-topics (AD-32)", () => {
       [
         "graphql-update-status",
         { topic: "dependencies", word: "update status", installation: null },
+      ],
+      [
+        "graphql-pull-requests",
+        { topic: "pulls", word: "pull requests", installation: null },
       ],
       [
         "graphql-issues",

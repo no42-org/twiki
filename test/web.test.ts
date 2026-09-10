@@ -487,7 +487,6 @@ describe("issues found in review (round 2)", () => {
         }),
       );
 
-    const NO_COLLECTOR = "no collector for this topic yet";
     const NO_SWEEP = "not confirmed by any completed sweep";
     // Story 1.9 (#131): every cell states its role and starts with its
     // header word, painted on the chip cells and visually hidden elsewhere.
@@ -498,14 +497,13 @@ describe("issues found in review (round 2)", () => {
         label,
         `<span class="chip unconfirmed" title="${reason}">unconfirmed</span>`,
       );
-    const NO_LANE = (label: string) => unconfirmed(label, NO_COLLECTOR);
     const UNSWEPT = (label: string) => unconfirmed(label, NO_SWEEP);
-    // CI, Dependencies, Pull requests, Issues, Reviews: one has no collector
-    // yet, four have a lane that has not confirmed this repository.
+    // CI, Dependencies, Pull requests, Issues, Reviews: all five have a lane
+    // now (#167), and none of them has confirmed this repository.
     const REST =
       UNSWEPT("CI") +
       UNSWEPT("Dependencies") +
-      NO_LANE("Pull requests") +
+      UNSWEPT("Pull requests") +
       UNSWEPT("Issues") +
       UNSWEPT("Reviews");
     /** What the tablet's rationale line says about REST. */
@@ -704,7 +702,7 @@ describe("issues found in review (round 2)", () => {
     const REST_TILES =
       unconfirmedTile("CI", NO_SWEEP) +
       unconfirmedTile("Dependencies", NO_SWEEP) +
-      unconfirmedTile("Pull requests", NO_COLLECTOR) +
+      unconfirmedTile("Pull requests", NO_SWEEP) +
       unconfirmedTile("Issues", NO_SWEEP) +
       unconfirmedTile("Reviews", NO_SWEEP);
 
@@ -788,7 +786,7 @@ describe("issues found in review (round 2)", () => {
           '<a class="tile" href="/queue?topic=security"><span class="count critical">1 <span class="now-marker">· 1 now</span></span><span class="label">Security</span></a>' +
           '<a class="tile" href="/queue?topic=ci"><span class="count critical">1 <span class="now-marker">· 1 now</span></span><span class="label">CI</span></a>' +
           unconfirmedTile("Dependencies", NO_SWEEP) +
-          unconfirmedTile("Pull requests", NO_COLLECTOR) +
+          unconfirmedTile("Pull requests", NO_SWEEP) +
           unconfirmedTile("Issues", NO_SWEEP) +
           unconfirmedTile("Reviews", NO_SWEEP) +
           "</nav>",
@@ -807,7 +805,7 @@ describe("issues found in review (round 2)", () => {
             '<a class="chip" href="/queue?repo=no42-org%2Ftwiki&amp;topic=ci">1</a>',
           ) +
           UNSWEPT("Dependencies") +
-          NO_LANE("Pull requests") +
+          UNSWEPT("Pull requests") +
           UNSWEPT("Issues") +
           UNSWEPT("Reviews") +
           FRESH +
@@ -879,7 +877,7 @@ describe("issues found in review (round 2)", () => {
             "Dependencies",
             '<a class="chip" href="/queue?repo=no42-org%2Ftwiki&amp;topic=dependencies">1</a>',
           ) +
-          NO_LANE("Pull requests") +
+          UNSWEPT("Pull requests") +
           UNSWEPT("Issues") +
           UNSWEPT("Reviews") +
           FRESH +

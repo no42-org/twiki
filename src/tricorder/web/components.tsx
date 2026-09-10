@@ -6,6 +6,7 @@
 /* biome-ignore-all lint/a11y/noRedundantRoles: the table roles are implied by the elements at desktop width only; the phone cards restyle them to `display: block`, and a browser then drops the implied role. Stating it survives that (EXPERIENCE.md Accessibility Floor). */
 
 import type { Child, FC, PropsWithChildren } from "hono/jsx";
+import { Fragment } from "hono/jsx";
 import { FEATURE_LABELS, joinNotes } from "../../core/coverage.js";
 import { isBrokenVerdict, type RunVerdict } from "../../core/run-verdict.js";
 import { safeUrl } from "../../core/safe-url.js";
@@ -182,6 +183,37 @@ const OUTCOME_CLASS: Readonly<Record<HealthOutcome, string>> = {
 const TOPIC_LABEL: Readonly<Record<Topic, string>> = Object.fromEntries(
   TOPICS.map((t) => [t.topic, t.label]),
 ) as Record<Topic, string>;
+
+/**
+ * What the queue's summary sentence calls each topic's items.
+ *
+ * Not derivable from `label` or from `noun`: the sentence wants a plural in
+ * the reader's own words - `open alerts`, `broken builds` - where the table
+ * headers want the topic's name. Kept as a `Record` over the whole union, so
+ * a new topic is a compile error here rather than a count that silently goes
+ * missing from the line (which has happened three times, once per new kind).
+ */
+const QUEUE_TOPIC_NOUN: Readonly<Record<Topic, string>> = {
+  security: "open alerts",
+  ci: "broken builds",
+  dependencies: "update PRs",
+  pulls: "pull requests",
+  issues: "untriaged issues",
+  // Never counted here: review requests are collected estate-wide, without
+  // the allowlist filter, and have their own page rather than a place in the
+  // queue. It is in the table only so the compiler keeps demanding an entry
+  // per topic; `QUEUE_TOPIC_COUNTS` drops it by asking TOPICS which topics
+  // carry a kind at all.
+  reviews: "review requests",
+};
+
+/**
+ * The topics the summary counts, in the vocabulary's order: exactly those
+ * with a queue kind behind them.
+ */
+const QUEUE_TOPIC_COUNTS = TOPICS.filter((t) => t.kinds.length > 0).map(
+  (t) => ({ topic: t.topic, noun: QUEUE_TOPIC_NOUN[t.topic] }),
+);
 
 // Every table on these pages is one markup for every width. Under 640px CSS
 // restyles it into stacked cards, and a browser that sees `display: block`
@@ -808,6 +840,13 @@ const QueueRow: FC<{ item: QueueItem; rank: number; linked: boolean }> = ({
           // badge is what stops the reader taking `#9` for a pull request
           // and following it expecting one.
           <span class="badge">run</span>
+        ) : item.kind === "pull_request" ? (
+          // A plain pull request, an update PR and an issue now share one
+          // repository's number space, and the rationale beside this one is
+          // only ever about checks: without a badge, `#12 · Fix the thing`
+          // is indistinguishable from an issue at a glance (#167). Worded
+          // apart from `PR`, which the Dependencies row already owns.
+          <span class="badge">pull</span>
         ) : null}{" "}
         <ExternalLink href={item.htmlUrl}>
           {item.repo}#{item.number}
@@ -875,25 +914,22 @@ export const QueuePage: FC<{
     >
       <h1>What to deal with next</h1>
       <p class="sub">
-        {/* The TOPIC, not the kind: Security holds two kinds now and will
-            hold three, and a kind listed in the table and missing here reads
-            as zeros above the row a reader came for - which is what this
-            line did to the first red main it ever showed, and did again to
-            the first code scanning finding. Derived the way tiers.ts derives
-            its own security count, so a kind joins this sentence by being
-            filed under a topic rather than by anyone editing this line. */}
-        {filtered.counted.filter((i) => topicOf(i.kind) === "security").length}{" "}
-        open alerts
-        {" · "}
-        {/* One count per remaining kind; each of these topics holds one. */}
-        {filtered.counted.filter((i) => i.kind === "ci_failure").length} broken
-        builds
-        {" · "}
-        {filtered.counted.filter((i) => i.kind === "update_pr").length} update
-        PRs
-        {" · "}
-        {filtered.counted.filter((i) => i.kind === "issue").length} untriaged
-        issues
+        {/* Every count derived from the TOPIC, and none from a kind.
+            A kind listed in the table and missing here reads as zeros above
+            the row a reader came for, and this line did exactly that three
+            times: to the first red main it ever showed, to the first code
+            scanning finding, and to the first human pull request - because
+            the fix each time made ONE count topic-derived and left the rest
+            kind-by-kind. There is nothing left to forget: a new kind joins
+            this sentence by being filed under a topic, and a new TOPIC is a
+            compile error in QUEUE_TOPIC_NOUN below. */}
+        {QUEUE_TOPIC_COUNTS.map(({ topic, noun }, i) => (
+          <Fragment key={topic}>
+            {i === 0 ? "" : " · "}
+            {filtered.counted.filter((x) => topicOf(x.kind) === topic).length}{" "}
+            {noun}
+          </Fragment>
+        ))}
         {" · KEV catalogue "}
         {queue.kev.usable
           ? `${queue.kev.version ?? "?"} · ${queue.kev.age}`
@@ -1551,15 +1587,42 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
         </Section>
       );
     case "pulls":
-      // No lane until Epic 3, so never attested and never a table: the
-      // section reads `not confirmed by any completed sweep`, never `0`.
       return (
         <Section
           topic={topic}
           state={view.pullsSection}
           count={view.pulls.length}
           empty="no open pull requests in this repository"
-        />
+        >
+          <table class="cards" role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <Th>PR</Th>
+                <Th>Title</Th>
+                <Th>Opened by</Th>
+                <Th>Last confirmed</Th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              {view.pulls.map((p) => (
+                <tr key={`pull-${p.number}`} role="row">
+                  <Td label="PR">
+                    <ExternalLink href={p.htmlUrl}>#{p.number}</ExternalLink>
+                  </Td>
+                  <Td label="Title" show>
+                    {p.title}
+                  </Td>
+                  <Td label="Opened by" show>
+                    {p.author}
+                  </Td>
+                  <Td label="Last confirmed">
+                    <FreshnessBadge freshness={p.freshness} age={p.age} />
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
       );
     case "issues":
       return (

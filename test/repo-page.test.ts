@@ -2422,17 +2422,299 @@ describe("the per-repository page", () => {
     }
   });
 
-  it("says the Pull requests section is unconfirmed, never that it is empty", async () => {
-    // No lane collects plain pull requests until Epic 3. A `0` here would
-    // be a count nobody took (AD-28); the section says exactly what it
-    // knows, which is nothing yet.
-    const html = await (await app().request("/repo/no42-org/twiki")).text();
+  describe("the Pull requests section (#167)", () => {
+    const PULL_LANE = "graphql-pull-requests";
+    const AT = "2026-08-20T11:55:00.000Z";
 
-    expect(html).toContain(
-      '<h2 id="pulls">Pull requests <span class="badge unknown" title="never collected">never collected</span> <span class="shown">0 shown</span></h2>' +
-        '<p class="attest">not confirmed by any completed sweep</p>' +
-        '<h2 id="issues">',
-    );
+    const seedPulls = (payloads: { subject: unknown; payload: unknown }[]) => {
+      const r = store.beginRun({
+        lane: PULL_LANE,
+        installation: "no42-org",
+        scope: "full",
+        startedAt: AT,
+      });
+      store.recordObservations(r, AT, payloads as never[]);
+      store.finishRun(r, "ok", AT);
+    };
+
+    const confirmation = () => ({
+      subject: {
+        type: "repository_pull_requests",
+        key: "no42-org/twiki",
+      },
+      payload: { repo: "no42-org/twiki", openPullRequests: 1 },
+    });
+
+    const pull = (number: number) => ({
+      subject: { type: "pull_request", key: `PR_${number}` },
+      payload: {
+        repo: "no42-org/twiki",
+        number,
+        title: "Fix the thing",
+        author: "a-contributor",
+        htmlUrl: `https://github.com/no42-org/twiki/pull/${number}`,
+        createdAt: "2026-08-19T00:00:00.000Z",
+        headRef: "fix-the-thing",
+      },
+    });
+
+    it("reads unconfirmed while nothing has swept this repository, never 0", async () => {
+      // A `0` here would be a count nobody took (AD-28). The section says
+      // exactly what it knows, which is nothing yet.
+      const html = await (await app().request("/repo/no42-org/twiki")).text();
+
+      expect(html).toContain(
+        '<h2 id="pulls">Pull requests <span class="badge unknown" title="never collected">never collected</span> <span class="shown">0 shown</span></h2>' +
+          '<p class="attest">not confirmed by any completed sweep</p>' +
+          '<h2 id="issues">',
+      );
+    });
+
+    it("reads a measured zero once the search covered this repository", async () => {
+      // The search ran and found none. That IS zero, and the section says so
+      // as a sentence rather than as an empty table.
+      seedPulls([
+        {
+          subject: {
+            type: "repository_pull_requests",
+            key: "no42-org/twiki",
+          },
+          payload: { repo: "no42-org/twiki", openPullRequests: 0 },
+        },
+      ]);
+
+      const html = await (await app().request("/repo/no42-org/twiki")).text();
+
+      expect(html).toContain(
+        '<h2 id="pulls">Pull requests <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">0 shown</span></h2>' +
+          '<p class="attest">no open pull requests in this repository</p>' +
+          '<h2 id="issues">',
+      );
+    });
+
+    it("lists PR, title, author and freshness, external link first", async () => {
+      seedPulls([confirmation(), pull(7)]);
+
+      const html = await (await app().request("/repo/no42-org/twiki")).text();
+
+      // The whole row, not the cell somebody worried about: four columns
+      // are one derivation, and a test of one of them lets the rest drift.
+      expect(html).toContain(
+        '<h2 id="pulls">Pull requests' +
+          ' <span class="badge fresh" title="5m ago">fresh · 5m ago</span>' +
+          ' <span class="shown">1 shown</span></h2>' +
+          '<table class="cards" role="table"><thead role="rowgroup">' +
+          '<tr role="row"><th scope="col" role="columnheader">PR</th>' +
+          '<th scope="col" role="columnheader">Title</th>' +
+          '<th scope="col" role="columnheader">Opened by</th>' +
+          '<th scope="col" role="columnheader">Last confirmed</th></tr>' +
+          '</thead><tbody role="rowgroup">' +
+          '<tr role="row"><td role="cell"><span class="lbl hid">PR</span>' +
+          '<a href="https://github.com/no42-org/twiki/pull/7"' +
+          ' target="_blank" rel="noopener noreferrer">#7' +
+          '<span class="ext" aria-hidden="true">\u202F\u2197</span>' +
+          '<span class="sr-only">, opens GitHub in a new tab</span></a></td>' +
+          '<td role="cell"><span class="lbl">Title</span>Fix the thing</td>' +
+          '<td role="cell"><span class="lbl">Opened by</span>' +
+          "a-contributor</td>" +
+          '<td role="cell"><span class="lbl hid">Last confirmed</span>' +
+          '<span class="badge fresh" title="5m ago">fresh · 5m ago</span>' +
+          "</td></tr></tbody></table>",
+      );
+    });
+
+    it("keeps a repository the search could not cover unconfirmed", async () => {
+      // The lane ran and finished `ok` for this installation, and withheld
+      // THIS repository's confirmation because its qualifier did not fit a
+      // query. There is no fall-back to the run here, unlike the Actions
+      // section: reading that `ok` as an attestation would print
+      // `no open pull requests in this repository` under the one repository
+      // nobody searched (AD-28).
+      const r = store.beginRun({
+        lane: PULL_LANE,
+        installation: "no42-org",
+        scope: "full",
+        startedAt: AT,
+      });
+      store.finishRun(r, "ok", AT);
+
+      const view = buildRepoView(store, REPO, NOW, DEPS);
+
+      expect(view.pulls).toEqual([]);
+      expect(view.pullsSection).toEqual({
+        attested: false,
+        freshness: "unknown",
+        age: "never collected",
+      });
+
+      const html = await (await app().request("/repo/no42-org/twiki")).text();
+      expect(html).toContain(
+        '<h2 id="pulls">Pull requests <span class="badge unknown" title="never collected">never collected</span> <span class="shown">0 shown</span></h2>' +
+          '<p class="attest">not confirmed by any completed sweep</p>',
+      );
+    });
+
+    it("shows a stored row and its own freshness, never the lane's", () => {
+      seedPulls([confirmation(), pull(7)]);
+
+      const view = buildRepoView(store, REPO, NOW, DEPS);
+
+      expect(view.pulls).toEqual([
+        {
+          number: 7,
+          title: "Fix the thing",
+          author: "a-contributor",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/7",
+          freshness: "fresh",
+          age: "5m ago",
+        },
+      ]);
+      expect(view.pullsSection).toEqual({
+        attested: true,
+        freshness: "fresh",
+        age: "5m ago",
+      });
+    });
+
+    it("drops a pull request belonging to another repository", () => {
+      seedPulls([
+        confirmation(),
+        {
+          subject: { type: "pull_request", key: "PR_9" },
+          payload: {
+            ...pull(9).payload,
+            repo: "no42-org/other",
+          },
+        },
+      ]);
+
+      const view = buildRepoView(store, REPO, NOW, DEPS);
+
+      expect(view.pulls).toEqual([]);
+      expect(view.unattributable).toBe(0);
+    });
+
+    it("lists a pull request ONCE when both rows survive, as Dependencies", () => {
+      // The page's own half of "never twice". `bots:` emptied after a sweep
+      // disables the only lane that tombstones a `dependency_update_pr` row,
+      // so both rows sit in the store at once - which is exactly the
+      // configuration the queue's rule exists for. Without the same rule
+      // here, the page lists one pull request twice while the overview chip,
+      // reading the deduplicated queue, shows a different number for this
+      // repository.
+      seedPulls([confirmation(), pull(7)]);
+      const dep = store.beginRun({
+        lane: "graphql-update-prs",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: AT,
+      });
+      store.recordObservations(dep, AT, [
+        {
+          subject: { type: "dependency_update_pr", key: "PR_7" },
+          payload: {
+            repo: "no42-org/twiki",
+            number: 7,
+            title: "Bump x from 1.0.0 to 1.0.1",
+            author: "custom-bot[bot]",
+            htmlUrl: "https://github.com/no42-org/twiki/pull/7",
+            createdAt: "2026-08-19T00:00:00.000Z",
+            packageName: "x",
+            bump: "patch",
+          },
+        },
+      ] as never[]);
+      store.finishRun(dep, "ok", AT);
+
+      const view = buildRepoView(store, REPO, NOW, DEPS);
+
+      expect(view.updatePrs.map((p) => p.number)).toEqual([7]);
+      expect(view.pulls).toEqual([]);
+    });
+
+    it("keeps a review request sharing the node id, which is a DIFFERENT pair", () => {
+      // The scope of the rule. `review_request` and `dependency_update_pr`
+      // share node ids deliberately, because review requests are collected
+      // without the allowlist filter and have their own section. A rule
+      // phrased about node ids would empty the Reviews section.
+      seedPulls([confirmation(), pull(7)]);
+      const rev = store.beginRun({
+        lane: "graphql-review-requests",
+        installation: "reviews",
+        scope: "full",
+        startedAt: AT,
+      });
+      store.recordObservations(rev, AT, [
+        {
+          subject: { type: "review_request", key: "PR_7" },
+          payload: {
+            repo: "no42-org/twiki",
+            number: 7,
+            title: "Fix the thing",
+            author: "a-contributor",
+            htmlUrl: "https://github.com/no42-org/twiki/pull/7",
+            createdAt: "2026-08-19T00:00:00.000Z",
+            requestedReviewers: ["indigo"],
+          },
+        },
+      ] as never[]);
+      store.finishRun(rev, "ok", AT);
+
+      const view = buildRepoView(store, REPO, NOW, DEPS);
+
+      // No `dependency_update_pr` row, so nothing claims the pull request:
+      // both sections list it, which is the behaviour Reviews depends on.
+      expect(view.pulls.map((p) => p.number)).toEqual([7]);
+      expect(view.reviews.map((r) => r.number)).toEqual([7]);
+    });
+
+    it("stops attesting once the confirmation ages out, as the chip does", () => {
+      // Presence is not enough. A lane that died days ago leaves its last
+      // confirmation behind, and reading it as an attestation makes this
+      // section say `no open pull requests in this repository` under an
+      // overview chip that already reads `unconfirmed` off the very same row
+      // (AD-11, AD-28). The board has the counterpart of this test.
+      const old = "2026-08-18T11:55:00.000Z";
+      const r = store.beginRun({
+        lane: PULL_LANE,
+        installation: "no42-org",
+        scope: "full",
+        startedAt: old,
+      });
+      store.recordObservations(r, old, [
+        {
+          subject: {
+            type: "repository_pull_requests",
+            key: "no42-org/twiki",
+          },
+          payload: { repo: "no42-org/twiki", openPullRequests: 0 },
+        },
+      ] as never[]);
+      store.finishRun(r, "ok", old);
+
+      const view = buildRepoView(store, REPO, NOW, DEPS);
+
+      expect(view.pullsSection.attested).toBe(false);
+      expect(view.pullsSection.freshness).toBe("stale");
+    });
+
+    it("counts a row it cannot attribute at all, rather than dropping it", () => {
+      // Node-keyed rows carry their repository in the payload, and the
+      // payload is what failed to read: such a row might belong here or
+      // anywhere else, so the page reports it as exactly that.
+      seedPulls([
+        confirmation(),
+        {
+          subject: { type: "pull_request", key: "PR_BAD" },
+          payload: { repo: 7 },
+        },
+      ]);
+
+      const view = buildRepoView(store, REPO, NOW, DEPS);
+
+      expect(view.pulls).toEqual([]);
+      expect(view.unattributable).toBe(1);
+    });
   });
 
   it("renders an attested empty section as a sentence, not an empty table", async () => {

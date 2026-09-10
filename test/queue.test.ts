@@ -14,6 +14,7 @@ import {
 } from "../src/core/rank.js";
 import { KEV_SUBJECT } from "../src/core/subject.js";
 import { DEFAULT_NOW_EPSS, tier } from "../src/core/tier.js";
+import { type QueueKind, topicOf } from "../src/core/topics.js";
 import {
   buildQueue,
   type DefaultBranchRun,
@@ -1848,11 +1849,54 @@ describe("the queue page", () => {
     const html = await (await app().request("/queue")).text();
 
     expect(html).toContain(
-      "1 open alerts · 0 broken builds · 0 update PRs · 0 untriaged issues",
+      "1 open alerts · 0 broken builds · 0 update PRs · 0 pull requests · 0 untriaged issues",
     );
     // And it really is in the table below, so the count is not a zero of a
     // different kind that happens to read 1.
     expect(html).toContain('<span class="badge">scan</span>');
+  });
+
+  it("counts a human pull request in the summary line, and badges its row", async () => {
+    // The third occurrence of one defect. The summary counted Security by
+    // topic and everything else kind-by-kind, so each new kind read as zeros
+    // above a table of itself: the first red main, then the first code
+    // scanning finding, then this. Every count is topic-derived now, so a
+    // fourth kind joins the line by being filed under a topic.
+    //
+    // The badge is the other half: a plain PR, an update PR and an issue
+    // share one repository's number space, and without it `#12 · Fix the
+    // thing` is indistinguishable from an issue at a glance.
+    const prRun = store.beginRun({
+      lane: "graphql-pull-requests",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-17T11:55:00.000Z",
+    });
+    store.recordObservations(prRun, "2026-08-17T11:55:00.000Z", [
+      {
+        subject: { type: "pull_request", key: "PR_12" },
+        payload: {
+          repo: "no42-org/twiki",
+          number: 12,
+          title: "Fix the thing",
+          author: "a-contributor",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/12",
+          createdAt: "2026-08-17T00:00:00.000Z",
+          headRef: "fix-the-thing",
+        },
+      },
+    ] as never[]);
+    store.finishRun(prRun, "ok", "2026-08-17T11:55:00.000Z");
+
+    const html = await (await app().request("/queue")).text();
+
+    expect(html).toContain(
+      "0 open alerts · 0 broken builds · 0 update PRs · 1 pull requests · 0 untriaged issues",
+    );
+    expect(html).toContain('<span class="badge">pull</span>');
+    // Never the Dependencies badge: the two are exclusive kinds and the
+    // reader follows them to different sections.
+    expect(html).not.toContain('<span class="badge">PR</span>');
   });
 
   it("renders a leaked credential with its own badge and no KEV styling", async () => {
@@ -1890,7 +1934,7 @@ describe("the queue page", () => {
     expect(html).not.toContain('<div class="kev-hit">Amazon AWS');
     // And it counts under Security like its two siblings.
     expect(html).toContain(
-      "1 open alerts · 0 broken builds · 0 update PRs · 0 untriaged issues",
+      "1 open alerts · 0 broken builds · 0 update PRs · 0 pull requests · 0 untriaged issues",
     );
   });
 
@@ -2179,11 +2223,14 @@ describe("the queue page", () => {
     );
   });
 
-  it("says a topic with no collector is not collected, never that it is empty", async () => {
+  it("says the Pull requests filter is empty, not that it is uncollected (#167)", async () => {
+    // The topic has a lane now, so the sentence is the same claim every
+    // other topic makes about its own filtered list. Whether anybody looked
+    // is the overview's question and it answers `unconfirmed`.
     const html = await (await app().request("/queue?topic=pulls")).text();
     expect(html).toContain(bar("pulls"));
     expect(html).toContain(
-      '<p class="filter-state">Pull request items are not collected yet. <a href="/queue">Clear filter.</a></p>',
+      '<p class="filter-state">No pull request items open. <a href="/queue">Clear filter.</a></p>',
     );
   });
 
@@ -2219,7 +2266,7 @@ describe("the queue page", () => {
     // Two watched repositories, one de-listed: the summary counts the
     // watched estate, not the filter and not the de-listed PR.
     expect(html).toContain(
-      "2 open alerts · 0 broken builds · 1 update PRs · 0 untriaged issues",
+      "2 open alerts · 0 broken builds · 1 update PRs · 0 pull requests · 0 untriaged issues",
     );
     expect(html).not.toContain("no42-org/other#2");
     // The de-listed item is omitted under a filter, heading and all.
@@ -2255,7 +2302,7 @@ describe("the queue page", () => {
     const html = await (await app().request("/queue")).text();
 
     expect(html).toContain(
-      "0 open alerts · 0 broken builds · 0 update PRs · 0 untriaged issues",
+      "0 open alerts · 0 broken builds · 0 update PRs · 0 pull requests · 0 untriaged issues",
     );
     expect(html).toContain(
       '<section id="list" aria-label="queue"><p class="none">Nothing needs attention in watched repositories.</p></section><h2>no longer watched</h2>',
@@ -2294,7 +2341,7 @@ describe("the queue page", () => {
     const html = await (await app().request("/queue")).text();
 
     expect(html).toContain(
-      "1 open alerts · 0 broken builds · 0 update PRs · 0 untriaged issues",
+      "1 open alerts · 0 broken builds · 0 update PRs · 0 pull requests · 0 untriaged issues",
     );
     expect(html).toContain(bar("all"));
     expect(html).not.toContain('class="filter-state"');
@@ -2337,5 +2384,427 @@ describe("the queue page", () => {
       '<section id="list" aria-label="queue"><p class="none">Nothing needs attention.</p></section>',
     );
     expect(html).not.toContain('class="filter-state"');
+  });
+});
+
+describe("plain pull requests in the queue (#167)", () => {
+  let dir: string;
+  let store: SqliteStore;
+
+  const PR_LANE = "graphql-pull-requests";
+  const AT = "2026-08-17T11:55:00.000Z";
+
+  const seed = (
+    lane: string,
+    payloads: { subject: unknown; payload: unknown }[],
+  ) => {
+    const r = store.beginRun({
+      lane,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: AT,
+    });
+    store.recordObservations(r, AT, payloads as never[]);
+    store.finishRun(r, "ok", AT);
+  };
+
+  /** One stored plain pull request. Defaults to a human PR on `feature`. */
+  const pr = (over: Record<string, unknown> = {}) => ({
+    subject: { type: "pull_request", key: `PR_${over.number ?? 7}` },
+    payload: {
+      repo: "no42-org/twiki",
+      number: 7,
+      title: "Fix the thing",
+      author: "a-contributor",
+      htmlUrl: "https://github.com/no42-org/twiki/pull/7",
+      createdAt: "2026-08-17T00:00:00.000Z",
+      headRef: "feature",
+      ...over,
+    },
+  });
+
+  /**
+   * One retained pull-request check, as the Actions lane writes it (#161).
+   *
+   * Deliberately a `pull_request_workflow_run` row and never a
+   * `workflow_run` one: the two are distinct subject types precisely so the
+   * CI list and the CI queue pass cannot see a pull request's checks.
+   */
+  const check = (over: Record<string, unknown> = {}) => ({
+    subject: {
+      type: "pull_request_workflow_run",
+      key: `WFR_${over.runNumber ?? 3}`,
+    },
+    payload: {
+      repo: "no42-org/twiki",
+      workflowId: 1,
+      workflowName: "CI",
+      runNumber: 3,
+      status: "completed",
+      conclusion: "failure",
+      headBranch: "feature",
+      event: "pull_request",
+      htmlUrl: "https://github.com/no42-org/twiki/actions/runs/3",
+      createdAt: "2026-08-17T10:00:00.000Z",
+      ...over,
+    },
+  });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "queue-pulls-"));
+    store = SqliteStore.openForWrite(join(dir, "p.db"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("makes one item per stored pull request, ranked on its checks alone", () => {
+    seed(PR_LANE, [pr()]);
+    seed("rest-actions-runs", [check()]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    // The whole item, not the field somebody worried about: the key, the
+    // title, the rationale and the freshness are one derivation, and a test
+    // of one of them lets the rest drift (#66).
+    expect(items).toEqual([
+      {
+        kind: "pull_request",
+        // The node id, which is the same key a `dependency_update_pr` row
+        // for this pull request would carry. That is what the exclusivity
+        // rule below compares on.
+        key: "PR_7",
+        repo: "no42-org/twiki",
+        number: 7,
+        packageName: null,
+        title: "Fix the thing",
+        advisory: null,
+        htmlUrl: "https://github.com/no42-org/twiki/pull/7",
+        // Five terms silenced, one speaking, and it carries the verdict's
+        // own word: "failed" and "hung" are different things to a reader.
+        explanation: "checks failed",
+        kevListed: false,
+        displaySeverity: null,
+        ranking: items[0]?.ranking,
+        freshness: "fresh",
+        age: "5m ago",
+      },
+    ]);
+    // Verified against the chain rather than re-derived: `stuck: true` ranks
+    // 2 and lands the repository in `soon`.
+    expect(items[0]?.ranking.key).toEqual([0, 0, 0, 0, 0, 2]);
+    expect(tier(items[0]?.ranking as Ranking, CUT)).toBe("soon");
+  });
+
+  it.each([
+    // Checks failed on the head ref: stuck, and the repository is soon.
+    [{}, "checks failed", 2, "soon"],
+    // A run that never finished is broken too, and says which way.
+    [
+      {
+        status: "in_progress",
+        conclusion: null,
+        createdAt: "2026-08-17T06:00:00.000Z",
+      },
+      "checks hung",
+      2,
+      "soon",
+    ],
+    // Passed: a fact, and not a reason to act.
+    [{ conclusion: "success" }, "checks passed", 0, "quiet"],
+    // Still running: `n/a`, which ranks with the absences and words itself.
+    [
+      {
+        status: "in_progress",
+        conclusion: null,
+        createdAt: "2026-08-17T11:50:00.000Z",
+      },
+      "checks running",
+      0,
+      "quiet",
+    ],
+    // Settled on something that is neither a pass nor a failure.
+    // `runVerdict` answers `other` for all six of these AND for a live run,
+    // so a term that read the verdict alone would tell a maintainer their
+    // cancelled build is "running" for ever. GitHub's own word instead,
+    // because it is what they act on differently: a cancelled run is one to
+    // re-run, a skipped one a path that did not apply.
+    [{ conclusion: "cancelled" }, "checks cancelled", 0, "quiet"],
+    [{ conclusion: "skipped" }, "checks skipped", 0, "quiet"],
+    [{ conclusion: "action_required" }, "checks action_required", 0, "quiet"],
+    // Completed with no conclusion at all: over, whatever it left behind,
+    // and there is no word to quote.
+    [
+      { status: "completed", conclusion: null },
+      "checks completed with no result",
+      0,
+      "quiet",
+    ],
+  ] as const)(
+    "reads the retained run's verdict as the stuck term: %o",
+    (over, explanation, rank, expected) => {
+      seed(PR_LANE, [pr()]);
+      seed("rest-actions-runs", [check(over as Record<string, unknown>)]);
+
+      const { items } = buildQueue(store, NOW, DEPS);
+
+      expect(items).toHaveLength(1);
+      expect(items[0]?.explanation).toBe(explanation);
+      expect(items[0]?.ranking.key).toEqual([0, 0, 0, 0, 0, rank]);
+      expect(tier(items[0]?.ranking as Ranking, CUT)).toBe(expected);
+    },
+  );
+
+  it("says the checks were not observed when no run row names the ref", () => {
+    // NOT "checks passed" and not silence: nothing was observed on this ref,
+    // which is a gap in what we collected and says nothing about the pull
+    // request. It ranks with the absences, so a passing pull request and one
+    // whose checks were never observed differ only in their sentence - which
+    // is correct, because neither is a reason to act.
+    seed(PR_LANE, [pr()]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    expect(items[0]?.explanation).toBe("checks not observed");
+    expect(items[0]?.ranking.key).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(tier(items[0]?.ranking as Ranking, CUT)).toBe("quiet");
+  });
+
+  it("says the same for a pull request whose head ref the node did not carry", () => {
+    // A boundary read that came back without a ref matches no check row, so
+    // the term reads the absence rather than looking a row up by `undefined`.
+    seed(PR_LANE, [pr({ headRef: null })]);
+    seed("rest-actions-runs", [check()]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    expect(items[0]?.explanation).toBe("checks not observed");
+  });
+
+  it("judges two workflows on one ref by the worse of them", () => {
+    // The lane retains one row per workflow per head ref, so a repository
+    // with two workflows contributes two rows to one ref. A pull request
+    // with one failing workflow is stuck whatever the other one says.
+    seed(PR_LANE, [pr()]);
+    seed("rest-actions-runs", [
+      check({ runNumber: 3, conclusion: "success" }),
+      check({ runNumber: 4, workflowId: 2, conclusion: "failure" }),
+    ]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    expect(items[0]?.explanation).toBe("checks failed");
+  });
+
+  it("ignores a check row on another ref, and one in another repository", () => {
+    // A stale row whose ref has no open pull request is read by nothing: its
+    // freshness never implies a pull request is open. #161's 304 path
+    // re-confirms retained rows indefinitely, so a row asserts only "this is
+    // the newest run on this ref".
+    seed(PR_LANE, [pr()]);
+    seed("rest-actions-runs", [
+      check({ runNumber: 3, headBranch: "merged-long-ago" }),
+      check({ runNumber: 4, repo: "no42-org/other" }),
+    ]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    expect(items[0]?.explanation).toBe("checks not observed");
+  });
+
+  it("prefers the live run's word over a settled one on the same ref", () => {
+    // Precedence among the absences: a pull request with one workflow
+    // cancelled and another still going has not finished being checked, and
+    // "cancelled" would send the reader to re-run something while the answer
+    // is still coming.
+    seed(PR_LANE, [pr()]);
+    seed("rest-actions-runs", [
+      check({ runNumber: 3, conclusion: "cancelled" }),
+      check({
+        runNumber: 4,
+        workflowId: 2,
+        status: "in_progress",
+        conclusion: null,
+        createdAt: "2026-08-17T11:50:00.000Z",
+      }),
+    ]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    expect(items[0]?.explanation).toBe("checks running");
+  });
+
+  it("refuses to attribute a ref two open pull requests both claim", () => {
+    // A check row is keyed by the base repository slug and a BARE head ref
+    // (#161), and nothing in the run payload names the head repository, so
+    // two forks opening `patch-1` are one key. Attributing would rank a
+    // named contributor's pull request `soon` on somebody else's red build.
+    //
+    // Neither gets the verdict, and that IS the honest answer: we cannot say
+    // which run belongs to which.
+    seed(PR_LANE, [
+      pr({ number: 7, headRef: "patch-1" }),
+      pr({ number: 8, headRef: "patch-1" }),
+    ]);
+    seed("rest-actions-runs", [check({ headBranch: "patch-1" })]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    expect(items.map((i) => [i.number, i.explanation]).sort()).toEqual([
+      [7, "checks not observed"],
+      [8, "checks not observed"],
+    ]);
+    // And neither is lifted off `quiet` by the other's failure.
+    for (const item of items) {
+      expect(tier(item.ranking, CUT)).toBe("quiet");
+    }
+  });
+
+  it("still attributes a ref only one open pull request claims", () => {
+    // The guard is a refusal to guess between two claimants, not a blanket
+    // one: remove the second pull request and the verdict comes back.
+    seed(PR_LANE, [pr({ number: 7, headRef: "patch-1" })]);
+    seed("rest-actions-runs", [check({ headBranch: "patch-1" })]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    expect(items[0]?.explanation).toBe("checks failed");
+  });
+
+  it("counts a stored row it cannot read, and never renders it", () => {
+    seed(PR_LANE, [
+      pr(),
+      {
+        subject: { type: "pull_request", key: "PR_BAD" },
+        payload: { repo: 7 },
+      },
+    ]);
+
+    const queue = buildQueue(store, NOW, DEPS);
+
+    expect(queue.items.map((i) => i.key)).toEqual(["PR_7"]);
+    expect(queue.unreadable).toBe(1);
+  });
+
+  it("counts the topic, so a chip and a filter agree about what a pull request is", () => {
+    seed(PR_LANE, [pr()]);
+
+    const { items } = buildQueue(store, NOW, DEPS);
+
+    expect(topicOf(items[0]?.kind as QueueKind)).toBe("pulls");
+  });
+
+  it("counts a pull request row it cannot read, and never renders it", () => {
+    // Each sibling kind pins this and the fifth did not. Nothing enumerates
+    // subject types, so no compile error would ever have asked for it: the
+    // guard requires an `author`, and a row without one is what a partial
+    // write leaves behind.
+    seed(PR_LANE, [
+      {
+        subject: { type: "pull_request", key: "PR_404" },
+        payload: {
+          number: 404,
+          repo: "no42-org/twiki",
+          title: "half a row",
+          htmlUrl: "https://github.com/no42-org/twiki/pull/404",
+          createdAt: AT,
+          headRef: "half",
+        },
+      },
+    ]);
+
+    const queue = buildQueue(store, NOW, DEPS);
+
+    expect(queue.items.filter((i) => i.kind === "pull_request")).toEqual([]);
+    expect(queue.unreadable).toBe(1);
+  });
+
+  describe("never twice: one pull request, one item", () => {
+    /** The dependency-update row for the SAME node id. */
+    const updatePr = () => ({
+      subject: { type: "dependency_update_pr", key: "PR_7" },
+      payload: {
+        repo: "no42-org/twiki",
+        number: 7,
+        title: "Bump x from 1.0.0 to 1.0.1",
+        author: "custom-bot[bot]",
+        htmlUrl: "https://github.com/no42-org/twiki/pull/7",
+        createdAt: "2026-08-17T00:00:00.000Z",
+        packageName: "x",
+        bump: "patch",
+      },
+    });
+
+    it("emits the dependency item and drops the plain one", () => {
+      // The second enforcement point. `bots` emptied after a sweep leaves
+      // every `dependency_update_pr` row frozen - `update-prs.ts` is the only
+      // thing that tombstones them and the entrypoint disables that lane
+      // outright - exactly while this lane correctly claims the same pull
+      // requests as human ones. Two rows, one pull request, and nothing in
+      // the collection layer able to see both.
+      seed("graphql-update-prs", [updatePr()]);
+      seed(PR_LANE, [pr()]);
+
+      const { items } = buildQueue(store, NOW, DEPS);
+
+      expect(items.map((i) => [i.kind, i.key])).toEqual([
+        ["update_pr", "PR_7"],
+      ]);
+      // It appears under Dependencies and in no other topic, which is what
+      // the chips, the tiles and the filter all read.
+      expect(topicOf(items[0]?.kind as QueueKind)).toBe("dependencies");
+    });
+
+    it("leaves a plain pull request alone when no dependency row shares its id", () => {
+      // The rule is a resolution of a contradiction, not a suppression of
+      // this kind: remove the collision and the item is back.
+      seed("graphql-update-prs", [updatePr()]);
+      seed(PR_LANE, [pr({ number: 8 })]);
+
+      const { items } = buildQueue(store, NOW, DEPS);
+
+      expect(items.map((i) => [i.kind, i.key]).sort()).toEqual([
+        ["pull_request", "PR_8"],
+        ["update_pr", "PR_7"],
+      ]);
+    });
+
+    it("leaves a review request sharing a node id alone, which is a DIFFERENT pair", () => {
+      // The scope of the rule, and the reason it is written as a pair rather
+      // than as "one node id, one item": `review_request` and
+      // `dependency_update_pr` share node ids deliberately, because review
+      // requests are collected without the allowlist filter and have their
+      // own page. A rule about node ids would break the reviews topic.
+      seed("graphql-update-prs", [updatePr()]);
+      seed("graphql-review-requests", [
+        {
+          subject: { type: "review_request", key: "PR_7" },
+          payload: {
+            repo: "no42-org/twiki",
+            number: 7,
+            title: "Bump x from 1.0.0 to 1.0.1",
+            author: "custom-bot[bot]",
+            htmlUrl: "https://github.com/no42-org/twiki/pull/7",
+            createdAt: "2026-08-17T00:00:00.000Z",
+            requestedReviewers: ["indigo"],
+          },
+        },
+      ]);
+
+      const { items } = buildQueue(store, NOW, DEPS);
+
+      // The review request is not a queue kind at all, so the queue is
+      // unchanged; the row survives for its own page.
+      expect(items.map((i) => [i.kind, i.key])).toEqual([
+        ["update_pr", "PR_7"],
+      ]);
+      expect(
+        store
+          .currentByType("review_request")
+          .filter((c) => c.state === "present"),
+      ).toHaveLength(1);
+    });
   });
 });

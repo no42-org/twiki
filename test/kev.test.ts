@@ -562,6 +562,7 @@ describe("the real schedule table", () => {
     coverage: noop,
     kev: noop,
     updatePrs: noop,
+    pullRequests: noop,
     issues: noop,
     updateStatuses: noop,
     actionsRuns: { installations: ["no42-org", "other-org"], run: noop },
@@ -574,6 +575,7 @@ describe("the real schedule table", () => {
     expect(schedules.map((s) => s.lane).sort()).toEqual([
       "coverage",
       "graphql-issues",
+      "graphql-pull-requests",
       "graphql-review-requests",
       "graphql-update-prs",
       "graphql-update-status",
@@ -597,6 +599,7 @@ describe("the real schedule table", () => {
       coverage: noop,
       kev: noop,
       updatePrs: null,
+      pullRequests: noop,
       issues: noop,
       updateStatuses: noop,
       actionsRuns: null,
@@ -610,6 +613,14 @@ describe("the real schedule table", () => {
     // identity, so with no reviewers configured there is nobody to search
     // for and the lane is absent rather than quietly empty.
     expect(without.map((s) => s.lane)).not.toContain("graphql-review-requests");
+    // NOT the same rule for the plain pull-request lane (#167), and this is
+    // the whole point of it being a separate schedule entry: `bots` is what
+    // that lane EXCLUDES, so an empty list is the configuration where every
+    // open pull request is a human one and the lane has the most to collect.
+    // Nulling it under this condition would make "no bots configured" mean
+    // "no pull requests are collected at all", which is the invisible
+    // contributor the story exists to fix.
+    expect(without.map((s) => s.lane)).toContain("graphql-pull-requests");
   });
 
   it("runs KEV only on its own pseudo-installation", () => {

@@ -38,9 +38,11 @@ import type {
   InstallationRepo,
   IssuePage,
   OrgAlertPage,
+  PullRequestPage,
   RawCodeScanningAlert,
   RawDependabotAlert,
   RawIssue,
+  RawOpenPullRequest,
   RawPullRequest,
   RawRepoMeta,
   RawReviewRequest,
@@ -178,6 +180,16 @@ export type AccountKindResolver = (login: string) => AccountKind;
  * on each) is testable without an API.
  */
 export const SEARCH_QUERY_MAX = 256;
+/**
+ * The shortest `repo:` qualifier any repository could produce: a leading
+ * space, `repo:`, and a one-character owner and name.
+ *
+ * Used to tell a base that no repository could ever share a query with from
+ * one that merely cannot carry a particular long slug. The first is a
+ * configuration error and is refused; the second is reported per repository
+ * through `unsearchable`.
+ */
+export const SHORTEST_REPO_QUALIFIER = " repo:a/b".length;
 const ISSUE_SEARCH_BASE = "is:issue is:open no:assignee";
 
 /**
@@ -749,6 +761,92 @@ export class OctokitGitHub implements GitHubPort {
     let truncated = false;
     for (const query of plan.queries) {
       const page = await runNodeSearch<RawUpdatePr>(gh, "PullRequest", query);
+      prs.push(...page.items);
+      unreadable += page.unreadable;
+      truncated = truncated || page.truncated;
+    }
+    return {
+      prs,
+      unreadable,
+      truncated,
+      unsearchable: tooLongToSearch(plan.unsearchable),
+    };
+  }
+
+  async listOpenPullRequests(
+    repos: readonly RepoRef[],
+    excludeAuthors: readonly string[],
+  ): Promise<PullRequestPage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listOpenPullRequests needs an org resolver; this client was built without one",
+      );
+    }
+    if (repos.length === 0) {
+      return { prs: [], unreadable: 0, truncated: false, unsearchable: [] };
+    }
+    const gh = await this.orgOctokitFor(repos[0]?.owner ?? "");
+    // The complement of `listOpenUpdatePRs`'s base, and deliberately the same
+    // logins: `author:` there, `-author:` here, so the two searches partition
+    // the open pull requests rather than overlapping on them. Negated
+    // SERVER-SIDE because every open pull request in this estate is a bot's,
+    // and a client-side filter would spend the whole result ceiling on rows
+    // it then discards - see the port's note.
+    //
+    // An empty list leaves the base unnegated, which is correct: with no
+    // actor configured as a bot, every open pull request is a human one.
+    const base = [
+      "is:pr",
+      "is:open",
+      ...excludeAuthors.map((a) => `-author:${a}`),
+    ].join(" ");
+    // A base with no room left for a repository qualifier is a
+    // MISCONFIGURATION, not a sweep result, and it is refused where the
+    // reason is legible - exactly as `reviewerQueries` refuses a login too
+    // long to share a query with its own base.
+    //
+    // Two decisions compose into this, and neither is wrong on its own:
+    // negating the actors server-side grows the base by ~23 characters per
+    // configured bot, and an unsearchable repository is an ANSWER on this
+    // lane rather than a failure. Together, at about eleven configured
+    // actors, every repository becomes unsearchable and the run finishes
+    // `ok` having collected nothing. The pages stay honest - no
+    // confirmations are written, so everything reads `unconfirmed` - but the
+    // health table would show a healthy lane for a configuration nobody can
+    // see is broken.
+    //
+    // Judged against the SHORTEST qualifier any repository could have
+    // (` repo:a/b`), so this fires only when no repository of any name could
+    // be searched. One oversized slug is still that repository's own
+    // problem, reported per repository through `unsearchable`.
+    if (base.length + SHORTEST_REPO_QUALIFIER > SEARCH_QUERY_MAX) {
+      throw new Error(
+        `the pull-request search base is ${base.length} characters with ${excludeAuthors.length} configured bot actors, leaving no room for a repo: qualifier under the ${SEARCH_QUERY_MAX}-character search cap; configure fewer bots`,
+      );
+    }
+
+    const plan = searchQueries(base, repos);
+    const prs: RawOpenPullRequest[] = [];
+    let unreadable = 0;
+    let truncated = false;
+    for (const query of plan.queries) {
+      const page = await runNodeSearch<RawOpenPullRequest>(
+        gh,
+        "PullRequest",
+        query,
+        "headRefName",
+        (raw, node) => ({
+          ...node,
+          // A boundary read, so the type is checked rather than asserted:
+          // the schema says non-null, and the queue's stuck term must read
+          // `checks not observed` off a node that disagrees rather than
+          // look up a row keyed by `undefined`.
+          headRef:
+            typeof (raw as { headRefName?: unknown }).headRefName === "string"
+              ? (raw as { headRefName: string }).headRefName
+              : null,
+        }),
+      );
       prs.push(...page.items);
       unreadable += page.unreadable;
       truncated = truncated || page.truncated;

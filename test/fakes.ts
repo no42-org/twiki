@@ -31,9 +31,11 @@ import type {
   GitHubReadPort,
   IssuePage,
   OrgAlertPage,
+  PullRequestPage,
   RawCodeScanningAlert,
   RawDependabotAlert,
   RawIssue,
+  RawOpenPullRequest,
   RawPullRequest,
   RawRepoMeta,
   RawReviewRequest,
@@ -239,9 +241,40 @@ export const makeUpdatePr = (over: Partial<RawUpdatePr> = {}): RawUpdatePr => ({
   repo: { owner: "no42-org", name: "twiki" },
   number: 1,
   title: "Bump left-pad from 1.0.0 to 1.0.1",
-  author: "dependabot",
+  // The payload spelling of the arbitrary actor the lane's suite configures
+  // as `app/custom-bot`, not a third unrelated login: the lane classifies its
+  // own results now (#167), so a fixture whose author no configured actor
+  // matches is a fixture the lane correctly discards. Spelled with the
+  // `[bot]` suffix on purpose - config says `app/x` and payloads say
+  // `x[bot]`, and this is the fold in production's own shape.
+  author: "custom-bot[bot]",
   htmlUrl: "https://github.com/no42-org/twiki/pull/1",
   createdAt: "2026-08-17T00:00:00.000Z",
+  ...over,
+});
+
+/**
+ * One open, human pull request as the plain lane's search returns it (#167).
+ *
+ * Its own builder rather than a variant of `makeUpdatePr`: the two carry
+ * different fields (`headRef`) and, more importantly, different authors, and
+ * a shared builder would make "which lane collects this" a default nobody
+ * reads.
+ */
+export const makeOpenPr = (
+  over: Partial<RawOpenPullRequest> = {},
+): RawOpenPullRequest => ({
+  nodeId: `PR_${over.number ?? 1}`,
+  repo: { owner: "no42-org", name: "twiki" },
+  number: 1,
+  title: "Fix the thing",
+  author: "a-contributor",
+  // Derived from the number, as `nodeId` is. Hardcoded to `/pull/1`, a
+  // whole-payload assertion would pin `number: 7` beside pull request 1's
+  // URL, and a mapper that dropped or swapped the field would pass it.
+  htmlUrl: `https://github.com/no42-org/twiki/pull/${over.number ?? 1}`,
+  createdAt: "2026-09-10T00:00:00.000Z",
+  headRef: "fix-the-thing",
   ...over,
 });
 
@@ -451,6 +484,38 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       requests: this.reviewRequests,
       unreadable: this.reviewRequestUnreadable,
       truncated: this.reviewRequestTruncated,
+    };
+  }
+
+  /**
+   * Plain pull requests per org, and the exclusions each call asked for
+   * (#167).
+   *
+   * Its own set of fields rather than a share of the update-PR ones: the two
+   * lanes run in one sweep against one fake, and a shared map would let a
+   * test that seeded one lane silently answer for the other.
+   */
+  pullRequests = new Map<string, RawOpenPullRequest[]>();
+  pullRequestUnreadable = new Map<string, number>();
+  pullRequestTruncated = new Set<string>();
+  /** Repositories the pull-request search could not cover, per org. */
+  pullRequestUnsearchable = new Map<string, UnlistedRepo[]>();
+  pullRequestQueries: {
+    repos: readonly RepoRef[];
+    excludeAuthors: readonly string[];
+  }[] = [];
+
+  async listOpenPullRequests(
+    repos: readonly RepoRef[],
+    excludeAuthors: readonly string[],
+  ): Promise<PullRequestPage> {
+    this.pullRequestQueries.push({ repos, excludeAuthors });
+    const org = repos[0]?.owner.toLowerCase() ?? "";
+    return {
+      prs: this.pullRequests.get(org) ?? [],
+      unreadable: this.pullRequestUnreadable.get(org) ?? 0,
+      truncated: this.pullRequestTruncated.has(org),
+      unsearchable: this.pullRequestUnsearchable.get(org) ?? [],
     };
   }
 

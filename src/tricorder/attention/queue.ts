@@ -9,6 +9,7 @@ import {
   NOT_APPLICABLE,
   type Ranking,
   type RankPolicy,
+  type ReasonTable,
   rank,
   type Signal,
 } from "../../core/rank.js";
@@ -42,6 +43,7 @@ import {
   readCodeScanningAlert,
   readIssue,
   readPr,
+  readPullRequest,
   readSecretScanningAlert,
   readStatus,
   readWorkflowRun,
@@ -217,17 +219,59 @@ export function newerRun(a: DefaultBranchRun, b: DefaultBranchRun): boolean {
   return a.row.subject.key.localeCompare(b.row.subject.key) < 0;
 }
 
-export function buildQueue(
-  store: StorePort,
-  now: Date,
-  deps: QueueDeps,
-): Queue {
-  const index = loadKevIndex(store, now, deps.kevPolicy);
+/**
+ * What one pass produced.
+ *
+ * Every pass answers the same two things - the items it derived, and the
+ * stored rows it holds and could not read - so `buildQueue` sums them
+ * without knowing what any of them does. The count is stated rather than
+ * dropped, because a queue quietly missing rows looks complete, which is the
+ * confident-zero defect wearing a queue costume.
+ */
+interface Pass {
+  items: QueueItem[];
+  unreadable: number;
+}
 
-  // What dependabotUpdate said, read before the alert pass because both later
-  // passes consume it: the alert's stuck flag comes from the status keyed like
-  // the alert itself, and a status naming a PR number is the precise
-  // alert-to-PR link the package heuristic only approximates.
+/**
+ * The terms one Dependabot alert contributes, derived once.
+ *
+ * Filled by the alert pass, read by the update-PR pass. One derivation per
+ * alert: two copy-parallel loops let the two drift, and a PR could "inherit"
+ * a risk disagreeing with the alert row beside it.
+ */
+interface AlertTerms {
+  kev: ReturnType<typeof kevSignal>;
+  epss: number | null;
+  severity: ReturnType<typeof normaliseSeverity>;
+  advisory: string | null;
+}
+
+/** What the alert pass leaves behind for the update-PR pass to join on. */
+interface AlertPass extends Pass {
+  /** Terms by package, folded, for the title-parsed heuristic. */
+  alertsByPackage: Map<string, AlertTerms[]>;
+  /** The same terms by subject key, for the precise status-driven join. */
+  alertsByKey: Map<string, AlertTerms>;
+}
+
+/** What the update-status prepass leaves behind, for the two passes that read it. */
+interface StatusIndex {
+  statusByAlertKey: Map<string, UpdateStatusObservation>;
+  linksByPr: Map<string, { alertKey: string; error: string | null }[]>;
+}
+
+/**
+ * What dependabotUpdate said, read before the alert pass because both later
+ * passes consume it: the alert's stuck flag comes from the status keyed like
+ * the alert itself, and a status naming a PR number is the precise
+ * alert-to-PR link the package heuristic only approximates.
+ *
+ * The ONE piece of cross-pass state besides the alert terms, and it is read
+ * here rather than inside either consumer so the two cannot disagree about
+ * which statuses exist.
+ */
+function updateStatusIndex(store: StorePort): StatusIndex {
   const statusByAlertKey = new Map<string, UpdateStatusObservation>();
   const linksByPr = new Map<
     string,
@@ -249,12 +293,19 @@ export function buildQueue(
       linksByPr.set(prKey, list);
     }
   }
+  return { statusByAlertKey, linksByPr };
+}
 
-  const items: QueueItem[] = [];
-  let unreadable = 0;
-
-  // One resolver call per repository rather than one per row: a repository
-  // with thirty workflows asks the same question thirty times otherwise.
+/**
+ * A memo over `deps.defaultBranchOf`, keyed by folded slug.
+ *
+ * One resolver call per repository rather than one per row: a repository
+ * with thirty workflows asks the same question thirty times otherwise. One
+ * memo shared by the two passes that ask, so the code scanning filter and
+ * the CI filter cannot answer differently for one repository within one
+ * build.
+ */
+function branchResolver(deps: QueueDeps): (slug: string) => string | null {
   const branches = new Map<string, string | null>();
   const defaultBranchOf = (slug: string): string | null => {
     let branch = branches.get(slug);
@@ -265,18 +316,24 @@ export function buildQueue(
     }
     return branch;
   };
+  return defaultBranchOf;
+}
 
-  // Filled during the alert pass, read during the PR pass. One derivation of
-  // kev and severity per alert: two copy-parallel loops let the two drift, and
-  // a PR could "inherit" a risk disagreeing with the alert row beside it.
-  interface AlertTerms {
-    kev: ReturnType<typeof kevSignal>;
-    epss: number | null;
-    severity: ReturnType<typeof normaliseSeverity>;
-    advisory: string | null;
-  }
+/**
+ * The Dependabot alerts, and the terms the update-PR pass joins on.
+ *
+ * First because it is the only pass that produces state anything else reads.
+ */
+function alertPass(
+  store: StorePort,
+  now: Date,
+  deps: QueueDeps,
+  index: ReturnType<typeof loadKevIndex>,
+  { statusByAlertKey }: StatusIndex,
+): AlertPass {
+  const items: QueueItem[] = [];
+  let unreadable = 0;
   const alertsByPackage = new Map<string, AlertTerms[]>();
-  // The same triples keyed by subject key, for the precise status-driven join.
   const alertsByKey = new Map<string, AlertTerms>();
 
   for (const row of store.currentByType("dependabot_alert")) {
@@ -356,6 +413,18 @@ export function buildQueue(
       age: ageLabel(row.verifiedAt, now),
     });
   }
+
+  return { items, unreadable, alertsByPackage, alertsByKey };
+}
+
+function codeScanningPass(
+  store: StorePort,
+  now: Date,
+  deps: QueueDeps,
+  defaultBranchOf: (slug: string) => string | null,
+): Pass {
+  const items: QueueItem[] = [];
+  let unreadable = 0;
 
   // The code scanning findings (#156). Stored regardless of ref by a lane
   // that deliberately does not filter, so THIS is where the default-branch
@@ -462,6 +531,17 @@ export function buildQueue(
     });
   }
 
+  return { items, unreadable };
+}
+
+function secretScanningPass(
+  store: StorePort,
+  now: Date,
+  deps: QueueDeps,
+): Pass {
+  const items: QueueItem[] = [];
+  let unreadable = 0;
+
   // The leaked credentials (#158). No branch guard has an analogue here: a
   // secret scanning alert carries no ref at all, so there is nothing to
   // filter on and every stored row that reads is an item.
@@ -481,8 +561,8 @@ export function buildQueue(
     }
 
     // The PROJECTION's state is the authority, and it is the `present` check
-    // above. The payload's own `state` is informational and is deliberately
-    // not read here: the lane asks GitHub only for open alerts, so a row we
+    // at the top of the loop. The payload's own `state` is informational and
+    // is deliberately not read here: the lane asks GitHub only for open alerts, so a row we
     // last saw is one GitHub last listed as open, and a row it stopped
     // listing is tombstoned by the lane's own reconciliation. Gating on the
     // payload instead would hide a live finding on the strength of a word
@@ -570,18 +650,29 @@ export function buildQueue(
     });
   }
 
-  // The key tiebreak cannot be observed through the store today, because
-  // currentByType already returns rows ORDER BY subject_key and this sort is
-  // stable. It stays as defence: that SQL clause is one edit away from
-  // disappearing, and a queue that reshuffles between refreshes on rank ties
-  // would look broken in a way no test of ordering-by-rank catches.
-  // The update PRs (CAP-3), ranked by the risk of what they fix. The join is
-  // local: alertsByPackage was filled during the single pass over the alerts
-  // above, so a PR bumping a package with an open alert inherits the
-  // worst-ranking alert's top three terms. A PR whose package has no open
-  // alert is a plain update, and its security terms are facts of absence
-  // (n/a), not gaps (unknown): calling them unknown would float every routine
-  // bump above every alert we checked and found absent.
+  return { items, unreadable };
+}
+
+/**
+ * The update PRs (CAP-3), ranked by the risk of what they fix.
+ *
+ * The join is local: `alertsByPackage` was filled by `alertPass`, which is
+ * the only reason that pass runs first, so a PR bumping a package with an
+ * open alert inherits the worst-ranking alert's top three terms. A PR whose
+ * package has no open alert is a plain update, and its security terms are
+ * facts of absence (n/a), not gaps (unknown): calling them unknown would
+ * float every routine bump above every alert we checked and found absent.
+ */
+function updatePrPass(
+  store: StorePort,
+  now: Date,
+  deps: QueueDeps,
+  { alertsByPackage, alertsByKey }: AlertPass,
+  { linksByPr }: StatusIndex,
+): Pass {
+  const items: QueueItem[] = [];
+  let unreadable = 0;
+
   for (const row of store.currentByType("dependency_update_pr")) {
     if (row.state !== "present") continue;
     const pr = readPr(row.payload);
@@ -692,6 +783,271 @@ export function buildQueue(
     });
   }
 
+  return { items, unreadable };
+}
+
+/**
+ * The retained pull-request checks, indexed by the ref they ran on.
+ *
+ * Keyed `<folded repo slug>|<head ref>`, because that is what a pull request
+ * can be looked up by: the rows themselves are keyed by run node id, and the
+ * lane's retention keys them per workflow per head ref (#161). A repository
+ * with two workflows on one ref therefore contributes two rows to one entry,
+ * and the pass below judges them together.
+ *
+ * The key limits are the lane's and are not fixed here: the ref is a BARE
+ * branch name, so two forks opening `patch-1` share one entry, and a ref
+ * deleted and recreated inherits the old rows. Both are written down where
+ * the retention key is defined.
+ */
+function checksByHeadRef(
+  store: StorePort,
+): Map<string, WorkflowRunObservation[]> {
+  const byRef = new Map<string, WorkflowRunObservation[]>();
+  for (const row of store.currentByType("pull_request_workflow_run")) {
+    if (row.state !== "present") continue;
+    const run = readWorkflowRun(row.payload);
+    // Skipped rather than counted as unreadable, and this is the one place
+    // in this file where that is right: a check row is never itself a queue
+    // item, and its absence already degrades honestly to `checks not
+    // observed` on the pull request it belonged to (AD-20). Counting it
+    // would make the "items not shown" banner claim items that were never
+    // items.
+    if (run === null || run.headBranch === null) continue;
+    const key = `${foldSlug(run.repo)}|${run.headBranch}`;
+    const list = byRef.get(key) ?? [];
+    list.push(run);
+    byRef.set(key, list);
+  }
+  return byRef;
+}
+
+/**
+ * Whether a run has not finished yet.
+ *
+ * `runVerdict` answers `other` for two quite different things, and this is
+ * what tells them apart: a run GitHub has not concluded, and one it
+ * concluded as something that is neither a pass nor a failure - cancelled,
+ * skipped, neutral, action_required, stale, and whatever it adds next. A
+ * `completed` run with no conclusion at all is over too, whatever it left
+ * behind, so the status decides rather than the null.
+ *
+ * Its own predicate rather than a re-reading of the verdict, because the
+ * verdict deliberately does not carry this: `other` is the answer that
+ * cannot invent a failure, and telling a wait from a settled non-result is a
+ * question about wording, not about rank. Both rank `n/a`.
+ */
+function stillRunning(run: WorkflowRunObservation): boolean {
+  return run.conclusion === null && run.status !== "completed";
+}
+
+/**
+ * What the retained checks on one head ref say, as the `stuck` term and the
+ * words that go with it.
+ *
+ * Precedence, worst first: a broken run decides, then one still going, then
+ * one that settled on no result, then a clean one. A pull request with one
+ * failing workflow and one still running is stuck whatever the second one
+ * eventually says, and one with a pass beside a run in flight has not
+ * finished being checked.
+ *
+ * The `n/a` readings are deliberately NOT collapsed. "Not observed", "still
+ * running" and "settled on no result" rank identically - all three are facts
+ * of absence, all three land the repository in `quiet` - and they are
+ * different things to a reader: a gap in what we collected, a wait, and a
+ * run somebody cancelled. Three sentences over one is the whole reason the
+ * queue supplies this entry per item.
+ *
+ * The tier arithmetic was verified against the chain and is not re-derived
+ * here: `true` ranks 2 and gives `soon`; `false` and every `n/a` value rank
+ * 0 and give `quiet`.
+ */
+function checkTerm(
+  runs: readonly WorkflowRunObservation[] | undefined,
+  now: Date,
+  hungAfterMs: number,
+): { stuck: Signal<boolean>; words: NonNullable<ReasonTable["stuck"]> } {
+  if (runs === undefined || runs.length === 0) {
+    // NOT "the checks passed" and not silence. Nothing was observed on this
+    // ref, which is a gap in our collection and says nothing about the pull
+    // request - and a check row's freshness is never evidence that a pull
+    // request is open, because the Actions lane's 304 path re-confirms
+    // retained rows indefinitely (#161). This pass reads such a row only for
+    // a pull request it has independently collected as open.
+    return { stuck: NOT_APPLICABLE, words: { na: "checks not observed" } };
+  }
+  const judged = runs.map((run) => ({
+    run,
+    verdict: runVerdict(run, now, hungAfterMs),
+  }));
+  const broken = judged.find((j) => isBrokenVerdict(j.verdict));
+  if (broken !== undefined) {
+    // The word itself, per item: "failed" and "hung" are different things to
+    // a maintainer - one is a red build to read, the other a run that never
+    // came back - exactly as the CI kind's sentence carries its own verdict.
+    return { stuck: true, words: { stuck: `checks ${broken.verdict}` } };
+  }
+  if (judged.some((j) => stillRunning(j.run))) {
+    return { stuck: NOT_APPLICABLE, words: { na: "checks running" } };
+  }
+  // Settled, and on nothing this system reads as a result. GitHub's own word
+  // for it, because that is what the maintainer acts on differently: a
+  // cancelled run is one to re-run, a skipped one is a path that did not
+  // apply. A `completed` run with no conclusion at all has no word to quote.
+  const settled = judged.find((j) => j.verdict === "other");
+  if (settled !== undefined) {
+    return {
+      stuck: NOT_APPLICABLE,
+      words: {
+        na: `checks ${settled.run.conclusion ?? "completed with no result"}`,
+      },
+    };
+  }
+  return { stuck: false, words: { fine: "checks passed" } };
+}
+
+/**
+ * The plain pull requests (#167): open, and opened by nobody the config
+ * names as a dependency-update bot.
+ *
+ * Five of the six terms are facts of absence - a pull request carries no
+ * CVE, no EPSS, no advisory grade and no bump, and it is not a statement
+ * about main - so the one term that speaks is whether its checks are stuck.
+ * That term reads the run rows the Actions lane already retains for this
+ * head ref; the checks API is never called, and no call is added by this
+ * kind at all.
+ */
+function pullRequestPass(store: StorePort, now: Date, deps: QueueDeps): Pass {
+  const items: QueueItem[] = [];
+  const checks = checksByHeadRef(store);
+
+  // Read once, because two things below need the whole set: the item loop,
+  // and the count of open pull requests per head ref that decides whether a
+  // check row may be attributed at all.
+  const readable = [...store.currentByType("pull_request")]
+    .filter((row) => row.state === "present")
+    .map((row) => ({ row, pr: readPullRequest(row.payload) }));
+  const unreadable = readable.filter((r) => r.pr === null).length;
+
+  // How many OPEN pull requests each ref key stands for.
+  //
+  // A check row is keyed by the base repository slug and a BARE head ref
+  // (#161), and nothing in the run payload names the head repository, so two
+  // forks opening `patch-1` against this repository are one key here. That
+  // was a display limit at the retention key; here it would attribute one
+  // contributor's red build to another's pull request and rank it `soon`
+  // under their name.
+  //
+  // Refused rather than guessed: where a ref stands for more than one open
+  // pull request, neither gets the verdict and both read `checks not
+  // observed`, which is exactly what is true - we cannot say which run
+  // belongs to which. Closing it properly needs a head-repository field on
+  // the run mapper, which is a port change.
+  const prsPerRef = new Map<string, number>();
+  for (const { pr } of readable) {
+    if (pr === null || pr.headRef === null) continue;
+    const key = `${foldSlug(pr.repo)}|${pr.headRef}`;
+    prsPerRef.set(key, (prsPerRef.get(key) ?? 0) + 1);
+  }
+
+  for (const { row, pr } of readable) {
+    if (pr === null) continue;
+
+    const slug = foldSlug(pr.repo);
+    const refKey = pr.headRef === null ? null : `${slug}|${pr.headRef}`;
+    // A pull request with no head ref matches no entry, which is what makes
+    // `checks not observed` the answer rather than a lookup on `undefined`;
+    // so does one whose ref another open pull request also claims.
+    const { stuck, words } = checkTerm(
+      refKey === null || (prsPerRef.get(refKey) ?? 0) > 1
+        ? undefined
+        : checks.get(refKey),
+      now,
+      deps.hungAfterMs,
+    );
+    const ranking = rank(
+      {
+        broken: NOT_APPLICABLE,
+        kev: NOT_APPLICABLE,
+        epss: NOT_APPLICABLE,
+        severity: NOT_APPLICABLE,
+        bump: NOT_APPLICABLE,
+        stuck,
+      },
+      deps.rankPolicy,
+      {
+        ...KIND_REASONS.pull_request,
+        // The whole entry per item, because all four of its states say
+        // something the table cannot know. See the note beside the table.
+        stuck: words,
+      },
+    );
+
+    items.push({
+      kind: "pull_request",
+      // The stored row's key, which is the node id - the same key the
+      // `dependency_update_pr` row for this pull request would carry. That
+      // is deliberate and is what `onePerPullRequest` compares on: the two
+      // kinds are exclusive, so a collision is a contradiction to resolve
+      // rather than two items to render.
+      key: row.subject.key,
+      repo: pr.repo,
+      number: pr.number,
+      packageName: null,
+      title: pr.title,
+      advisory: null,
+      htmlUrl: safeUrl(pr.htmlUrl),
+      explanation: ranking.explanation,
+      // Its KEV term is n/a by construction, and kevListedFor says so: the
+      // page never gets a chance to shout about it.
+      kevListed: kevListedFor("pull_request"),
+      displaySeverity: null,
+      ranking,
+      freshness: freshness(row.verifiedAt, now, deps.policy),
+      age: ageLabel(row.verifiedAt, now),
+    });
+  }
+
+  return { items, unreadable };
+}
+
+/**
+ * At most one item per pull request node id, preferring the dependency one.
+ *
+ * The SECOND enforcement of "never twice", and not redundancy for its own
+ * sake. `classifyPullRequest` decides the type at collection, but the rows
+ * outlive the decision: `update-prs.ts` is the only thing that tombstones a
+ * `dependency_update_pr` row, and the entrypoint disables that lane outright
+ * when `bots` is empty. So one edit to repos.yaml freezes every existing
+ * `dependency_update_pr` row exactly while this lane correctly starts
+ * claiming the same pull requests as human ones - two rows, one pull
+ * request, and nothing in the collection layer able to see both. This is
+ * where they meet.
+ *
+ * The dependency one wins because it says more: a reader wants the package
+ * and the linked alert, not a bare title, and the Dependencies section is
+ * where a dependency update is documented to appear.
+ *
+ * SCOPED TO THIS PAIR, and that scope is the point. Cross-type coexistence
+ * on one node id stays legal in general: `review_request` and
+ * `dependency_update_pr` share node ids deliberately, because review
+ * requests are collected WITHOUT the allowlist filter and belong to a
+ * surface of their own. A rule phrased as "one node id, one item" would be
+ * wrong and would break the reviews topic.
+ */
+function onePerPullRequest(items: readonly QueueItem[]): QueueItem[] {
+  const claimed = new Set(
+    items.filter((item) => item.kind === "update_pr").map((item) => item.key),
+  );
+  return items.filter(
+    (item) => item.kind !== "pull_request" || !claimed.has(item.key),
+  );
+}
+
+function issuePass(store: StorePort, now: Date, deps: QueueDeps): Pass {
+  const items: QueueItem[] = [];
+  let unreadable = 0;
+
   // Untriaged issues (CAP-2). Every security term is a fact of absence: an
   // issue carries no CVE, no advisory and no update, so all-n/a is the honest
   // ranking and it sinks below every alert we actually measured. The chain's
@@ -739,6 +1095,18 @@ export function buildQueue(
     });
   }
 
+  return { items, unreadable };
+}
+
+function ciFailurePass(
+  store: StorePort,
+  now: Date,
+  deps: QueueDeps,
+  defaultBranchOf: (slug: string) => string | null,
+): Pass {
+  const items: QueueItem[] = [];
+  let unreadable = 0;
+
   // The CI failures (CAP: build failures). Nothing ships from a repository
   // whose default branch is red, so this is the chain's leading term and the
   // only kind that ever passes `true` for it.
@@ -771,7 +1139,7 @@ export function buildQueue(
     const run = readWorkflowRun(row.payload);
     if (run === null) {
       // A row we hold and cannot read is stated, never dropped: a queue
-      // quietly missing rows looks complete. Unlike the passes above, this
+      // quietly missing rows looks complete. Unlike the other passes, this
       // one cannot say whether the row WOULD have become an item - the
       // branch and the verdict are in the payload that failed to read - so
       // the count is "run rows we could not read", not "CI items lost". The
@@ -875,6 +1243,46 @@ export function buildQueue(
     });
   }
 
+  return { items, unreadable };
+}
+
+/**
+ * Build the ranked queue.
+ *
+ * One pass per kind, each independent of the others except for the two
+ * pieces of state written down beside them: the update statuses, read once
+ * before anything, and the alert terms the update-PR pass joins on. This was
+ * one 673-line function through five kinds; the sixth is where it stopped
+ * being readable (#167).
+ */
+export function buildQueue(
+  store: StorePort,
+  now: Date,
+  deps: QueueDeps,
+): Queue {
+  const index = loadKevIndex(store, now, deps.kevPolicy);
+  const statuses = updateStatusIndex(store);
+  const defaultBranchOf = branchResolver(deps);
+
+  const alerts = alertPass(store, now, deps, index, statuses);
+  const passes: Pass[] = [
+    alerts,
+    codeScanningPass(store, now, deps, defaultBranchOf),
+    secretScanningPass(store, now, deps),
+    updatePrPass(store, now, deps, alerts, statuses),
+    pullRequestPass(store, now, deps),
+    issuePass(store, now, deps),
+    ciFailurePass(store, now, deps, defaultBranchOf),
+  ];
+
+  const items = onePerPullRequest(passes.flatMap((pass) => pass.items));
+  const unreadable = passes.reduce((sum, pass) => sum + pass.unreadable, 0);
+
+  // The key tiebreak cannot be observed through the store today, because
+  // currentByType already returns rows ORDER BY subject_key and this sort is
+  // stable. It stays as defence: that SQL clause is one edit away from
+  // disappearing, and a queue that reshuffles between refreshes on rank ties
+  // would look broken in a way no test of ordering-by-rank catches.
   items.sort(
     (a, b) =>
       compareRankings(a.ranking, b.ranking) || a.key.localeCompare(b.key),

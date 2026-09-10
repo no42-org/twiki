@@ -27,6 +27,7 @@ import {
   coverageFeatures,
 } from "../collect/coverage.js";
 import { LANE as ISSUE_LANE } from "../collect/issues.js";
+import { LANE as PULL_REQUEST_LANE } from "../collect/pull-requests.js";
 import {
   REVIEWS_INSTALLATION,
   LANE as REVIEWS_LANE,
@@ -38,7 +39,7 @@ import {
   actionsConfirmations,
   actionsVouched,
 } from "./actions-confirmation.js";
-import { latestFullRun } from "./attestation.js";
+import { confirmationVouches, latestFullRun } from "./attestation.js";
 import {
   ageLabel,
   type Freshness,
@@ -200,8 +201,14 @@ export interface Board {
   health: CollectionHealth[];
 }
 
-/** The absences an `unconfirmed` chip or tile can stand for. */
-export const NO_COLLECTOR = "no collector for this topic yet";
+/**
+ * The absences an `unconfirmed` chip or tile can stand for.
+ *
+ * `no collector for this topic yet` used to be one of them, for the Pull
+ * requests topic. It is gone with #167: every topic in the queue now has a
+ * lane, so the only reason a chip or a tile has no number is that no sweep
+ * confirmed one - which is a different sentence and a fixable one.
+ */
 export const NO_SWEEP = "not confirmed by any completed sweep";
 /**
  * The repository's default branch could not be resolved, so nothing here
@@ -348,6 +355,20 @@ export function buildBoard(
       .filter((v) => v.state === "present")
       .map((v) => v.subject.key),
   );
+
+  // The same question of the plain pull-request lane's own confirmation
+  // (#167). A per-repository set rather than the lane's run, because this
+  // lane withholds a confirmation per repository: a repository whose `repo:`
+  // qualifier could not fit a query was never asked about, and the lane's
+  // run still says `ok` for every repository it did cover. A lane-wide
+  // verdict would vouch for the one repository nobody searched.
+  const pullRequestConfirmations = new Map<string, CurrentValue>();
+  for (const value of store.currentByType("repository_pull_requests")) {
+    // A tombstoned confirmation is a retracted assertion, not a stale one.
+    if (value.state === "present") {
+      pullRequestConfirmations.set(value.subject.key, value);
+    }
+  }
 
   // The same question of the secret scanning lane's own confirmation (#158).
   // A third set rather than a union with the one above: the two lanes have
@@ -694,6 +715,31 @@ export function buildBoard(
       );
     }
 
+    // This repository's OWN pull-request confirmation, not the lane's, for
+    // the reason CI reads the Actions confirmation above: the lane withholds
+    // one per repository it could not search, so a lane-wide verdict would
+    // publish a zero for exactly the repository nobody asked about (#167,
+    // AD-28). Judged on the sweep budget, which is this lane's cadence.
+    const pullsConfirmation = pullRequestConfirmations.get(slug);
+    let pulls: Chip;
+    // Through the one function the repository page's section calls, so the
+    // chip and the section cannot answer differently off the same row.
+    if (confirmationVouches(pullsConfirmation, now, deps.policy)) {
+      sources.push({
+        verifiedAt: pullsConfirmation.verifiedAt,
+        policy: deps.policy,
+      });
+      pulls = counted(ofKind("pull_request"), null, topicPath("pulls", repo));
+    } else {
+      // Falls back to the LANE's standing for its words, which says
+      // "collected earlier, not confirmed since" where it can and
+      // `not confirmed by any completed sweep` where it cannot - never `0`.
+      pulls = absent(
+        "unconfirmed",
+        standing(PULL_REQUEST_LANE, owner).reason ?? NO_SWEEP,
+      );
+    }
+
     return {
       chips: {
         security,
@@ -703,9 +749,7 @@ export function buildBoard(
           "dependencies",
           ofKind("update_pr"),
         ),
-        // No lane yet (Epic 3), so no sweep has confirmed anything:
-        // `unconfirmed`, never `0` (AD-28).
-        pulls: absent("unconfirmed", NO_COLLECTOR),
+        pulls,
         issues: fromLane(
           standing(ISSUE_LANE, owner),
           "issues",
@@ -791,7 +835,7 @@ export function buildBoard(
   // topic reads `unconfirmed` while no watched repository has a confirmed
   // chip for it: the Pull requests tile today, and every tile before the
   // first sweep.
-  const tiles: Tile[] = TOPICS.map(({ topic, label, kinds }) => {
+  const tiles: Tile[] = TOPICS.map(({ topic, label }) => {
     const chips = [...chipsBySlug.entries()].map(([slug, c]) => ({
       slug,
       chip: c[topic],
@@ -803,8 +847,11 @@ export function buildBoard(
         href: topicPath(topic),
         count: "unconfirmed",
         nowCount: 0,
-        reason:
-          kinds.length === 0 && topic !== "reviews" ? NO_COLLECTOR : NO_SWEEP,
+        // One reason left. Every topic in the queue has a lane now (#167), and
+        // Reviews has a collector too - it is simply not in the queue - so a
+        // tile with no confirmed chip beneath it is always a tile no sweep
+        // has spoken for.
+        reason: NO_SWEEP,
         warnings: warningsFor(topic, false),
       };
     }
