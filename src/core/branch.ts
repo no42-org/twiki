@@ -6,6 +6,9 @@
 /** The only prefix a branch ref carries. Tags and PR refs use their own. */
 const HEADS_PREFIX = "refs/heads/";
 
+/** GitHub's trigger for a run against a pull request's head. */
+const PULL_REQUEST_EVENT = "pull_request";
+
 /**
  * Whether a ref names the repository's default branch.
  *
@@ -75,9 +78,28 @@ export interface BranchRun {
  * have dropped 27% of them.
  */
 const NEVER_DEFAULT_BRANCH_EVENTS: ReadonlySet<string> = new Set([
-  "pull_request",
+  PULL_REQUEST_EVENT,
   "pull_request_target",
 ]);
+
+/**
+ * Whether a run is a pull request's checks - the run whose verdict answers
+ * "are this pull request's checks green".
+ *
+ * Beside the denylist above because the two are one decision about one field
+ * and must not drift, but NOT the same question: the denylist says which
+ * events are never a build of the default branch, and this says which are a
+ * build of a pull request. `pull_request_target` is in the first and not the
+ * second, deliberately. It runs the BASE repository's workflow definition
+ * rather than the head's, and nothing here has checked what `head_branch`
+ * reports for such a run, so keying it by that ref would be a guess - and a
+ * guess that could displace the `pull_request` run on the same ref, which is
+ * the one #161 exists to retain. It therefore keeps landing in the `other`
+ * bucket of `workflow_run`, exactly as it does today.
+ */
+export function isPullRequestRun(run: BranchRun): boolean {
+  return run.event === PULL_REQUEST_EVENT;
+}
 
 /**
  * Whether a workflow run is a build of the repository's default branch.

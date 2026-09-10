@@ -4,7 +4,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { isDefaultBranchRef, isDefaultBranchRun } from "../src/core/branch.js";
+import {
+  isDefaultBranchRef,
+  isDefaultBranchRun,
+  isPullRequestRun,
+} from "../src/core/branch.js";
 import { buildConfig, resolveDefaultBranch } from "../src/core/config.js";
 import { DEFAULT_POLICY } from "../src/core/types.js";
 
@@ -171,5 +175,41 @@ describe("isDefaultBranchRun", () => {
       true,
     );
     expect(isDefaultBranchRun(run("push", "refs/tags/v1"), "main")).toBe(false);
+  });
+});
+
+describe("isPullRequestRun", () => {
+  // The other half of the same decision about the same field, and NOT the
+  // complement of the one above: `pull_request_target` is never a build of
+  // the default branch and is not a pull request check either, so it stays a
+  // branch row (#161). The ref is read by nothing here - the event decides.
+  const run = (event: string) => ({ event, headBranch: "main" });
+
+  describe.each<[string, boolean]>([
+    ["pull_request", true],
+    ["pull_request_target", false],
+    ["push", false],
+    ["schedule", false],
+    ["dynamic", false],
+    ["some_future_event", false],
+  ])("%s", (event, expected) => {
+    it(`is ${expected}`, () => {
+      expect(isPullRequestRun(run(event))).toBe(expected);
+    });
+  });
+
+  it("reads the event and not the branch", () => {
+    // Both halves, because an implementation that also demanded a non-default
+    // ref would pass a check on either one alone - and it is exactly the
+    // fork's `main` that #141 was reported about.
+    expect(
+      isPullRequestRun({ event: "pull_request", headBranch: "main" }),
+    ).toBe(true);
+    expect(
+      isPullRequestRun({ event: "pull_request", headBranch: "feature/x" }),
+    ).toBe(true);
+    expect(isPullRequestRun({ event: "push", headBranch: "feature/x" })).toBe(
+      false,
+    );
   });
 });

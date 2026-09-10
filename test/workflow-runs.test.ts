@@ -7,14 +7,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { workflowRunsUrl } from "../src/github/port.js";
+import { DEFAULT_RANK_POLICY } from "../src/core/rank.js";
+import { type RawWorkflowRun, workflowRunsUrl } from "../src/github/port.js";
+import { buildQueue } from "../src/tricorder/attention/queue.js";
 import {
   collectWorkflowRuns,
   LANE,
   latestPerBucket,
+  normalisePullRequestRun,
   normaliseRun,
+  readWorkflowRun,
 } from "../src/tricorder/collect/workflow-runs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
+import { buildRepoView } from "../src/tricorder/web/repo-view.js";
 import { FakeGitHubReadPort, makeWorkflowRun } from "./fakes.js";
 
 const REPO = { owner: "no42-org", name: "packyard" };
@@ -42,7 +47,22 @@ describe("latest run per workflow and bucket", () => {
       ],
       "main",
     );
-    expect(latest.map((l) => l.run.runNumber)).toEqual([9, 8]);
+    // The whole structure, not the branch half of it: a page of pushes must
+    // leave the pull request side empty, and asserting only `branch` would
+    // pass just as happily if every run had been filed under both.
+    expect(latest).toEqual({
+      branch: [
+        {
+          run: expect.objectContaining({ runNumber: 9 }),
+          onDefaultBranch: true,
+        },
+        {
+          run: expect.objectContaining({ runNumber: 8 }),
+          onDefaultBranch: true,
+        },
+      ],
+      pullRequest: [],
+    });
   });
 
   it("keeps one run per workflow PER SIDE of the default-branch line", () => {
@@ -58,13 +78,19 @@ describe("latest run per workflow and bucket", () => {
       ],
       "main",
     );
-    expect(latest).toEqual([
-      {
-        run: expect.objectContaining({ runNumber: 9 }),
-        onDefaultBranch: false,
-      },
-      { run: expect.objectContaining({ runNumber: 7 }), onDefaultBranch: true },
-    ]);
+    expect(latest).toEqual({
+      branch: [
+        {
+          run: expect.objectContaining({ runNumber: 9 }),
+          onDefaultBranch: false,
+        },
+        {
+          run: expect.objectContaining({ runNumber: 7 }),
+          onDefaultBranch: true,
+        },
+      ],
+      pullRequest: [],
+    });
   });
 
   it("files the buckets by the repository's OWN default branch", () => {
@@ -78,13 +104,19 @@ describe("latest run per workflow and bucket", () => {
       ],
       "master",
     );
-    expect(latest).toEqual([
-      {
-        run: expect.objectContaining({ runNumber: 9 }),
-        onDefaultBranch: false,
-      },
-      { run: expect.objectContaining({ runNumber: 8 }), onDefaultBranch: true },
-    ]);
+    expect(latest).toEqual({
+      branch: [
+        {
+          run: expect.objectContaining({ runNumber: 9 }),
+          onDefaultBranch: false,
+        },
+        {
+          run: expect.objectContaining({ runNumber: 8 }),
+          onDefaultBranch: true,
+        },
+      ],
+      pullRequest: [],
+    });
   });
 
   it("treats a run with no head branch as not on the default branch", () => {
@@ -94,12 +126,205 @@ describe("latest run per workflow and bucket", () => {
       [makeWorkflowRun({ runNumber: 9, headBranch: null })],
       "main",
     );
-    expect(latest).toEqual([
-      {
-        run: expect.objectContaining({ runNumber: 9 }),
-        onDefaultBranch: false,
-      },
-    ]);
+    expect(latest).toEqual({
+      branch: [
+        {
+          run: expect.objectContaining({ runNumber: 9 }),
+          onDefaultBranch: false,
+        },
+      ],
+      pullRequest: [],
+    });
+  });
+
+  it("keeps one pull request check per HEAD REF, not one per workflow", () => {
+    // The #161 failure. One workflow, three open pull requests: the `other`
+    // bucket holds exactly one run across every non-default ref, so two of
+    // the three were unrepresented and which one survived was an accident of
+    // page order. Keyed by ref, all three are retained - and none of them is
+    // a branch row.
+    const latest = latestPerBucket(
+      [
+        makeWorkflowRun({
+          runNumber: 9,
+          headBranch: "dependabot/npm_and_yarn/a",
+          event: "pull_request",
+        }),
+        makeWorkflowRun({
+          runNumber: 8,
+          headBranch: "dependabot/npm_and_yarn/b",
+          event: "pull_request",
+        }),
+        makeWorkflowRun({
+          runNumber: 7,
+          headBranch: "dependabot/npm_and_yarn/c",
+          event: "pull_request",
+        }),
+      ],
+      "main",
+    );
+    expect(latest).toEqual({
+      branch: [],
+      pullRequest: [
+        {
+          run: expect.objectContaining({ runNumber: 9 }),
+          headRef: "dependabot/npm_and_yarn/a",
+        },
+        {
+          run: expect.objectContaining({ runNumber: 8 }),
+          headRef: "dependabot/npm_and_yarn/b",
+        },
+        {
+          run: expect.objectContaining({ runNumber: 7 }),
+          headRef: "dependabot/npm_and_yarn/c",
+        },
+      ],
+    });
+  });
+
+  it("keeps only the newest run on one head ref", () => {
+    // A re-run after a failure. Newest-first page, so the first one wins and
+    // the run it replaced is not retained at all.
+    const latest = latestPerBucket(
+      [
+        makeWorkflowRun({
+          runNumber: 9,
+          headBranch: "feature/x",
+          event: "pull_request",
+          conclusion: "success",
+        }),
+        makeWorkflowRun({
+          runNumber: 8,
+          headBranch: "feature/x",
+          event: "pull_request",
+          conclusion: "failure",
+        }),
+      ],
+      "main",
+    );
+    expect(latest).toEqual({
+      branch: [],
+      pullRequest: [
+        {
+          run: expect.objectContaining({ runNumber: 9, conclusion: "success" }),
+          headRef: "feature/x",
+        },
+      ],
+    });
+  });
+
+  it("keeps a pull request check and a branch run on the same ref apart", () => {
+    // The two key spaces, on one ref, from one page: the push is a branch row
+    // in the `other` bucket and the pull request check is not, so neither can
+    // supersede the other and the CI section lists only the push.
+    const latest = latestPerBucket(
+      [
+        makeWorkflowRun({
+          runNumber: 9,
+          headBranch: "feature/x",
+          event: "pull_request",
+        }),
+        makeWorkflowRun({ runNumber: 8, headBranch: "feature/x" }),
+      ],
+      "main",
+    );
+    expect(latest).toEqual({
+      branch: [
+        {
+          run: expect.objectContaining({ runNumber: 8 }),
+          onDefaultBranch: false,
+        },
+      ],
+      pullRequest: [
+        {
+          run: expect.objectContaining({ runNumber: 9 }),
+          headRef: "feature/x",
+        },
+      ],
+    });
+  });
+
+  it("files a fork's pull request on `main` as a check, never as a branch run", () => {
+    // #141's fixture, read through #161. The event decides, so the name the
+    // head repository gave the branch cannot put it in the default bucket -
+    // and it is now not a branch row at all.
+    const latest = latestPerBucket(
+      [
+        makeWorkflowRun({
+          runNumber: 9,
+          headBranch: "main",
+          event: "pull_request",
+          conclusion: "failure",
+        }),
+        makeWorkflowRun({ runNumber: 8, headBranch: "main" }),
+      ],
+      "main",
+    );
+    expect(latest).toEqual({
+      branch: [
+        {
+          run: expect.objectContaining({ runNumber: 8 }),
+          onDefaultBranch: true,
+        },
+      ],
+      pullRequest: [
+        { run: expect.objectContaining({ runNumber: 9 }), headRef: "main" },
+      ],
+    });
+  });
+
+  it("keeps a pull request run that names no head ref as a branch row", () => {
+    // There is no ref to key a check by and no pull request such a run could
+    // be matched to - but it was an `other` branch row before #161, and
+    // dropping it from both sides would retain the run NOWHERE. It stays
+    // where it was.
+    const latest = latestPerBucket(
+      [
+        makeWorkflowRun({
+          runNumber: 9,
+          headBranch: null,
+          event: "pull_request",
+        }),
+      ],
+      "main",
+    );
+    expect(latest).toEqual({
+      branch: [
+        {
+          run: expect.objectContaining({ runNumber: 9 }),
+          onDefaultBranch: false,
+        },
+      ],
+      pullRequest: [],
+    });
+  });
+
+  it("leaves `pull_request_target` where it is: a branch row", () => {
+    // The retention rule names `pull_request` alone. `pull_request_target`
+    // runs the base repository's workflow definition and nothing here has
+    // checked what it reports as `head_branch`, so keying it by that ref
+    // would be a guess - and a guess that could displace the `pull_request`
+    // run on the same ref. It stays denylisted from the default bucket by
+    // #141 and stays a branch row, exactly as before.
+    const latest = latestPerBucket(
+      [
+        makeWorkflowRun({
+          runNumber: 9,
+          headBranch: "main",
+          event: "pull_request_target",
+        }),
+      ],
+      "main",
+    );
+    expect(latest).toEqual({
+      branch: [
+        {
+          run: expect.objectContaining({ runNumber: 9 }),
+          onDefaultBranch: false,
+        },
+      ],
+      pullRequest: [],
+    });
   });
 });
 
@@ -135,6 +360,12 @@ describe("the Actions lane (story 15)", () => {
 
   const current = () =>
     store.currentByType("workflow_run").filter((c) => c.state === "present");
+
+  /** The pull request checks: the same rows, under the other type (#161). */
+  const currentPr = () =>
+    store
+      .currentByType("pull_request_workflow_run")
+      .filter((c) => c.state === "present");
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "actions-"));
@@ -704,27 +935,44 @@ describe("the Actions lane (story 15)", () => {
     const r = await collectWorkflowRuns(deps(), "no42-org", "full");
 
     expect(r.outcome).toBe("ok");
-    // Both rows survive: the push in the default bucket, the pull request in
-    // the other one. Neither tombstones the other, because they are no
-    // longer in the same bucket.
+    // Both rows survive, and under DIFFERENT TYPES since #161: the push is
+    // the repository's only `workflow_run`, and the fork's pull request is a
+    // check. Neither tombstones the other, because they share no key space.
     expect(
       current()
         .map((c) => c.subject.key)
         .sort(),
-    ).toEqual(["WFR_2", "WFR_9"]);
+    ).toEqual(["WFR_2"]);
     const push = current().find((c) => c.subject.key === "WFR_2");
     expect(push?.payload).toMatchObject({ event: "push", headBranch: "main" });
+    expect(currentPr().map((c) => [c.subject.key, c.payload])).toEqual([
+      [
+        "WFR_9",
+        expect.objectContaining({
+          event: "pull_request",
+          headBranch: "main",
+          conclusion: "failure",
+        }),
+      ],
+    ]);
     // And the repository is not reported broken on a stranger's evidence.
+    // One workflow, over the branch rows only: the check is not counted here
+    // because no section it could explain lists it.
     expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
       { workflows: 1, failing: 0 },
     );
   });
 
-  it("reclassifies a stored fork run out of the default bucket on one sweep", async () => {
+  it("retires a stored fork run from `workflow_run` on one sweep", async () => {
     // A store written under the branch-only rule holds the fork run in the
     // default bucket. The event is already in every stored payload, so the
-    // first sweep that reads it moves the row without a migration, and the
-    // genuine push row is not tombstoned for having been in the wrong one.
+    // first sweep that reads it acts without a migration, and the genuine
+    // push row is not tombstoned for having been in the wrong bucket.
+    //
+    // #141 moved such a row to the `other` bucket. #161 moves it out of the
+    // type entirely: the rule that a fork's pull request is not a build of
+    // main is unchanged, and is now carried by the subject type rather than
+    // by the bucket.
     const first = store.beginRun({
       lane: LANE,
       installation: "no42-org",
@@ -755,14 +1003,26 @@ describe("the Actions lane (story 15)", () => {
 
     await collectWorkflowRuns(deps(), "no42-org", "full");
 
-    // The newer push supersedes the older push. The fork's run belongs to
-    // the other bucket, which the page never observed, so it survives -
-    // whereas filing it by branch alone would have tombstoned it here.
+    // The newer push supersedes the older push, and the fork's run is retired
+    // from this type - on sight, not because the page carried it, which it
+    // does not. Nothing under `workflow_run` claims a pull request any more.
     expect(
       current()
         .map((c) => c.subject.key)
         .sort(),
-    ).toEqual(["WFR_12", "WFR_9"]);
+    ).toEqual(["WFR_12"]);
+    expect(
+      current().map((c) => (c.payload as { event: string }).event),
+    ).toEqual(["push"]);
+    // And it is retired, not merely outranked - beside the older push, which
+    // the newer one superseded in the ordinary way.
+    expect(
+      store
+        .currentByType("workflow_run")
+        .filter((c) => c.state === "resolved")
+        .map((c) => c.subject.key)
+        .sort(),
+    ).toEqual(["WFR_2", "WFR_9"]);
     expect(store.currentByType("repository_actions")[0]?.payload).toMatchObject(
       { failing: 0 },
     );
@@ -1397,5 +1657,561 @@ describe("the Actions lane (story 15)", () => {
   it("writes run rows under its own lane name", async () => {
     await collectWorkflowRuns(deps(), "no42-org", "full");
     expect(store.latestRuns(1)[0]?.lane).toBe(LANE);
+  });
+
+  describe("pull request checks (#161)", () => {
+    /**
+     * A `pull_request` run on one head ref. Typed rather than cast: with
+     * `Record<string, unknown>` a misspelled `headbranch` compiled and
+     * silently took the default, which is the fixture quietly testing
+     * something else.
+     */
+    const prRun = (over: Partial<RawWorkflowRun>) =>
+      makeWorkflowRun({ event: "pull_request", ...over });
+
+    /**
+     * The pull request checks as (key, head ref, conclusion), sorted.
+     *
+     * Read through the guard every reader of these rows uses, not cast: a row
+     * the guard would refuse must not be able to satisfy an assertion here.
+     */
+    const prRows = () =>
+      currentPr()
+        .map((c) => {
+          const p = readWorkflowRun(c.payload);
+          return [c.subject.key, p?.headBranch, p?.conclusion];
+        })
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+
+    it("keeps one check per open pull request, and the branch row unchanged", async () => {
+      // The whole point. Three open pull requests on one workflow: the
+      // `other` bucket could represent one of them, and which one was an
+      // accident of page order.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({ runNumber: 9, nodeId: "WFR_a", headBranch: "pr/a" }),
+        prRun({
+          runNumber: 8,
+          nodeId: "WFR_b",
+          headBranch: "pr/b",
+          conclusion: "failure",
+        }),
+        // A SECOND workflow, and only on a pull request. It is what makes
+        // the workflow count below discriminating: folded in, the count
+        // would read 2 above a CI section listing one workflow's row.
+        prRun({
+          runNumber: 7,
+          nodeId: "WFR_c",
+          headBranch: "pr/c",
+          workflowId: 200,
+          workflowName: "Release",
+        }),
+        makeWorkflowRun({
+          runNumber: 6,
+          nodeId: "WFR_main",
+          headBranch: "main",
+          conclusion: "failure",
+        }),
+      ]);
+
+      const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      expect(r.outcome).toBe("ok");
+      // One check in full, subject and all ten payload fields, built by the
+      // exported normaliser so the shape it promises is the shape stored: a
+      // three-field check would hold with `workflowName` or `htmlUrl`
+      // dropped.
+      const check = currentPr().find((c) => c.subject.key === "WFR_b");
+      expect({ subject: check?.subject, payload: check?.payload }).toEqual(
+        normalisePullRequestRun(
+          prRun({
+            runNumber: 8,
+            nodeId: "WFR_b",
+            headBranch: "pr/b",
+            conclusion: "failure",
+          }),
+        ),
+      );
+      // All three pull requests are represented, each by its own ref.
+      expect(prRows()).toEqual([
+        ["WFR_a", "pr/a", "success"],
+        ["WFR_b", "pr/b", "failure"],
+        ["WFR_c", "pr/c", "success"],
+      ]);
+      // And `workflow_run` holds exactly the default-branch row it would
+      // have held with no pull request in sight - whole payload, because a
+      // check on the key alone would pass with the payload rewritten.
+      expect(current().map((c) => [c.subject.key, c.payload])).toEqual([
+        [
+          "WFR_main",
+          {
+            repo: "no42-org/packyard",
+            workflowId: 100,
+            workflowName: "CI",
+            runNumber: 6,
+            status: "completed",
+            conclusion: "failure",
+            headBranch: "main",
+            event: "push",
+            htmlUrl: "https://github.com/no42-org/packyard/actions/runs/1",
+            createdAt: "2026-08-18T00:00:00.000Z",
+          },
+        ],
+      ]);
+      // TWO workflows: `CI`, which has a branch row, and `Release`, which
+      // only ever ran on a pull request. The count says how many workflows
+      // this repository HAS, so it spans both types - counting the branch
+      // rows alone would call a `pull_request`-only workflow no workflow at
+      // all. `failing` stays branch-only: a red check is not a red main.
+      expect(
+        store.currentByType("repository_actions")[0]?.payload,
+      ).toMatchObject({ workflows: 2, failing: 1 });
+    });
+
+    it("supersedes a re-run on the same ref, and tombstones nothing by absence", async () => {
+      // Sweep 1: two pull requests, each with a failing check.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({
+          runNumber: 1,
+          nodeId: "WFR_1",
+          headBranch: "pr/a",
+          conclusion: "failure",
+        }),
+        prRun({
+          runNumber: 2,
+          nodeId: "WFR_2",
+          headBranch: "pr/b",
+          conclusion: "failure",
+        }),
+      ]);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      // Sweep 2: `pr/a` was re-run green. `pr/b` merged, so no further run
+      // will ever appear on its ref and it has fallen out of the window.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({
+          runNumber: 3,
+          nodeId: "WFR_3",
+          headBranch: "pr/a",
+          conclusion: "success",
+        }),
+      ]);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      // The re-run replaced the row for its own ref, and only that one: the
+      // merged pull request's row is superseded by nothing, so it stays.
+      expect(prRows()).toEqual([
+        ["WFR_2", "pr/b", "failure"],
+        ["WFR_3", "pr/a", "success"],
+      ]);
+      // And the row that WAS superseded is gone, not merely outranked.
+      expect(
+        store
+          .currentByType("pull_request_workflow_run")
+          .filter((c) => c.state === "resolved")
+          .map((c) => c.subject.key),
+      ).toEqual(["WFR_1"]);
+    });
+
+    it("confirms a carried check only where the page's window reaches it", async () => {
+      // The same window rule as the branch rows, on the type story 3.5 reads
+      // the freshness of. A ref whose last check sits outside the page proves
+      // nothing by its absence: with more than a hundred newer runs a newer
+      // check can sit outside it too, and badging the stored one fresh would
+      // say "these checks are current" about a page that never saw them.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({
+          runNumber: 1,
+          nodeId: "WFR_near",
+          headBranch: "pr/near",
+          createdAt: "2026-08-16T00:00:00.000Z",
+        }),
+        prRun({
+          runNumber: 2,
+          nodeId: "WFR_far",
+          headBranch: "pr/far",
+          createdAt: "2026-08-14T00:00:00.000Z",
+        }),
+      ]);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+      const before = Object.fromEntries(
+        currentPr().map((c) => [c.subject.key, c.verifiedAt]),
+      );
+
+      // A page reaching back only to the 15th: `pr/near` is inside it,
+      // `pr/far` is not.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({
+          runNumber: 3,
+          nodeId: "WFR_other",
+          headBranch: "pr/other",
+          createdAt: "2026-08-15T00:00:00.000Z",
+        }),
+      ]);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      const after = Object.fromEntries(
+        currentPr().map((c) => [c.subject.key, c.verifiedAt]),
+      );
+      // All three present: neither carried row was superseded.
+      expect(Object.keys(after).sort()).toEqual([
+        "WFR_far",
+        "WFR_near",
+        "WFR_other",
+      ]);
+      expect(after.WFR_near).not.toBe(before.WFR_near);
+      expect(after.WFR_far).toBe(before.WFR_far);
+    });
+
+    it("keeps a check away from the repository page and the ci_failure pass", async () => {
+      // The reason these are a subject type rather than a third bucket: both
+      // readers ask the store for `workflow_run`, so neither can see a check.
+      //
+      // The page half is what actually changes, and what fails if the rows go
+      // under `workflow_run`: `buildRepoView` lists that type unfiltered. The
+      // queue half is a regression guard and nothing more - its pass already
+      // runs every row through `isDefaultBranchRun`, which denylists the
+      // event, so it ignored these runs before this change and would ignore
+      // them if they were written under `workflow_run` again. No fixture
+      // makes it discriminate; only the page can.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({
+          runNumber: 9,
+          nodeId: "WFR_pr",
+          headBranch: "pr/a",
+          conclusion: "failure",
+          createdAt: "2026-08-18T19:30:00.000Z",
+          // Distinct from the push below, so the assertion on the queue item
+          // can tell the two runs apart: the fake gives every run the same
+          // link, and with that link shared the test would hold whichever
+          // run the pass had picked.
+          htmlUrl: "https://github.com/no42-org/packyard/actions/runs/9",
+        }),
+        makeWorkflowRun({
+          runNumber: 8,
+          nodeId: "WFR_main",
+          headBranch: "main",
+          conclusion: "failure",
+          createdAt: "2026-08-18T19:30:00.000Z",
+          htmlUrl: "https://github.com/no42-org/packyard/actions/runs/8",
+        }),
+      ]);
+
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      const now = new Date("2026-08-18T20:30:00.000Z");
+      const view = buildRepoView(store, REPO, now, {
+        policy: { cadenceMs: 15 * 60_000 },
+        actionsPolicy: { cadenceMs: 60 * 60_000 },
+        defaultBranch: "main",
+      });
+      // The CI section lists branch runs and nothing else.
+      expect(view.runs.map((r) => [r.key, r.headBranch, r.event])).toEqual([
+        ["WFR_main", "main", "push"],
+      ]);
+
+      const { items } = buildQueue(store, now, {
+        policy: { cadenceMs: 15 * 60_000 },
+        kevPolicy: { cadenceMs: 24 * 60 * 60_000 },
+        actionsPolicy: { cadenceMs: 60 * 60_000 },
+        rankPolicy: DEFAULT_RANK_POLICY,
+        hungAfterMs: HUNG_AFTER_MS,
+        defaultBranchOf: () => "main",
+      });
+      // One broken build, from the push. The failing pull request check is
+      // not a second one, and not the one that got picked either.
+      expect(
+        items
+          .filter((i) => i.kind === "ci_failure")
+          .map((i) => i.htmlUrl ?? i.key),
+      ).toEqual(["https://github.com/no42-org/packyard/actions/runs/8"]);
+    });
+
+    it("a 304 confirms the checks as well as the branch rows", async () => {
+      // The listing both were selected from has not changed, so both are
+      // still the latest of their bucket. Left out, every check would age
+      // into stale on a quiet repository while the rows beside it stayed
+      // fresh - and story 3.5 reads the freshness.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({ runNumber: 1, nodeId: "WFR_pr", headBranch: "pr/a" }),
+        makeWorkflowRun({ runNumber: 2, nodeId: "WFR_main" }),
+      ]);
+      github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+      const before = currentPr()[0];
+
+      github.workflowRunNotModified.add("no42-org/packyard");
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      const after = currentPr()[0];
+      expect(after?.subject.key).toBe("WFR_pr");
+      expect(after?.observedAt).toBe(before?.observedAt);
+      expect(after?.verifiedAt).not.toBe(before?.verifiedAt);
+    });
+
+    it("freezes both types when a payload on the page could not be read", async () => {
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({
+          runNumber: 1,
+          nodeId: "WFR_1",
+          headBranch: "pr/a",
+          conclusion: "failure",
+        }),
+      ]);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      // A newer run on the same ref, on a page that also carried something
+      // unreadable: the unreadable payload might have been newer still, so
+      // superseding is not honest on either type.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({
+          runNumber: 2,
+          nodeId: "WFR_2",
+          headBranch: "pr/a",
+          conclusion: "success",
+        }),
+      ]);
+      github.workflowRunUnreadable.set("no42-org/packyard", 1);
+      const r = await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      expect(r.outcome).toBe("partial");
+      expect(prRows()).toEqual([
+        ["WFR_1", "pr/a", "failure"],
+        ["WFR_2", "pr/a", "success"],
+      ]);
+    });
+
+    it("never compares two repositories that share a workflow id", async () => {
+      // The retention key carries no repository, and the grouping by slug is
+      // what makes that safe. Same workflow id, same head ref name, two
+      // repositories: neither may supersede the other.
+      watched.push({ owner: "no42-org", name: "twiki" });
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({ runNumber: 1, nodeId: "WFR_p", headBranch: "pr/a" }),
+      ]);
+      github.workflowRuns.set("no42-org/twiki", [
+        {
+          ...prRun({ runNumber: 1, nodeId: "WFR_t", headBranch: "pr/a" }),
+          repo: { owner: "no42-org", name: "twiki" },
+        },
+      ]);
+
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      expect(
+        currentPr()
+          .map((c) => [c.subject.key, (c.payload as { repo: string }).repo])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      ).toEqual([
+        ["WFR_p", "no42-org/packyard"],
+        ["WFR_t", "no42-org/twiki"],
+      ]);
+    });
+
+    it("retires a pre-#161 row whose run is not on the page at all", async () => {
+      // The case the node-identity rule missed. Re-run the pull request once,
+      // or merge it, and the legacy row's run is no longer the newest on its
+      // ref - so no observation rewrites it. `pull_request` runs no longer
+      // enter the branch buckets either, so nothing supersedes it: left to
+      // those rules it would sit under `workflow_run` for ever, confirmed
+      // fresh by every sweep, and rendered by the CI section.
+      const first = store.beginRun({
+        lane: LANE,
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-08-18T19:00:00.000Z",
+      });
+      store.recordObservations(first, "2026-08-18T19:00:00.000Z", [
+        normaliseRun(
+          prRun({
+            runNumber: 9,
+            nodeId: "WFR_old",
+            headBranch: "pr/a",
+            conclusion: "failure",
+            createdAt: "2026-08-18T18:00:00.000Z",
+          }),
+        ),
+      ]);
+      store.finishRun(first, "ok", "2026-08-18T19:00:00.000Z");
+
+      // The page carries the RE-RUN on that ref, and not the old run.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({
+          runNumber: 10,
+          nodeId: "WFR_new",
+          headBranch: "pr/a",
+          createdAt: "2026-08-18T19:30:00.000Z",
+        }),
+      ]);
+
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      // Nothing present under `workflow_run` claims a pull request.
+      expect(current().map((c) => readWorkflowRun(c.payload)?.event)).toEqual(
+        [],
+      );
+      expect(
+        store
+          .currentByType("workflow_run")
+          .filter((c) => c.state === "resolved")
+          .map((c) => c.subject.key),
+      ).toEqual(["WFR_old"]);
+      // And the reader that lists that type unfiltered shows none.
+      const view = buildRepoView(
+        store,
+        REPO,
+        new Date("2026-08-18T20:30:00.000Z"),
+        {
+          policy: { cadenceMs: 15 * 60_000 },
+          actionsPolicy: { cadenceMs: 60 * 60_000 },
+          defaultBranch: "main",
+        },
+      );
+      expect(view.runs).toEqual([]);
+      // The re-run is retained, as a check.
+      expect(prRows()).toEqual([["WFR_new", "pr/a", "success"]]);
+    });
+
+    it("never reports no workflows for a repository whose workflows all run on pull requests", async () => {
+      // The confident zero, reached from the other direction. Counting only
+      // the branch rows would publish `workflows: 0`, freshly badged, about a
+      // repository with two workflows - and `actionsVouched` would go on
+      // vouching for it, because zero is a number.
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({ runNumber: 1, nodeId: "WFR_1", headBranch: "pr/a" }),
+        prRun({
+          runNumber: 2,
+          nodeId: "WFR_2",
+          headBranch: "pr/b",
+          workflowId: 200,
+          workflowName: "Release",
+        }),
+      ]);
+
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      expect(current()).toEqual([]);
+      expect(store.currentByType("repository_actions")[0]?.payload).toEqual({
+        repo: "no42-org/packyard",
+        workflows: 2,
+        // No branch run at all, so nothing can say main is broken.
+        failing: 0,
+      });
+    });
+
+    it("reports the same counters whether GitHub answered 200 or 304", async () => {
+      // #142 exists because these two paths disagreed once. They count over
+      // different variables, so only a test holds them to one answer - and
+      // the fixture spans both types, with a workflow that exists ONLY as a
+      // check, which is what a branch-only count on either path would drop.
+      github.workflowRuns.set("no42-org/packyard", [
+        makeWorkflowRun({
+          runNumber: 1,
+          nodeId: "WFR_main",
+          conclusion: "failure",
+        }),
+        prRun({
+          runNumber: 2,
+          nodeId: "WFR_pr",
+          headBranch: "pr/a",
+          workflowId: 200,
+          workflowName: "Release",
+        }),
+      ]);
+      github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+      const fetched = store.currentByType("repository_actions")[0]?.payload;
+
+      github.workflowRunNotModified.add("no42-org/packyard");
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+      const notModified = store.currentByType("repository_actions")[0]?.payload;
+
+      expect(fetched).toEqual({
+        repo: "no42-org/packyard",
+        workflows: 2,
+        failing: 1,
+      });
+      expect(notModified).toEqual(fetched);
+    });
+
+    it("counts no misfiled row on either path", async () => {
+      // A pre-#161 row is on its way out. Counting it on the 304 path while
+      // the 200 path retires it would put the two paths back into the #142
+      // disagreement by another route.
+      const first = store.beginRun({
+        lane: LANE,
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-08-18T19:00:00.000Z",
+      });
+      store.recordObservations(first, "2026-08-18T19:00:00.000Z", [
+        normaliseRun(makeWorkflowRun({ runNumber: 1, nodeId: "WFR_main" })),
+        normaliseRun(
+          prRun({
+            runNumber: 2,
+            nodeId: "WFR_old",
+            headBranch: "pr/a",
+            workflowId: 200,
+            workflowName: "Release",
+          }),
+        ),
+      ]);
+      store.finishRun(first, "ok", "2026-08-18T19:00:00.000Z");
+
+      // A 304 first: the misfiled row must not be counted as a workflow of
+      // its own, because the very next 200 will retire it.
+      github.workflowRunValidators.set("no42-org/packyard", VALIDATOR);
+      store.saveValidator(
+        "no42-org",
+        workflowRunsUrl(REPO),
+        VALIDATOR,
+        "2026-08-18T19:00:00.000Z",
+      );
+      github.workflowRunNotModified.add("no42-org/packyard");
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+      const notModified = store.currentByType("repository_actions")[0]?.payload;
+
+      github.workflowRunNotModified.delete("no42-org/packyard");
+      github.workflowRuns.set("no42-org/packyard", [
+        makeWorkflowRun({ runNumber: 1, nodeId: "WFR_main" }),
+      ]);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+      const fetched = store.currentByType("repository_actions")[0]?.payload;
+
+      expect(notModified).toEqual({
+        repo: "no42-org/packyard",
+        workflows: 1,
+        failing: 0,
+      });
+      expect(fetched).toEqual(notModified);
+    });
+
+    it("retires the `workflow_run` copy a pre-#161 store holds for the same run", async () => {
+      // Before this change a `pull_request` run was stored as a
+      // `workflow_run` in the `other` bucket. It is stored under its own type
+      // now, so without this the same run would be present twice - once in a
+      // CI section that is supposed to list branch runs only. Superseded by
+      // the run ITSELF, freshly observed on this page, not by absence.
+      const first = store.beginRun({
+        lane: LANE,
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-08-18T19:00:00.000Z",
+      });
+      store.recordObservations(first, "2026-08-18T19:00:00.000Z", [
+        normaliseRun(
+          prRun({ runNumber: 9, nodeId: "WFR_9", headBranch: "pr/a" }),
+        ),
+      ]);
+      store.finishRun(first, "ok", "2026-08-18T19:00:00.000Z");
+      expect(current().map((c) => c.subject.key)).toEqual(["WFR_9"]);
+
+      github.workflowRuns.set("no42-org/packyard", [
+        prRun({ runNumber: 9, nodeId: "WFR_9", headBranch: "pr/a" }),
+      ]);
+      await collectWorkflowRuns(deps(), "no42-org", "full");
+
+      expect(current()).toHaveLength(0);
+      expect(prRows()).toEqual([["WFR_9", "pr/a", "success"]]);
+    });
   });
 });

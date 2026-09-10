@@ -30,6 +30,17 @@ export const SUBJECT_TYPES = [
   // the value as changing on every sweep.
   "dependabot_update_status",
   "workflow_run",
+  // A pull request's checks: the newest `pull_request`-event workflow run on
+  // one head ref, retained by the Actions lane from the page it already
+  // fetches. Its own type rather than a third bucket on `workflow_run`
+  // (#161), because a single type with a filter puts the correctness in
+  // every present and future reader of `workflow_run` - the repository
+  // page's CI list, the queue's `ci_failure` pass, and whatever is added
+  // next. Two types make "the CI section lists a pull request check" a thing
+  // that cannot happen rather than a thing every reader must remember not to
+  // do. The payload is a WorkflowRunObservation exactly as `workflow_run`'s
+  // is, and the key is the same node id; only the type differs.
+  "pull_request_workflow_run",
   // Per-repository confirmation from the Actions lane: "we swept this
   // repository, and this is what it had". Its own subject for the same
   // reason repository_coverage is: a repository with no workflows has no
@@ -147,9 +158,23 @@ export function alertSubject(
   return { type, key: `${subjectSlug(repo)}#${alertNumber}` };
 }
 
-/** Issues, pull requests and workflow runs all have a GitHub node id. */
+/**
+ * Issues, pull requests and workflow runs all have a GitHub node id.
+ *
+ * One run can be written under two of these types over its lifetime - a
+ * `workflow_run` row stored before #161, and the `pull_request_workflow_run`
+ * row the lane writes for it now - and they are DIFFERENT subjects sharing a
+ * key. That is deliberate: the type is what keeps a pull request check out of
+ * every reader of `workflow_run`. The lane retires the old row explicitly
+ * rather than relying on the key to collide.
+ */
 export function nodeSubject(
-  type: "dependency_update_pr" | "workflow_run" | "issue" | "review_request",
+  type:
+    | "dependency_update_pr"
+    | "workflow_run"
+    | "pull_request_workflow_run"
+    | "issue"
+    | "review_request",
   nodeId: string,
 ): Subject {
   return { type, key: nodeId };
