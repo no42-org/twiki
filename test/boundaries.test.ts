@@ -296,7 +296,13 @@ const ENTRYPOINTS: Record<
   },
 };
 
-describe.sequential("module boundaries (AD-5)", () => {
+// Every probe in this file shells out to `biome lint` - once per directory
+// per extension, and again per entrypoint file - so a single test here is
+// dozens of process spawns and legitimately takes seconds. Vitest's 5s
+// default killed them under load and the failure read as flake. The budget
+// is granted HERE rather than raised globally, so a pure in-memory test
+// somewhere else still fails fast when it genuinely hangs.
+describe.sequential("module boundaries (AD-5)", { timeout: 120_000 }, () => {
   const gitStatus = () =>
     execFileSync("git", ["status", "--porcelain", SRC], { encoding: "utf8" });
 

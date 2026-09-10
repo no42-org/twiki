@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   type Bump,
   type CheckStatus,
@@ -35,12 +37,14 @@ import type {
   RawPullRequest,
   RawRepoMeta,
   RawReviewRequest,
+  RawSecretScanningAlert,
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
   ReleaseState,
   RequestValidator,
   ReviewRequestPage,
+  SecretScanningAlertPage,
   UnlistedRepo,
   UpdatePrPage,
   WorkflowRunPage,
@@ -124,6 +128,35 @@ export function makeCodeScanningAlert(
     tool: "Trivy",
     ref: "refs/heads/main",
     htmlUrl: `https://github.com/${repo.owner}/${repo.name}/security/code-scanning/${number}`,
+    createdAt: "2026-08-01T00:00:00.000Z",
+    ...partial,
+  };
+}
+
+/**
+ * A secret scanning alert fixture with sensible defaults.
+ *
+ * `validity` defaults to `active`, so a test that means "GitHub said nothing
+ * about this token" has to say `unknown` out loud rather than get it by
+ * omission. There is no `secret` field to default, here or anywhere: the
+ * credential is not part of the type.
+ */
+export function makeSecretScanningAlert(
+  partial: Partial<RawSecretScanningAlert> = {},
+): RawSecretScanningAlert {
+  // Derived from the repository and the number, as the real payload's own
+  // html_url is: a constant made every row's link identical, so a
+  // rendered-HTML assertion over two rows could not tell them apart.
+  const number = partial.number ?? 1;
+  const repo = partial.repo ?? { owner: "no42-org", name: "twiki" };
+  return {
+    number,
+    repo,
+    state: "open",
+    secretType: "GitHub Personal Access Token",
+    validity: "active",
+    publiclyLeaked: false,
+    htmlUrl: `https://github.com/${repo.owner}/${repo.name}/security/secret-scanning/${number}`,
     createdAt: "2026-08-01T00:00:00.000Z",
     ...partial,
   };
@@ -333,6 +366,23 @@ export class FakeEnrichmentPort implements EnrichmentPort {
 
 /** GitHub's measured body when a repository has nothing analysed (#152). */
 const CODE_SCANNING_NO_ANALYSIS = "no analysis found";
+
+/**
+ * GitHub's measured body when secret scanning is off (#152, #158).
+ *
+ * Measured live on `CoolModFiles` on 2026-09-09 and recorded verbatim in
+ * `test/fixtures/github/secret-scanning-404.json`. Read from the fixture
+ * rather than typed here, so the fake and the adapter contract test are
+ * quoting the same recording and cannot drift into two different sentences.
+ */
+const SECRET_SCANNING_OFF: string = (
+  JSON.parse(
+    readFileSync(
+      join(import.meta.dirname, "fixtures/github/secret-scanning-404.json"),
+      "utf8",
+    ),
+  ) as { message: string }
+).message;
 
 /** What a 200 from either security-feature probe looks like. */
 const COVERED_FEATURE: FeatureProbe = {
@@ -657,6 +707,92 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       notModified: false,
       truncated: this.codeScanningTruncated.has(org),
       validator: this.codeScanningValidators.get(org) ?? null,
+    };
+  }
+
+  /** Secret scanning alerts per lowercase org login, for the org-level path. */
+  orgSecretScanningAlerts = new Map<string, RawSecretScanningAlert[]>();
+  /** Secret scanning alerts per lowercase `owner/name`, for the fan-out. */
+  repoSecretScanningAlerts = new Map<string, RawSecretScanningAlert[]>();
+  /** Payloads the mapper would have dropped, per org or per repo slug. */
+  secretScanningUnreadable = new Map<string, number>();
+  /** Orgs whose next conditional read answers 304. Unconditional still 200s. */
+  secretScanningNotModified = new Set<string>();
+  /** Orgs whose listing stops at the pagination cap. */
+  secretScanningTruncated = new Set<string>();
+  /** Validator a 200 hands back, per org; null mimics a multi-page listing. */
+  secretScanningValidators = new Map<string, RequestValidator>();
+  /** What each call carried, so a test can assert conditionality. */
+  secretScanningCachedSeen: (RequestValidator | null)[] = [];
+  /** The account and the repository list each call was given. */
+  secretScanningQueries: { org: string; repos: readonly RepoRef[] }[] = [];
+  /** Orgs whose secret scanning read should fail outright. */
+  secretScanningFailingOrgs = new Set<string>();
+  /** Repos GitHub answered with the feature switched off, on the fan-out. */
+  secretScanningSkipped = new Set<string>();
+  /** Repos the fan-out could not read at all. */
+  secretScanningUnreachable = new Set<string>();
+
+  async listSecretScanningAlerts(
+    org: string,
+    repos: readonly RepoRef[] = [],
+    cached: RequestValidator | null = null,
+  ): Promise<SecretScanningAlertPage> {
+    // Recorded before any early return, for the reason the two fakes above
+    // state: a test asserting the lane sends no validator on the fan-out has
+    // nothing to assert against otherwise.
+    this.secretScanningCachedSeen.push(cached);
+    this.secretScanningQueries.push({ org, repos });
+    if (this.secretScanningFailingOrgs.has(org)) {
+      throw new Error(`fake: ${org} secret scanning is unreachable`);
+    }
+    if (this.userAccounts.has(org)) {
+      const alerts: RawSecretScanningAlert[] = [];
+      let unreadable = 0;
+      const unreachable: UnlistedRepo[] = [];
+      const skipped: UnlistedRepo[] = [];
+      for (const repo of repos) {
+        const slug = repoSlug(repo).toLowerCase();
+        if (this.secretScanningSkipped.has(slug)) {
+          skipped.push({ repo, reason: SECRET_SCANNING_OFF });
+          continue;
+        }
+        if (this.secretScanningUnreachable.has(slug)) {
+          unreachable.push({ repo, reason: null });
+          continue;
+        }
+        alerts.push(...(this.repoSecretScanningAlerts.get(slug) ?? []));
+        unreadable += this.secretScanningUnreadable.get(slug) ?? 0;
+      }
+      return {
+        alerts,
+        unreadable,
+        unreachable,
+        skipped,
+        notModified: false,
+        truncated: false,
+        validator: null,
+      };
+    }
+    if (cached && this.secretScanningNotModified.has(org)) {
+      return {
+        alerts: [],
+        unreadable: 0,
+        unreachable: [],
+        skipped: [],
+        notModified: true,
+        truncated: false,
+        validator: cached,
+      };
+    }
+    return {
+      alerts: this.orgSecretScanningAlerts.get(org) ?? [],
+      unreadable: this.secretScanningUnreadable.get(org) ?? 0,
+      unreachable: [],
+      skipped: [],
+      notModified: false,
+      truncated: this.secretScanningTruncated.has(org),
+      validator: this.secretScanningValidators.get(org) ?? null,
     };
   }
 

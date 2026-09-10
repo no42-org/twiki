@@ -6,7 +6,7 @@
 /* biome-ignore-all lint/a11y/noRedundantRoles: the table roles are implied by the elements at desktop width only; the phone cards restyle them to `display: block`, and a browser then drops the implied role. Stating it survives that (EXPERIENCE.md Accessibility Floor). */
 
 import type { Child, FC, PropsWithChildren } from "hono/jsx";
-import { joinNotes } from "../../core/coverage.js";
+import { FEATURE_LABELS, joinNotes } from "../../core/coverage.js";
 import { isBrokenVerdict, type RunVerdict } from "../../core/run-verdict.js";
 import { safeUrl } from "../../core/safe-url.js";
 import { foldSlug } from "../../core/slug.js";
@@ -796,6 +796,12 @@ const QueueRow: FC<{ item: QueueItem; rank: number; linked: boolean }> = ({
           // them both starts with a word the reader has to parse. The badge
           // is what tells them apart at a glance.
           <span class="badge">scan</span>
+        ) : item.kind === "secret_scanning" ? (
+          // Three families now share that number space, and this is the one
+          // whose row is always at the top of the queue: a reader scanning
+          // for what to do first needs to see WHY without reading the
+          // rationale (#158).
+          <span class="badge">secret</span>
         ) : item.kind === "ci_failure" ? (
           // A run number looks exactly like an issue or pull request number,
           // and the rationale beside it calls the thing a workflow run: the
@@ -1113,32 +1119,91 @@ const VERDICT_WORDS: Record<RunVerdict, string | null> = {
 };
 
 /**
- * The Security section lists two kinds, and either can be withdrawn on its
- * own, so what it may claim about an empty section depends on which of them
- * it was allowed to look at.
+ * What this page calls each scanner's findings, in prose.
  *
- * "No open alerts or code scanning findings" over rows we deliberately
- * dropped is a measured empty asserted over a withheld one, which is the
- * confident zero this page exists to refuse (AD-28). With both withdrawn
- * there is nothing measured at all - the whole-section suppression does not
- * fire, because a third feature may still be confirmed on - so the sentence
- * says that rather than a zero.
+ * Built from `FEATURE_LABELS`, which is the one place a feature is named for
+ * a reader, so the sentences below cannot drift from the coverage notes
+ * beside them. The head noun differs per feature because the things differ -
+ * a scanner produces findings, secret scanning produces alerts - and the
+ * column headings above the tables are the same two nouns capitalised.
+ *
+ * `leaked secrets` used to be a fifth name for the third feature, appearing
+ * nowhere else on the page and in four tests only as a string asserted
+ * absent. One noun per feature, learned once.
+ */
+const CODE_SCANNING_NOUN = `${FEATURE_LABELS.code_scanning} findings`;
+const SECRET_SCANNING_NOUN = `${FEATURE_LABELS.secret_scanning} alerts`;
+
+/**
+ * What the Security section may claim when it has no rows.
+ *
+ * The section lists three kinds, and a kind can be missing for three
+ * different reasons of which only one is a measurement:
+ *
+ *   we looked and found none      a zero, and the only thing this sentence
+ *                                 may name
+ *   coverage withdrew it          we were not allowed to look
+ *   no completed sweep vouched    nothing looked
+ *
+ * A kind is named here only in the first case. The other two are absences of
+ * evidence, and "no code scanning findings in this repository" over a lane
+ * that has never run is the confident zero this page exists to refuse
+ * (AD-28) - it was doing exactly that for any repository whose Dependabot
+ * lane had confirmed and whose scanner lanes had not. Both absences carry
+ * their own paragraph below the tables, so dropping the kind from this
+ * sentence loses the reader nothing.
+ *
+ * The alert half of the attestation test is redundant today and is written
+ * anyway: `SectionBody` renders this string only when `state.attested`, which
+ * IS the alert lane's confirmation, so that term cannot currently be false
+ * here. Verified by reading that branch, not assumed - and a reader of this
+ * function should not have to know it to see the rule.
  */
 function securityEmpty(view: RepoView): string {
-  const shown = [
-    view.alertsWithdrawn ? null : "open alerts",
-    view.codeScanningWithdrawn ? null : "code scanning findings",
+  const measured = [
+    view.alertsWithdrawn || !view.summary.attested ? null : "open alerts",
+    view.codeScanningWithdrawn || !view.codeScanningAttested
+      ? null
+      : CODE_SCANNING_NOUN,
+    view.secretScanningWithdrawn || !view.secretScanningAttested
+      ? null
+      : SECRET_SCANNING_NOUN,
   ].filter((kind): kind is string => kind !== null);
-  return shown.length === 0
-    ? "nothing here is counted: every kind this section lists is switched off"
-    : `no ${shown.join(" or ")} in this repository`;
+  // Reachable, and the common shape of a young estate: Dependabot confirmed
+  // off while both scanners are covered and neither lane has swept yet. The
+  // whole-section suppression does not fire there, because `securityStanding`
+  // reads a covered scanner as `counted`.
+  return measured.length === 0
+    ? "nothing here is measured: every kind this section lists is either not" +
+        " covered or not yet swept"
+    : `no ${measured.join(" or ")} in this repository`;
 }
 
-/** What the section is not listing, named. Empty when it lists both kinds. */
+/**
+ * What the section is not listing BECAUSE COVERAGE WITHDREW IT, named. Empty
+ * when it lists all three kinds.
+ *
+ * The sentence these names go into says "not collected", never "switched
+ * off", and the difference is the point. The flags behind them are `isOff`,
+ * which is positive evidence that a feature is not covered - and that covers
+ * `unreachable`, `archived` and `repo_disabled` as well as `feature_off`. A
+ * repository whose probe answered `403 Resource not accessible by
+ * integration` may have the feature perfectly on and our token merely short
+ * of scope, and telling its operator a switch is off sends them to a setting
+ * that is fine. "Not collected" is true of every one of those states, because
+ * it describes what THIS page did rather than what GitHub is doing.
+ *
+ * Nor "not covered", which is the count chip's own word for a different fact:
+ * there it means every counted feature is off and the whole section is
+ * suppressed, and reusing it for one feature would make the two read as one
+ * state. WHICH state it is rides in the header's sub-line, where every
+ * coverage answer for this repository already is.
+ */
 function securityWithheld(view: RepoView): string[] {
   return [
-    view.alertsWithdrawn ? "Dependabot alerts" : null,
-    view.codeScanningWithdrawn ? "code scanning findings" : null,
+    view.alertsWithdrawn ? FEATURE_LABELS.dependabot : null,
+    view.codeScanningWithdrawn ? CODE_SCANNING_NOUN : null,
+    view.secretScanningWithdrawn ? SECRET_SCANNING_NOUN : null,
   ].filter((kind): kind is string => kind !== null);
 }
 
@@ -1165,9 +1230,13 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
           <Section
             topic={topic}
             state={view.summary}
-            // Both kinds, because the heading's `N shown` must equal the rows
-            // under it: two tables, one section, one count.
-            count={view.alerts.length + view.codeScanning.length}
+            // All three kinds, because the heading's `N shown` must equal the
+            // rows under it: three tables, one section, one count.
+            count={
+              view.alerts.length +
+              view.codeScanning.length +
+              view.secretScanning.length
+            }
             // The Dependabot rows only: the heading's badge is that lane's.
             attestedCount={view.alerts.length}
             empty={securityEmpty(view)}
@@ -1262,6 +1331,58 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
                 </tbody>
               </table>
             )}
+            {/* Its own table again, and for the sharper version of the same
+              reason: a secret has no package, no severity and no ref, and
+              the two columns that matter - what leaked and whether the token
+              still works - are on neither table above. The display name is
+              the only name of the finding that ever reaches this page; the
+              credential was never mapped, stored or logged (#158). */}
+            {view.secretScanning.length === 0 ? null : (
+              <table class="cards" role="table">
+                <thead role="rowgroup">
+                  <tr role="row">
+                    <Th>Secret scanning</Th>
+                    <Th>Type</Th>
+                    <Th>Validity</Th>
+                    <Th>Last confirmed</Th>
+                  </tr>
+                </thead>
+                <tbody role="rowgroup">
+                  {view.secretScanning.map((sec) => (
+                    <tr key={`secret-${sec.number}`} role="row">
+                      <Td label="Secret scanning">
+                        <ExternalLink href={sec.htmlUrl}>
+                          #{sec.number}
+                        </ExternalLink>
+                        {/* Only where GitHub REPORTED it. Null, false and
+                          absent are the other three states and none of them
+                          is a report of a public leak. */}
+                        {sec.publiclyLeaked ? " · publicly leaked" : ""}
+                      </Td>
+                      <Td label="Type" show>
+                        {sec.secretType ?? "unknown"}
+                      </Td>
+                      <Td label="Validity" show>
+                        {sec.validity}
+                      </Td>
+                      <Td label="Last confirmed">
+                        {/* The section header attests the Dependabot lane, so
+                          these rows carry their own standing, exactly as the
+                          code scanning rows above do (AD-28). */}
+                        {view.secretScanningAttested ? (
+                          <FreshnessBadge
+                            freshness={sec.freshness}
+                            age={sec.age}
+                          />
+                        ) : (
+                          <span class="badge unknown">unconfirmed</span>
+                        )}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </Section>
           {/* A feature confirmed off has its rows dropped from the tables
             above, exactly as the chip drops them from its count. Saying so
@@ -1270,20 +1391,27 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
             every coverage answer for this repository already is. */}
           {securityWithheld(view).length === 0 ? null : (
             <p class="attest">
-              {securityWithheld(view).join(" and ")} not listed: the feature is
-              switched off
+              {securityWithheld(view).join(" and ")} not listed: not collected
+              for this repository, for the reason above
             </p>
           )}
-          {/* The heading counts the rows shown; the header counts the items
-            the queue RANKS, and a finding off the default branch is one and
-            not the other. Without this the page reads `1 open alerts` above
-            `4 shown` and neither number is wrong (#156). */}
+          {/* Which of the listed findings the queue declines to rank, said
+            once, about the queue and about NOTHING ELSE.
+            
+            It used to end "and the count above does not include them", which
+            was wrong twice over: the count directly above is the section
+            heading's `N shown`, which counts every row in these tables and
+            therefore does include them; and the page header's `N open alerts`
+            excludes them only while a queue item survives to be counted, so
+            in the fallback case - where the header reads the lanes' own
+            confirmations - it includes them too. No claim about a count is
+            the only claim that is true in both. */}
           {view.codeScanning.filter((c) => !c.onDefaultBranch).length ===
           0 ? null : (
             <p class="attest">
               {view.codeScanning.filter((c) => !c.onDefaultBranch).length} of
               these are not on the default branch, so the queue does not rank
-              them and the count above does not include them
+              them
             </p>
           )}
           {/* The section's heading attests the Dependabot lane alone, which is
@@ -1291,9 +1419,30 @@ const RepoSection: FC<{ topic: Topic; view: RepoView }> = ({ topic, view }) => {
             lane it never ran: with no `repository_code_scanning`
             confirmation, code scanning is unconfirmed here, and the absence
             of findings above must not read as a measured zero (AD-28). */}
-          {view.codeScanningAttested ? null : (
+          {/* The LANE's silence, which is a different fact from the
+            FEATURE's - coverage says whether GitHub is scanning at all, this
+            says whether anything of ours has looked. Withheld once the
+            paragraph above has already said the feature's rows are not
+            collected here, because two paragraphs about one feature is
+            noise rather than honesty, and the overview's chip withholds the
+            same note under the same condition. */}
+          {view.codeScanningAttested || view.codeScanningWithdrawn ? null : (
             <p class="attest">
-              code scanning: not confirmed by any completed sweep
+              {FEATURE_LABELS.code_scanning}: not confirmed by any completed
+              sweep
+            </p>
+          )}
+          {/* And the same for the third lane, under the same two conditions
+            (#158): with no `repository_secret_scanning` confirmation nothing
+            has swept this repository for credentials and an empty table must
+            not read as a measured zero (AD-28) - unless the feature is
+            withdrawn, in which case the paragraph above has already said so
+            and this one would repeat it. */}
+          {view.secretScanningAttested ||
+          view.secretScanningWithdrawn ? null : (
+            <p class="attest">
+              {FEATURE_LABELS.secret_scanning}: not confirmed by any completed
+              sweep
             </p>
           )}
         </>

@@ -487,22 +487,36 @@ describe("what standing the Security number has (#156)", () => {
   });
 
   it("reads not covered only when every collected feature is confirmed off", () => {
+    // All three now, since secret scanning joined the counted set (#158).
     expect(
       securityStanding(f("alerts_disabled", "feature_off", "feature_off")),
     ).toBe("not_covered");
   });
 
-  it("does not let secret scanning license a count nothing collects", () => {
-    // Secret scanning is confirmed ON and no lane sweeps it until Story 3.4,
-    // so the items it contributes are zero because nobody looked, not because
-    // there are none. Counting on it would be the confident zero this whole
-    // rule exists to refuse, one feature over (AD-28).
+  it("lets secret scanning license a count now that a lane sweeps it", () => {
+    // The inverse of what this case asserted through Story 3.3, and the
+    // inversion is the point (#158). Secret scanning confirmed ON used to
+    // license nothing, because no lane collected its findings and a number
+    // resting on it would have been a confident zero. Story 3.4 added the
+    // lane, `COUNTED_FEATURES` gained the third entry, and the same two
+    // inputs now answer `counted`: there IS something looking, so the number
+    // speaks for it and the other two features ride beside it as notes.
     expect(securityStanding(f("alerts_disabled", "unknown", "covered"))).toBe(
-      "unconfirmed",
+      "counted",
     );
     expect(
       securityStanding(f("alerts_disabled", "feature_off", "covered")),
-    ).toBe("not_covered");
+    ).toBe("counted");
+  });
+
+  it("still reads unconfirmed while secret scanning alone is unknown", () => {
+    // The other half of the change: a feature joining COUNTED_FEATURES makes
+    // its `unknown` withhold a number as well as making its `covered` grant
+    // one. Before Story 3.4 this pair answered `not_covered`, because the
+    // third feature was quantified over by nothing.
+    expect(
+      securityStanding(f("alerts_disabled", "feature_off", "unknown")),
+    ).toBe("unconfirmed");
   });
 });
 

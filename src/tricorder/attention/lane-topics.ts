@@ -13,6 +13,7 @@ import {
   REVIEWS_INSTALLATION,
   LANE as REVIEWS_LANE,
 } from "../collect/review-requests.js";
+import { LANE as SECRET_SCANNING_LANE } from "../collect/secret-scanning.js";
 import { LANE as UPDATE_PRS_LANE } from "../collect/update-prs.js";
 import { LANE as UPDATE_STATUS_LANE } from "../collect/update-status.js";
 import { LANE as WORKFLOW_RUNS_LANE } from "../collect/workflow-runs.js";
@@ -54,6 +55,10 @@ export const LANE_TOPIC: ReadonlyMap<string, LaneTopic> = new Map<
   [
     CODE_SCANNING_LANE,
     { topic: "security", word: "code scanning", installation: null },
+  ],
+  [
+    SECRET_SCANNING_LANE,
+    { topic: "security", word: "secret scanning", installation: null },
   ],
   [
     UPDATE_PRS_LANE,

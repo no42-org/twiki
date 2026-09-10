@@ -558,6 +558,7 @@ describe("the real schedule table", () => {
     installations: ["no42-org", "other-org"],
     alerts: noop,
     codeScanning: noop,
+    secretScanning: noop,
     coverage: noop,
     kev: noop,
     updatePrs: noop,
@@ -580,6 +581,7 @@ describe("the real schedule table", () => {
       "rest-actions-runs",
       "rest-org-code-scanning",
       "rest-org-dependabot",
+      "rest-org-secret-scanning",
     ]);
   });
 
@@ -591,6 +593,7 @@ describe("the real schedule table", () => {
       installations: ["no42-org"],
       alerts: noop,
       codeScanning: noop,
+      secretScanning: noop,
       coverage: noop,
       kev: noop,
       updatePrs: null,

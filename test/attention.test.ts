@@ -563,7 +563,9 @@ describe("attentionByRepo (AD-32)", () => {
       [REPO, OTHER],
       NOW,
       DEPS,
-      new Set(["no42-org/twiki"]),
+      // Named by feature, so this reads as evidence about Dependabot rather
+      // than as the first of three sets nobody can tell apart.
+      { dependabot: new Set(["no42-org/twiki"]) },
     );
 
     expect(byRepo.get("no42-org/twiki")).toMatchObject({
@@ -578,8 +580,32 @@ describe("attentionByRepo (AD-32)", () => {
       openAlerts: 1,
     });
     expect(
-      repoAttention(store, REPO, NOW, DEPS, new Set(["no42-org/twiki"])).tier,
+      repoAttention(store, REPO, NOW, DEPS, {
+        dependabot: new Set(["no42-org/twiki"]),
+      }).tier,
     ).toBe("quiet");
+  });
+
+  it("withdraws only the feature it was given evidence about", () => {
+    // The suppression is keyed BY FEATURE, and this is what that buys. It
+    // used to be three trailing `ReadonlySet<string>` parameters, which the
+    // compiler cannot tell apart: transposing two of them at either
+    // production call site compiled clean and withdrew the wrong feature's
+    // rows, on a page whose whole job is to say what it is not counting.
+    //
+    // Naming one feature and finding the other's item untouched is the
+    // assertion; that this call does not even typecheck against the old
+    // signature is the guarantee.
+    const { byRepo } = attentionByRepo(store, [REPO], NOW, DEPS, {
+      secret_scanning: new Set(["no42-org/twiki"]),
+    });
+
+    // The Dependabot alert is still counted: evidence about secret scanning
+    // says nothing about it.
+    expect(byRepo.get("no42-org/twiki")).toMatchObject({
+      tier: "now",
+      openAlerts: 1,
+    });
   });
 
   it("seeds a quiet verdict for a watched repository with no rows at all", () => {

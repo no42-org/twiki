@@ -30,10 +30,11 @@ describe("TOPICS", () => {
 
   it("gives every queue kind exactly one topic, and the lane-less topics none", () => {
     expect(TOPICS.map((t) => [t.topic, [...t.kinds]])).toEqual([
-      // Two kinds under Security: a Dependabot alert and a code scanning
-      // finding are both "something GitHub found here", and the topic is
-      // what makes the chips, tiles and filters count them as one number.
-      ["security", ["alert", "code_scanning"]],
+      // Three kinds under Security: a Dependabot alert, a code scanning
+      // finding and a leaked credential are all "something GitHub found
+      // here", and the topic is what makes the chips, tiles and filters count
+      // them as one number.
+      ["security", ["alert", "code_scanning", "secret_scanning"]],
       ["ci", ["ci_failure"]],
       ["dependencies", ["update_pr"]],
       // Pull requests has no lane until Epic 3; Reviews never joins the queue.
@@ -43,6 +44,7 @@ describe("TOPICS", () => {
     ]);
     expect(topicOf("alert")).toBe("security");
     expect(topicOf("code_scanning")).toBe("security");
+    expect(topicOf("secret_scanning")).toBe("security");
     expect(topicOf("ci_failure")).toBe("ci");
     expect(topicOf("update_pr")).toBe("dependencies");
     expect(topicOf("issue")).toBe("issues");
@@ -84,6 +86,10 @@ describe("kevListedFor", () => {
     // Nor is a static-analysis finding. It has no CVE to look up, so its KEV
     // term is n/a and no page may shout `in CISA KEV` over it.
     ["code_scanning", false],
+    // The one kind whose KEV TERM is `true` and whose flag is still false.
+    // The term is what reaches `now`; the flag is what prints the citation,
+    // and an open secret is not in CISA's catalogue (#158).
+    ["secret_scanning", false],
   ] as const)("%s: %s", (kind, expected) => {
     expect(kevListedFor(kind)).toBe(expected);
   });
@@ -96,6 +102,7 @@ describe("KIND_REASONS", () => {
       "ci_failure",
       "code_scanning",
       "issue",
+      "secret_scanning",
       "update_pr",
     ]);
     expect(KIND_REASONS.alert).toEqual({});
@@ -121,6 +128,19 @@ describe("KIND_REASONS", () => {
       epss: { na: "" },
       severity: { na: "no severity from the tool" },
       bump: { na: "on the default branch" },
+      stuck: { na: "" },
+    });
+    // The one table that rewords a term's KNOWN state rather than its
+    // absence, and the reason it exists at all. An open secret sets the KEV
+    // term to `true` to reach `now`, and the chain's own word for that is
+    // "listed in CISA KEV" - a citation of a catalogue this finding is not
+    // in. Three terms are silenced; `broken` and `bump` are ABSENT because
+    // the queue supplies both per item, and an entry for either would be
+    // overridden on every item and read as a rule nothing follows (#158).
+    expect(KIND_REASONS.secret_scanning).toEqual({
+      kev: { listed: "an open secret is a confirmed exposure" },
+      epss: { na: "" },
+      severity: { na: "" },
       stuck: { na: "" },
     });
   });

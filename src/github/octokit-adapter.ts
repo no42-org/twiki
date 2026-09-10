@@ -17,6 +17,7 @@ import type {
   WorkflowRunRef,
 } from "../core/types.js";
 import { repoSlug } from "../core/types.js";
+import { VALIDITY_UNKNOWN } from "../core/validity.js";
 import {
   type AppAuthConfig,
   installationOctokit,
@@ -43,12 +44,14 @@ import type {
   RawPullRequest,
   RawRepoMeta,
   RawReviewRequest,
+  RawSecretScanningAlert,
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
   ReleaseState,
   RequestValidator,
   ReviewRequestPage,
+  SecretScanningAlertPage,
   UnlistedRepo,
   UpdatePrPage,
   WorkflowRunPage,
@@ -1807,6 +1810,185 @@ export class OctokitGitHub implements GitHubPort {
     };
   }
 
+  /**
+   * The per-repository fan-out for secret scanning (#158), the code scanning
+   * fan-out's sibling and the same three-way split of an answer.
+   *
+   * TWO answers land in `skipped`, and they are different problems for the
+   * operator, which is why the run detail quotes each verbatim instead of
+   * folding them into one sentence:
+   *
+   *   404 "Secret scanning is disabled on this repository."  a repository
+   *       setting. The measured one, live on `CoolModFiles` 2026-09-09,
+   *       where the code scanning fan-out says `no analysis found` instead.
+   *   403 "Resource not accessible by integration"           the App may not
+   *       read this endpoint here at all. A CREDENTIAL problem, and one an
+   *       operator can fix - saying "the feature is off" over it would send
+   *       them to a setting that is fine.
+   *
+   * Both are ANSWERS, so both skip rather than degrade. Only a request that
+   * reached no answer is `unreachable`.
+   */
+  private async listSecretScanningAlertsPerRepo(
+    repos: readonly RepoRef[],
+  ): Promise<SecretScanningAlertPage> {
+    const alerts: RawSecretScanningAlert[] = [];
+    let unreadable = 0;
+    let truncated = false;
+    const unreachable: UnlistedRepo[] = [];
+    const skipped: UnlistedRepo[] = [];
+    for (const repo of repos) {
+      const slug = repoSlug(repo);
+      let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
+      try {
+        const gh = await this.client(repo);
+        // The same guarded walk the org path uses: the page cap, the origin
+        // check and the array guard all live in it, and gh.paginate has none
+        // of them.
+        walked = await walkLinkedPages(
+          `secret scanning listing for ${slug}`,
+          () =>
+            gh.request("GET /repos/{owner}/{repo}/secret-scanning/alerts", {
+              owner: repo.owner,
+              repo: repo.name,
+              state: "open",
+              per_page: 100,
+            }),
+          (url) => gh.request(`GET ${url}`),
+        );
+      } catch (err) {
+        // The probe translator that already owns this endpoint's bodies, read
+        // for `answered` alone: WHICH refusal it was decides the words we
+        // quote, never whether the sweep degrades.
+        const probe = translateSecretScanningProbe(err);
+        const unlisted = { repo, reason: probe.reason };
+        (probe.answered ? skipped : unreachable).push(unlisted);
+        continue;
+      }
+      truncated = truncated || walked.truncated;
+      for (const item of walked.items) {
+        // knownRepo, because the per-repository payload carries no
+        // `repository` key at all.
+        const alert = toSecretScanningAlert(item, repo);
+        if (alert === null) unreadable++;
+        else alerts.push(alert);
+      }
+    }
+    // No validator: each repository carries its own ETag, and one cached
+    // value cannot describe a set of them.
+    return {
+      alerts,
+      unreadable,
+      unreachable,
+      skipped,
+      notModified: false,
+      truncated,
+      validator: null,
+    };
+  }
+
+  async listSecretScanningAlerts(
+    org: string,
+    repos: readonly RepoRef[] = [],
+    cached: RequestValidator | null = null,
+  ): Promise<SecretScanningAlertPage> {
+    if (!this.orgOctokitFor) {
+      throw new Error(
+        "listSecretScanningAlerts needs an org resolver; this client was built without one",
+      );
+    }
+    // Resolved before the kind is read, for the reason the two listings
+    // beside it state: the kind map is filled by this resolver's own lazy
+    // re-resolve, and reading it first routes a new installation to the org
+    // endpoint for ever.
+    const gh = await this.orgOctokitFor(org);
+    if (this.accountKindFor(org) === "user") {
+      return this.listSecretScanningAlertsPerRepo(repos);
+    }
+
+    // AD-25, the same three rules as every other conditional endpoint here.
+    const tokenGen = await installationTokenGen(gh);
+    const send = sendableValidator(cached, tokenGen);
+    const conditionalHeaders = conditionalHeadersFor(send);
+
+    let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
+    try {
+      walked = await walkLinkedPages(
+        `secret scanning listing for ${org}`,
+        () =>
+          gh.request("GET /orgs/{org}/secret-scanning/alerts", {
+            org,
+            state: "open",
+            per_page: 100,
+            headers: conditionalHeaders,
+          }),
+        (url) => gh.request(`GET ${url}`),
+      );
+    } catch (err) {
+      if ((err as { status?: number }).status === 304) {
+        if (send) {
+          return {
+            alerts: [],
+            unreadable: 0,
+            unreachable: [],
+            skipped: [],
+            notModified: true,
+            truncated: false,
+            validator: { ...send },
+          };
+        }
+        // A broken proxy confirming a validator we never sent, not an empty
+        // page. Same posture and same legible message as the two listings
+        // beside it.
+        throw new Error(
+          `secret scanning listing for ${org} answered 304 to an unconditional request`,
+        );
+      }
+      throw err;
+    }
+
+    // Deliberately unfiltered: which repositories are watched is AD-10's rule
+    // and belongs to the lane.
+    const alerts: RawSecretScanningAlert[] = [];
+    let unreadable = 0;
+    for (const item of walked.items) {
+      const alert = toSecretScanningAlert(item);
+      if (alert === null) unreadable++;
+      else alerts.push(alert);
+    }
+    const firstEtag =
+      typeof walked.firstPage.headers.etag === "string"
+        ? walked.firstPage.headers.etag
+        : null;
+    const firstLastModified =
+      typeof walked.firstPage.headers["last-modified"] === "string"
+        ? walked.firstPage.headers["last-modified"]
+        : null;
+    return {
+      alerts,
+      unreadable,
+      // The org path reads one listing or none.
+      unreachable: [],
+      skipped: [],
+      notModified: false,
+      truncated: walked.truncated,
+      // Only a single-page, untruncated listing earns a validator: each page
+      // carries its own ETag, and a 304 on page one says nothing about the
+      // pages behind it. Measured live on 2026-09-09, the org listing answers
+      // 200 with an ETag and no `link` header in all three organisations.
+      validator:
+        walked.pages === 1 && !walked.truncated
+          ? validatorFrom(
+              {
+                etag: firstEtag ?? undefined,
+                "last-modified": firstLastModified ?? undefined,
+              },
+              tokenGen,
+            )
+          : null,
+    };
+  }
+
   async listRepoWorkflowRuns(
     repo: RepoRef,
     cached: RequestValidator | null = null,
@@ -2278,6 +2460,14 @@ function toDependabotAlert(
   /** The repository the caller asked about, when the payload cannot say. */
   knownRepo?: RepoRef,
 ): RawDependabotAlert | null {
+  // The same guard as the two scanner mappers, and the rule is the same for
+  // all three: a `null` entry in the listing array is a payload we could not
+  // read, which is what `unreadable` counts, not a reason to throw out of
+  // the call and fail the whole installation's sweep. Written here last and
+  // mattering most - this is the lane with the widest coverage, and two
+  // guarded siblings beside one unguarded one read as if the rule were
+  // universal when it was not.
+  if (typeof raw !== "object" || raw === null) return null;
   const a = raw as {
     number?: number;
     state?: string;
@@ -2350,6 +2540,12 @@ function toCodeScanningAlert(
   /** The repository the caller asked about, when the payload cannot say. */
   knownRepo?: RepoRef,
 ): RawCodeScanningAlert | null {
+  // Before the cast, because the cast is a lie the next line acts on: a
+  // `null` entry in the listing array made `a.repository` throw out of the
+  // whole call and fail the installation's sweep, where `unreadable` promises
+  // exactly the opposite - one payload we could not read, counted, and the
+  // rest of the listing kept.
+  if (typeof raw !== "object" || raw === null) return null;
   const a = raw as {
     number?: number;
     state?: string | null;
@@ -2380,6 +2576,100 @@ function toCodeScanningAlert(
     // Null, not "": an empty string reaches core/stamp.ts and throws there
     // instead of being visibly absent here.
     createdAt: a.created_at ?? null,
+  };
+}
+
+/**
+ * A payload field that must be a NON-EMPTY STRING to mean anything (#158).
+ *
+ * Every field of both secret scanning components is optional, so the mapper
+ * meets absence everywhere - and `?? fallback` catches only `undefined` and
+ * `null`. It does not catch the two shapes that actually hurt:
+ *
+ *   a wrong type   `validity: 3` sailed through into the stored payload,
+ *                  where `readSecretScanningAlert` rejected it on every
+ *                  read, so a real open secret vanished from the queue and
+ *                  the page and surfaced only as an `unreadable` tick
+ *   an empty       `created_at: ""` is not a date. It reaches core/stamp.ts
+ *                  and throws there, which is exactly the risk the comment
+ *                  on that field already claimed to have handled
+ *
+ * Both are "GitHub said nothing usable", so both answer null and let the
+ * caller supply the same fallback absence does.
+ */
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+/**
+ * Maps one secret scanning alert payload (#158).
+ *
+ * `secret` IS NOT READ. Not read, not redacted, not logged: the shape below
+ * has no field for it, so no later edit of this function can store the
+ * credential by forgetting a redaction step. `redact()` would not have saved
+ * us either - it matches GitHub tokens and JWTs only, so an AWS key or a
+ * private key passes through it untouched.
+ *
+ * Defensive everywhere rather than in two places, because every field of both
+ * OpenAPI components is optional, `number` and `state` included. `number` is
+ * the one absence that makes the payload unreadable: it is half the subject
+ * key, and a row we cannot key is a row we cannot reconcile.
+ *
+ * `repository` is present on the org listing and ABSENT on the per-repository
+ * one, the same asymmetry as the code scanning and Dependabot listings, so
+ * the caller's own RepoRef is the fallback. Without it every alert from the
+ * personal-account fan-out fails to map and the lane reports a confident zero
+ * beside a pile of unreadable payloads.
+ */
+function toSecretScanningAlert(
+  raw: unknown,
+  /** The repository the caller asked about, when the payload cannot say. */
+  knownRepo?: RepoRef,
+): RawSecretScanningAlert | null {
+  // The same guard as its code scanning sibling, and for the same reason: a
+  // `null` entry in the array is a payload we cannot read, which is what
+  // `unreadable` counts, not a reason to abandon the listing around it.
+  if (typeof raw !== "object" || raw === null) return null;
+  const a = raw as {
+    number?: number;
+    state?: string | null;
+    html_url?: string;
+    repository?: { name?: string; owner?: { login?: string } };
+    // `unknown`, not `string`: the guards below are what decide these three
+    // are usable strings, and declaring them as strings here would make
+    // those checks read as dead code to the next person to touch this.
+    secret_type_display_name?: unknown;
+    validity?: unknown;
+    created_at?: unknown;
+    publicly_leaked?: boolean | null;
+  };
+  const owner = a.repository?.owner?.login ?? knownRepo?.owner;
+  const name = a.repository?.name ?? knownRepo?.name;
+  if (typeof a.number !== "number" || !owner || !name) return null;
+
+  return {
+    number: a.number,
+    repo: { owner, name },
+    // Null stays null: the schema permits the field to be absent, and a
+    // default of "open" would put a word in GitHub's mouth about the one
+    // field this lane deliberately does not act on.
+    state: a.state ?? null,
+    // The display name alone. `secret_type` is the machine slug and `secret`
+    // is the credential; neither has a place in our type.
+    secretType: nonEmptyString(a.secret_type_display_name),
+    // Absent, empty and the literal `unknown` are one answer - and so is a
+    // value of the wrong type, which is the one this field cannot survive:
+    // `validity` is the only non-nullable string in our type, and the queue
+    // reads it to decide whether the finding reaches `now`.
+    validity: nonEmptyString(a.validity) ?? VALIDITY_UNKNOWN,
+    // Only a reported `true` reads as a public leak. Null, false and absent
+    // are the other three states and none of them is a report.
+    publiclyLeaked: a.publicly_leaked === true,
+    htmlUrl: a.html_url ?? null,
+    // Null, not "": an empty string reaches core/stamp.ts and throws there
+    // instead of being visibly absent here. Through the guard rather than
+    // `??`, because `??` never caught the empty string this comment names.
+    createdAt: nonEmptyString(a.created_at),
   };
 }
 

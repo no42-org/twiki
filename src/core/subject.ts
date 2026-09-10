@@ -44,6 +44,13 @@ export const SUBJECT_TYPES = [
   // subject rather than a field on `repository`, because the two lanes have
   // their own freshness and one must not vouch for the other.
   "repository_code_scanning",
+  // Per-repository confirmation from the secret scanning lane, for exactly
+  // the reason repository_code_scanning exists one feature over: a repository
+  // GitHub scans and finds no secret in has no alert rows, and without a
+  // confirmation that is indistinguishable from one the sweep never reached
+  // (AD-28). A third subject rather than a field on either sibling, because
+  // all three lanes have their own freshness and none may vouch for another.
+  "repository_secret_scanning",
   "issue",
   // A pull request awaiting the maintainer's review (CAP-5). Its own type
   // rather than a flavour of dependency_update_pr: these are collected
@@ -125,6 +132,11 @@ export function actionsSubject(repo: RepoRef): Subject {
 /** One repository's code scanning sweep confirmation. Same key space. */
 export function codeScanningSubject(repo: RepoRef): Subject {
   return { type: "repository_code_scanning", key: subjectSlug(repo) };
+}
+
+/** One repository's secret scanning sweep confirmation. Same key space. */
+export function secretScanningSubject(repo: RepoRef): Subject {
+  return { type: "repository_secret_scanning", key: subjectSlug(repo) };
 }
 
 export function alertSubject(

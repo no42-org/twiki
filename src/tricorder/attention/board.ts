@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { CoverageFeatures } from "../../core/coverage.js";
+import type { CoverageFeature, CoverageFeatures } from "../../core/coverage.js";
 import {
+  COVERAGE_FEATURES,
   coverageNotes,
   FEATURE_LABELS,
   isCovered,
@@ -348,6 +349,17 @@ export function buildBoard(
       .map((v) => v.subject.key),
   );
 
+  // The same question of the secret scanning lane's own confirmation (#158).
+  // A third set rather than a union with the one above: the two lanes have
+  // their own freshness and their own skipped repositories, and one vouching
+  // for the other is how a swept repository badges a topic nothing swept.
+  const sweptForSecretScanning = new Set(
+    store
+      .currentByType("repository_secret_scanning")
+      .filter((v) => v.state === "present")
+      .map((v) => v.subject.key),
+  );
+
   // One read of collection health for the whole page: the tile warnings and
   // the table at the foot come from it (#127). A lane whose latest full
   // sweep failed, stalled or came back partial warns on its topic's tile,
@@ -437,21 +449,21 @@ export function buildBoard(
   // rate-limited probe wipe correct counts off the page (AD-28). Decided
   // before tiering, so an item nobody may count cannot also be the reason a
   // row is `now`.
-  const dependabotOff = new Set<string>();
-  const codeScanningOff = new Set<string>();
+  const off: Record<CoverageFeature, Set<string>> = {
+    dependabot: new Set(),
+    code_scanning: new Set(),
+    secret_scanning: new Set(),
+  };
   for (const [slug, features] of coverage) {
-    if (isOff(features.dependabot.state)) dependabotOff.add(slug);
-    if (isOff(features.code_scanning.state)) codeScanningOff.add(slug);
+    for (const feature of COVERAGE_FEATURES) {
+      if (isOff(features[feature].state)) off[feature].add(slug);
+    }
   }
-
-  const { byRepo, queue } = attentionByRepo(
-    store,
-    watched,
-    now,
-    deps,
-    dependabotOff,
-    codeScanningOff,
-  );
+  // Keyed by feature, so the three sets cannot be transposed at the call
+  // site: they were three trailing `ReadonlySet<string>` arguments the
+  // compiler could not tell apart, and swapping two of them would have
+  // withdrawn the wrong feature's rows with the suite green.
+  const { byRepo, queue } = attentionByRepo(store, watched, now, deps, off);
 
   // Nothing has ever been collected. No count on this page would be a
   // finding, so none is offered (AD-28): every tile reads `never collected`,
@@ -588,6 +600,14 @@ export function buildBoard(
       (features !== undefined && !isCovered(features.code_scanning.state))
         ? []
         : [`${FEATURE_LABELS.code_scanning}: ${NO_SWEEP}`]),
+      // The same clause one feature over (#158), and written out rather than
+      // looped: each half names its own confirmation set and its own coverage
+      // field, and a loop over the pair would have to reach both through a
+      // map that exists for no other reason.
+      ...(sweptForSecretScanning.has(slug) ||
+      (features !== undefined && !isCovered(features.secret_scanning.state))
+        ? []
+        : [`${FEATURE_LABELS.secret_scanning}: ${NO_SWEEP}`]),
     ];
     const caveat = countNotes.length === 0 ? null : joinNotes(countNotes);
     // Story 3.2's precedence, generalised over every feature (#156): a

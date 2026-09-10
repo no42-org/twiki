@@ -462,12 +462,17 @@ describe("the CLI still offers what it advertises", () => {
     }
   };
 
+  // Each spawn is allowed 30s by runRole, and vitest's own default is 5s, so
+  // these two tests could never use the budget they were given: under any load
+  // vitest killed them first, and the failure read as flake rather than as the
+  // mismatch it was. The timeout here is the subprocess budget times the number
+  // of spawns, plus margin, so the two numbers cannot drift apart again.
   it("lists exactly the roles it implements", () => {
     const text = runRole("definitely-not-a-role");
     for (const role of roles) {
       expect(text, `usage should mention ${role}`).toContain(role);
     }
-  });
+  }, 45_000);
 
   it("implements every role it lists", () => {
     for (const role of roles) {
@@ -490,7 +495,7 @@ describe("the CLI still offers what it advertises", () => {
         "usage: tricorder",
       );
     }
-  });
+  }, 120_000);
 
   it("reports an unreadable config from doctor rather than dying on it", () => {
     // doctor is what an operator reaches for when startup fails, and a bad

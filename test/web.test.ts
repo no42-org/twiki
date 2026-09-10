@@ -522,13 +522,14 @@ describe("issues found in review (round 2)", () => {
     const signals = (...chips: string[]) =>
       `<td class="signals" role="cell"><span class="lbl hid">Signals</span>${chips.join(" · ")}</td>`;
     /**
-     * What the Security count does not speak for wherever the code scanning
-     * lane has confirmed nothing, which is every case here: the count spans
-     * both kinds and the caveat rides beside it in the sentence, never only
-     * in a title (#156).
+     * What the Security count does not speak for wherever NEITHER scanner
+     * lane has confirmed anything, which is every case here: the count spans
+     * all three kinds and each caveat rides beside it in the sentence, never
+     * only in a title (#156, #158).
      */
     const SCAN_CAVEAT =
-      " \u00B7 code scanning: not confirmed by any completed sweep";
+      " \u00B7 code scanning: not confirmed by any completed sweep" +
+      " \u00B7 secret scanning: not confirmed by any completed sweep";
     /** The rationale row; `rest` is what the signals cell left out. */
     const why = (reason: string, rest = "") =>
       '<tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th>' +

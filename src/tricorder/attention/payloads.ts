@@ -7,6 +7,7 @@ import type { CodeScanningAlertObservation } from "../collect/code-scanning.js";
 import type { AlertObservation } from "../collect/dependabot-alerts.js";
 import type { IssueObservation } from "../collect/issues.js";
 import type { ReviewRequestObservation } from "../collect/review-requests.js";
+import type { SecretScanningAlertObservation } from "../collect/secret-scanning.js";
 import type { UpdatePrObservation } from "../collect/update-prs.js";
 import type { UpdateStatusObservation } from "../collect/update-status.js";
 
@@ -76,6 +77,34 @@ export function readCodeScanningAlert(
   if (!stringOrNull(c.ref)) return null;
   if (!stringOrNull(c.htmlUrl)) return null;
   return c;
+}
+
+/**
+ * The secret scanning shape check, same posture as the rest: counted, not
+ * guessed at (#158).
+ *
+ * `validity` is a required string because the mapper always writes one - the
+ * word `unknown` where GitHub stated nothing - so a row missing it is a row
+ * this system did not write. `publiclyLeaked` must be an actual boolean for
+ * the same reason: the mapper folds GitHub's four states down to one, and a
+ * row carrying anything else is not one of ours.
+ *
+ * There is deliberately no check for a credential field, because there is
+ * deliberately no credential field. A guard is the wrong place to notice one:
+ * by the time a payload is read it is already stored.
+ */
+export function readSecretScanningAlert(
+  payload: unknown,
+): SecretScanningAlertObservation | null {
+  const s = payload as SecretScanningAlertObservation | null | undefined;
+  if (!s || typeof s !== "object") return null;
+  if (typeof s.number !== "number" || typeof s.repo !== "string") return null;
+  if (typeof s.validity !== "string") return null;
+  if (typeof s.publiclyLeaked !== "boolean") return null;
+  if (!stringOrNull(s.state)) return null;
+  if (!stringOrNull(s.secretType)) return null;
+  if (!stringOrNull(s.htmlUrl)) return null;
+  return s;
 }
 
 /**
