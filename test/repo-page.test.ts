@@ -838,10 +838,18 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.summary.tierReason).toBe("no open items");
   });
 
-  it("sorts a fork's pull request below the genuine default-branch run (#141)", () => {
+  it("sorts a legacy fork pull request below the genuine default-branch run (#141)", () => {
     // Driven through buildRepoView rather than by handing compareRunRows a
     // predicate the test wrote: the thing that can regress is the wiring in
     // repo-view, and a test that supplies its own predicate cannot see that.
+    //
+    // The lane no longer WRITES a `pull_request` run under `workflow_run` -
+    // since #161 it files one as a check of its own type, and retires any it
+    // finds here - but a store written before that still holds such rows
+    // until the next complete sweep reaches them, and this reader must not
+    // rank one as a build of main in the meantime. #141's rule is unchanged;
+    // what changed is that the lane now also keeps such a row out of this
+    // list altogether.
     const row = (over: Record<string, unknown>) => ({
       subject: { type: "workflow_run", key: `WFR_${String(over.event)}` },
       payload: {
