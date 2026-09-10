@@ -672,7 +672,7 @@ export class OctokitGitHub implements GitHubPort {
       });
       return "covered";
     } catch (err) {
-      return translateDependabotProbe(err);
+      return dependabotAccessOf(translateDependabotProbe(err));
     }
   }
 
@@ -1538,20 +1538,32 @@ export class OctokitGitHub implements GitHubPort {
   }
 
   /**
-   * The per-repository fallback. One call each, and a 403 saying alerts are
-   * switched off is NOT a failure: it is the same fact the coverage probe
-   * records, and counting it as unreadable would degrade every sweep of an
-   * account that simply does not use Dependabot everywhere. Anything else
-   * unreadable does count, so the sweep goes partial and tombstones
-   * nothing (AD-23).
+   * The per-repository fallback. One call each, and every ANSWER GitHub sends
+   * instead of a listing - alerts switched off, the endpoint refused, the
+   * repository gone - is a skipped repository rather than a degraded run.
+   * The answers are stable, the same words next hour, so retrying them every
+   * sweep returns the same refusal, and degrading on any of them would hold
+   * this lane `partial` for as long as the repository exists: no
+   * confirmations, no tombstones, no validator, for the whole installation.
+   * Only a request that reached NO answer is unreachable, and that one does
+   * degrade the sweep, which then tombstones nothing (AD-23).
+   *
+   * That is the line both sibling fan-outs draw, and #158 drew it here one
+   * story earlier for exactly this reason.
+   *
+   * A skipped repository gets no rows AND no confirmation, so its
+   * Dependencies section reads `unconfirmed` rather than a confident zero
+   * for a question GitHub never answered (AD-28). Both lists carry the
+   * translator's reason, so the run detail can quote it.
    */
   private async listDependabotAlertsPerRepo(
     repos: readonly RepoRef[],
   ): Promise<OrgAlertPage> {
     const alerts: RawDependabotAlert[] = [];
     let unreadable = 0;
-    let unreachable = 0;
     let truncated = false;
+    const unreachable: UnlistedRepo[] = [];
+    const skipped: UnlistedRepo[] = [];
     for (const repo of repos) {
       const slug = repoSlug(repo);
       let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
@@ -1572,11 +1584,22 @@ export class OctokitGitHub implements GitHubPort {
           (url) => gh.request(`GET ${url}`),
         );
       } catch (err) {
-        // Alerts switched off is a FACT, the same one the coverage probe
-        // records, and most repositories on a personal account answer it.
-        // Counting it would make every sweep partial forever.
-        if (translateDependabotProbe(err) === "alerts_disabled") continue;
-        unreachable++;
+        // Translated by the translator that owns these bodies, and read for
+        // `answered` alone: WHICH refusal it was decides the words we quote,
+        // never whether the sweep degrades. That is the sibling rule stated
+        // on the code scanning fan-out, and requiring a particular state here
+        // is how a stable 403 once trapped a whole installation partial.
+        const probe = translateDependabotProbe(err);
+        const unlisted = {
+          repo,
+          // Whatever the translator put there, redacted and bounded once, in
+          // one place. NOT necessarily GitHub's words: this catch also sees
+          // the allowlist refusal and the walk's own body and origin guards,
+          // whose sentences this codebase wrote. Nothing here or downstream
+          // attributes the reason to anyone, for that reason.
+          reason: probe.reason,
+        };
+        (probe.answered ? skipped : unreachable).push(unlisted);
         continue;
       }
       truncated = truncated || walked.truncated;
@@ -1593,6 +1616,7 @@ export class OctokitGitHub implements GitHubPort {
       alerts,
       unreadable,
       unreachable,
+      skipped,
       notModified: false,
       truncated,
       validator: null,
@@ -1662,7 +1686,8 @@ export class OctokitGitHub implements GitHubPort {
           return {
             alerts: [],
             unreadable: 0,
-            unreachable: 0,
+            unreachable: [],
+            skipped: [],
             notModified: true,
             truncated: false,
             validator: { ...send },
@@ -1704,8 +1729,9 @@ export class OctokitGitHub implements GitHubPort {
       alerts,
       unreadable,
       // The org path reads one listing or none, so there is no such thing
-      // as an unreachable repository here.
-      unreachable: 0,
+      // as an unreachable or a skipped repository here.
+      unreachable: [],
+      skipped: [],
       notModified: false,
       truncated,
       // Only a listing that fit in one page gets a validator: each page
@@ -2285,28 +2311,70 @@ export class OctokitGitHub implements GitHubPort {
 /**
  * Translate a failed probe on OBSERVED behaviour, never on documented codes.
  *
- * Both failures are 403 and differ only in the message, so status alone cannot
- * tell "you switched this off" from "I cannot reach this". Anything not
- * recognised is `unknown`: guessing between the two would produce either a
- * false accusation about the operator's settings or a false claim of
- * inaccessibility, and both read as confident.
+ * Both 403s differ only in the message, so status alone cannot tell "you
+ * switched this off" from "I cannot reach this". Anything not recognised is
+ * `unknown`: guessing between the two would produce either a false accusation
+ * about the operator's settings or a false claim of inaccessibility, and both
+ * read as confident.
+ *
+ * A `FeatureProbe`, exactly like the two scanner translators, so the
+ * per-repository fan-out classifies on `answered` alone and takes the words
+ * it quotes from this one place (#169). `feature_off` is this endpoint's
+ * `alerts_disabled`; `dependabotAccessOf` maps it back for the coverage lane,
+ * whose stored vocabulary predates FeatureProbe.
+ *
+ * `answered` is about whether GitHub replied, NOT whether we recognised the
+ * reply. Getting that backwards is the defect #158 patched one story earlier
+ * in this same file: a 403 the App may not read, or a 404 for a repository
+ * renamed out from under `repos.yaml`, is a stable answer that returns the
+ * same words next hour, and degrading on it held a whole installation
+ * `partial` for ever - no confirmations, no tombstones, no validator.
  */
-export function translateDependabotProbe(err: unknown): DependabotAccess {
-  // Aborted requests can surface a null rejection. Dereferencing it would throw
-  // inside a catch block, escape the probe, and fail the whole installation
-  // run, turning one repository's odd rejection into zero coverage rows.
-  if (typeof err !== "object" || err === null) return "unknown";
-  const e = err as { status?: number; message?: string };
-  const message = (e.message ?? "").toLowerCase();
-  if (e.status === 403 && message.includes("disabled for this repository")) {
-    return "alerts_disabled";
+export function translateDependabotProbe(err: unknown): FeatureProbe {
+  // probeFailure absorbs the null rejection an aborted request can surface.
+  // Dereferencing it would throw inside a catch block, escape the probe, and
+  // fail the whole installation run, turning one repository's odd rejection
+  // into zero coverage rows.
+  const { status, message } = probeFailure(err);
+  if (
+    status === 403 &&
+    message !== null &&
+    message
+      .toLowerCase()
+      .includes(DEPENDABOT_ALERTS_DISABLED_BODY.toLowerCase())
+  ) {
+    return {
+      state: "feature_off",
+      reason: storedReason(message),
+      answered: true,
+    };
   }
-  if (e.status === 403 && message.includes("not accessible by integration")) {
-    return "unreachable";
+  // 404 is how GitHub hides a repository the caller may not see at all, and
+  // how it answers for one renamed or deleted. An ANSWER either way, and a
+  // stable one - but never a statement that the feature is off, so the state
+  // stays `unreachable` and the coverage lane reads it exactly as before.
+  if (status === 404) {
+    return {
+      state: "unreachable",
+      reason: message === null ? null : storedReason(message),
+      answered: true,
+    };
   }
-  // 404 is how GitHub hides a repository the caller may not see at all.
-  if (e.status === 404) return "unreachable";
-  return "unknown";
+  // 403 "not accessible by integration", and everything else: the tail both
+  // scanner translators already share.
+  return unmeasured(status, message);
+}
+
+/**
+ * The coverage lane's vocabulary, from the probe's.
+ *
+ * `DependabotAccess` names the same four answers and differs only in that
+ * this endpoint's "off" is spelled `alerts_disabled`. Mapped rather than
+ * merged: renaming the stored state would rewrite every coverage row, which
+ * is not what #169 is.
+ */
+function dependabotAccessOf(probe: FeatureProbe): DependabotAccess {
+  return probe.state === "feature_off" ? "alerts_disabled" : probe.state;
 }
 
 /**
@@ -2323,6 +2391,20 @@ export const SECRET_SCANNING_OFF_BODY =
 export const CODE_SCANNING_NO_ANALYSIS_BODY = "no analysis found";
 /** The body GitHub sends when the App may not read an endpoint at all. */
 export const NOT_ACCESSIBLE_BODY = "not accessible by integration";
+
+/**
+ * The measured body when Dependabot alerts are switched off (2026-08-17, and
+ * quoted in `DependabotAccess`'s own doc in `port.ts`).
+ *
+ * Verbatim rather than lowercased like the three above, and lowercased at its
+ * one comparison instead: this is also the exact sentence the fake and the
+ * contract test hand back as a REASON, and a match-only copy here would put
+ * the real sentence somewhere else and make this a second literal again.
+ * There is no recording of this response to read it from, which is why it is
+ * typed here and why the date above is the whole of the evidence.
+ */
+export const DEPENDABOT_ALERTS_DISABLED_BODY =
+  "Dependabot alerts are disabled for this repository.";
 
 /**
  * The longest reason we store.

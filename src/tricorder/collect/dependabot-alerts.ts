@@ -15,6 +15,7 @@ import {
 } from "../../github/port.js";
 import type { ObservationInput, RunScope } from "../store/port.js";
 import { type LaneRunDeps, withLaneRun } from "./lifecycle.js";
+import { named } from "./unlisted.js";
 
 // The REST org-level lane, for Dependabot alerts.
 //
@@ -28,14 +29,20 @@ import { type LaneRunDeps, withLaneRun } from "./lifecycle.js";
 
 /** What we store about an alert. Keep it flat: the ranking chain reads it. */
 /**
- * Per-repository confirmation. Written for every watched repository on every
- * successful sweep, whether or not it had an alert.
+ * Per-repository confirmation. Written for every watched repository the sweep
+ * COVERED, whether or not it had an alert.
  *
  * Without it, "we looked and there are none" is inexpressible: a healthy
  * repository has no alert rows, and absence of rows is indistinguishable from
  * absence of collection. It also keeps a repository that just became clean
  * from going permanently stale, because its alert rows stop being updated the
  * moment they are tombstoned.
+ *
+ * Covered is not the same as watched. On the per-repository fan-out GitHub
+ * answers some repositories with a refusal instead of a listing; one of those
+ * gets no row here and any row it already had is retracted, so it reads
+ * `unconfirmed` rather than a zero, or a stale count, for a question nobody
+ * asked it (#169).
  */
 export interface RepoObservation {
   repo: string;
@@ -130,6 +137,8 @@ export interface LaneResult {
   alerts: number;
   /** Payloads the adapter could not read. Non-zero forces a partial run. */
   unreadable: number;
+  /** Repositories GitHub answered, but with no listing to give (#169). */
+  skipped: number;
 }
 
 export const LANE = "rest-org-dependabot";
@@ -151,7 +160,7 @@ export async function collectOrgAlerts(
   return withLaneRun<LaneResult>(
     deps,
     { lane: LANE, installation, scope, reach: "per-installation" },
-    { installation, outcome: "failed", alerts: 0, unreadable: 0 },
+    { installation, outcome: "failed", alerts: 0, unreadable: 0, skipped: 0 },
     async (run) => {
       const url = orgAlertsUrl(installation);
       // Conditional only while every watched repository has a confirmation row
@@ -172,10 +181,20 @@ export async function collectOrgAlerts(
         .filter((slug) => !confirmedRepos.has(slug));
       if (unconfirmed.length > 0) {
         // Normally one sweep long: the confirmation pass below writes a row
-        // for every watched repository on the next full ok sweep. Logged
+        // for every watched repository the next full ok sweep COVERS. Logged
         // anyway, because if this ever persists (full sweeps failing, scope
         // never full) the cache is silently off for the whole organisation,
         // and the line names exactly which repositories are holding it off.
+        //
+        // A third cause is permanent and benign: a repository GitHub keeps
+        // refusing is never confirmed, so it is named here every sweep for
+        // as long as its alerts stay off (#169). Not filtered out, because
+        // the skip set is only known after the call this gate decides, and
+        // nothing is lost by it - a skipped repository exists only on the
+        // per-repository fan-out, which caches no validator at all, so this
+        // gate is already a no-op there. It is the ORGANISATION path the
+        // line exists to protect. Both siblings behave the same way, and
+        // this keeps the three agreeing rather than adding a fourth rule.
         log(
           `${LANE} ${installation}: conditional sweep off, unconfirmed: ${unconfirmed.join(", ")}`,
         );
@@ -224,7 +243,15 @@ export async function collectOrgAlerts(
         log(
           `${LANE} ${installation}: not modified, ${alerts} alerts confirmed`,
         );
-        return { installation, outcome: "ok", alerts, unreadable: 0 };
+        return {
+          installation,
+          outcome: "ok",
+          alerts,
+          unreadable: 0,
+          // A 304 covered the whole listing: nothing was asked about
+          // repository by repository, so nothing was skipped.
+          skipped: 0,
+        };
       }
 
       const watched = page.alerts.filter((a) => deps.isWatched(a.repo));
@@ -240,19 +267,31 @@ export async function collectOrgAlerts(
       // distinct things. Folding unreachable REPOSITORIES into "alert
       // payloads could not be read" points the operator at a mapper bug that
       // does not exist, and the fan-out makes that the common case.
+      //
+      // A skipped repository is NOT one of them, exactly as on both sibling
+      // lanes: GitHub answered, the answer was that alerts are switched off,
+      // and degrading on it would hold this lane partial for as long as that
+      // repository exists.
       const outcome =
-        page.unreadable > 0 || page.unreachable > 0 || page.truncated
+        page.unreadable > 0 || page.unreachable.length > 0 || page.truncated
           ? "partial"
           : "ok";
+      const skippedSlugs = page.skipped.map((s) => watchKey(s.repo));
+      // `named` quotes what GitHub said, per repository, the same helper both
+      // siblings use. Naming beats counting here: an operator who knows which
+      // repository was skipped can go and switch Dependabot on for it.
       const notes = [
         page.truncated
           ? "alert listing truncated at the pagination cap; nothing tombstoned"
           : null,
-        page.unreachable > 0
-          ? `${page.unreachable} repositories could not be read`
+        page.unreachable.length > 0
+          ? `${page.unreachable.length} repositories could not be read: ${named(page.unreachable)}`
           : null,
         page.unreadable > 0
           ? `${page.unreadable} alert payloads could not be read`
+          : null,
+        page.skipped.length > 0
+          ? `skipped, no listing to read: ${named(page.skipped)}`
           : null,
       ].filter((n): n is string => n !== null);
       const detail = notes.length > 0 ? notes.join("; ") : undefined;
@@ -272,10 +311,16 @@ export async function collectOrgAlerts(
       //   outcome must be ok   a partial run could not read some payloads, so its
       //                        count publishes a confident zero for exactly the
       //                        repository whose alerts failed to map
+      //
+      // Plus a third, copied from `code-scanning.ts`: a skipped repository was
+      // answered but not listed, so confirming it would publish a measured
+      // zero for the one repository we have no listing for (#169).
+      const skipped = new Set(skippedSlugs);
       const repoObservations =
         scope === "full" && outcome === "ok"
           ? deps
               .watchedIn(installation)
+              .filter((repo) => !skipped.has(watchKey(repo)))
               .map((repo) => summariseRepo(repo, watched))
           : [];
 
@@ -296,6 +341,9 @@ export async function collectOrgAlerts(
       //   repo must still be watched  a repository dropped from repos.yaml is
       //                             out of scope, not fixed, and tombstoning it
       //                             would assert something untrue
+      //   repo must not be skipped  its alerts are unlisted, not absent, and
+      //                             tombstoning them would report a live alert
+      //                             as fixed on a listing nobody read (#169)
       if (scope === "full" && outcome === "ok") {
         const seen = new Set(observations.map((o) => o.subject.key));
         const gone = deps.store
@@ -303,11 +351,36 @@ export async function collectOrgAlerts(
           .filter((c) => c.state === "present")
           .filter((c) => !seen.has(c.subject.key))
           .filter((c) => deps.isWatched(repoOfKey(c.subject.key)))
+          .filter((c) => !skipped.has(watchKey(repoOfKey(c.subject.key))))
           .map((c) => c.subject);
 
         if (gone.length > 0) {
           deps.store.recordTombstones(run, deps.now(), gone);
           log(`${LANE} ${installation}: ${gone.length} alerts resolved`);
+        }
+
+        // The CONFIRMATION of a skipped repository is retracted, though its
+        // alert rows above are not. Withholding a new one is enough only for
+        // a repository never confirmed; one confirmed at three open alerts
+        // last week would otherwise keep publishing that three, attested and
+        // ageing - a confident stale count in place of the confident zero
+        // this change removed.
+        //
+        // This respects AD-23 rather than bending it: GitHub telling us it
+        // cannot list the repository is a positive statement of absence, not
+        // an inference from silence. The alert rows differ because nothing
+        // said those alerts are gone - only that they cannot be listed.
+        const retracted = deps.store
+          .currentByTypeForOwner("repository", installation)
+          .filter((c) => c.state === "present")
+          .filter((c) => skipped.has(c.subject.key))
+          .map((c) => c.subject);
+
+        if (retracted.length > 0) {
+          deps.store.recordTombstones(run, deps.now(), retracted);
+          log(
+            `${LANE} ${installation}: ${retracted.length} confirmations retracted`,
+          );
         }
       }
 
@@ -335,13 +408,15 @@ export async function collectOrgAlerts(
       log(
         `${LANE} ${installation}: ${observations.length} watched alerts` +
           `, ${page.alerts.length - watched.length} outside the allowlist` +
-          (page.unreadable > 0 ? `, ${page.unreadable} unreadable` : ""),
+          (page.unreadable > 0 ? `, ${page.unreadable} unreadable` : "") +
+          (skippedSlugs.length > 0 ? `, ${skippedSlugs.length} skipped` : ""),
       );
       return {
         installation,
         outcome,
         alerts: observations.length,
         unreadable: page.unreadable,
+        skipped: skippedSlugs.length,
       };
     },
   );

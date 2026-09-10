@@ -22,6 +22,10 @@ import type {
   KevCatalogue,
   KevFetchOutcome,
 } from "../src/enrich/port.js";
+// The one measured sentence, from the one place that owns it: a copy here
+// would be a body string the adapter could stop matching without any test
+// noticing.
+import { DEPENDABOT_ALERTS_DISABLED_BODY } from "../src/github/octokit-adapter.js";
 import type {
   CodeScanningAlertPage,
   DependabotAccess,
@@ -401,6 +405,16 @@ export class FakeEnrichmentPort implements EnrichmentPort {
 const CODE_SCANNING_NO_ANALYSIS = "no analysis found";
 
 /**
+ * What a 502 leaves behind: an answer never reached, and words that came from
+ * the transport rather than from GitHub reporting on the repository.
+ *
+ * A real sentence rather than null, because null exercises only `named()`'s
+ * "no reason recorded" fallback and nothing would then render an unreachable
+ * entry carrying the words that actually come back (#169).
+ */
+const UNREACHABLE_BODY = "Bad gateway";
+
+/**
  * GitHub's measured body when secret scanning is off (#152, #158).
  *
  * Measured live on `CoolModFiles` on 2026-09-09 and recorded verbatim in
@@ -652,12 +666,16 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       }
       const alerts: RawDependabotAlert[] = [];
       let unreadable = 0;
-      let unreachable = 0;
+      const unreachable: UnlistedRepo[] = [];
+      const skipped: UnlistedRepo[] = [];
       for (const repo of repos) {
         const slug = repoSlug(repo).toLowerCase();
-        if (this.alertsDisabled.has(slug)) continue;
+        if (this.alertsDisabled.has(slug)) {
+          skipped.push({ repo, reason: DEPENDABOT_ALERTS_DISABLED_BODY });
+          continue;
+        }
         if (this.unreachableRepos.has(slug)) {
-          unreachable++;
+          unreachable.push({ repo, reason: UNREACHABLE_BODY });
           continue;
         }
         alerts.push(...(this.repoAlerts.get(slug) ?? []));
@@ -667,6 +685,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
         alerts,
         unreadable,
         unreachable,
+        skipped,
         notModified: false,
         truncated: false,
         validator: null,
@@ -680,7 +699,8 @@ export class FakeGitHubReadPort implements GitHubReadPort {
       return {
         alerts: [],
         unreadable: 0,
-        unreachable: 0,
+        unreachable: [],
+        skipped: [],
         notModified: true,
         truncated: false,
         validator: cached,
@@ -689,7 +709,8 @@ export class FakeGitHubReadPort implements GitHubReadPort {
     return {
       alerts: this.orgAlerts.get(org) ?? [],
       unreadable: this.unreadableByOrg.get(org) ?? 0,
-      unreachable: 0,
+      unreachable: [],
+      skipped: [],
       notModified: false,
       truncated: this.orgAlertTruncated.has(org),
       validator: this.orgAlertValidators.get(org) ?? null,
