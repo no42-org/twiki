@@ -193,18 +193,22 @@ const BOUNDARIES: Record<
       // resolving them, so its rule is testable before the directory exists,
       // and an untested rule is how a dead pattern survives.
       "../enrich/kev.js",
+      // notify is a leaf too, and core is below every leaf.
+      "../notify/port.js",
     ],
     allowed: ["./types.js", "node:path"],
   },
 
-  // github and enrich are peers of each other and may use core. enrich is the
-  // only directory that performs non-GitHub HTTP (AD-15), which is why it is a
-  // leaf of its own rather than a corner of github.
+  // github, enrich and notify are peers of each other and may use core.
+  // enrich and notify are the two directories that perform non-GitHub HTTP
+  // (AD-15), which is why each is a leaf of its own rather than a corner of
+  // github.
   "src/enrich": {
     forbidden: [
       "../github/port.js",
       "../twiki/executor.js",
       "../tricorder/store/port.js",
+      "../notify/port.js",
     ],
     allowed: ["../core/types.js", "./port.js"],
   },
@@ -213,11 +217,29 @@ const BOUNDARIES: Record<
       "../twiki/executor.js",
       "../tricorder/store/port.js",
       "../enrich/kev.js",
+      "../notify/port.js",
     ],
     // A bare package specifier must stay legal: the entrypoint patterns are
     // anchored to relative forms precisely so hono/dist/index.js is not read
     // as an AD-5 violation.
     allowed: ["../core/types.js", "./port.js", "octokit", "hono/dist/index.js"],
+  },
+
+  // notify is the leaf both roles send through: twiki composes its transports
+  // behind file-based de-duplication, gitricorder's notify lane uses the
+  // Matrix transport bare. It may import core and node builtins and nothing
+  // else - an import of either feature directory would put one role's code
+  // behind a boundary the other also depends on.
+  "src/notify": {
+    forbidden: [
+      "../twiki/executor.js",
+      "../tricorder/store/port.js",
+      "../github/port.js",
+      "../enrich/kev.js",
+    ],
+    // A bare node builtin must stay legal, or the transports cannot mint a
+    // transaction ID.
+    allowed: ["../core/redact.js", "./port.js", "node:crypto"],
   },
 
   // The two feature directories may use the leaves, never each other.

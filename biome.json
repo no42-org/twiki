@@ -54,9 +54,10 @@
                       "**/twiki/**",
                       "**/tricorder/**",
                       "**/github/**",
-                      "**/enrich/**"
+                      "**/enrich/**",
+                      "**/notify/**"
                     ],
-                    "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
+                    "message": "AD-5: leaves are peers. core is innermost; github, enrich and notify may use core but not each other."
                   },
                   {
                     "group": [
@@ -88,8 +89,13 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/twiki/**", "**/tricorder/**", "**/enrich/**"],
-                    "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
+                    "group": [
+                      "**/twiki/**",
+                      "**/tricorder/**",
+                      "**/enrich/**",
+                      "**/notify/**"
+                    ],
+                    "message": "AD-5: leaves are peers. core is innermost; github, enrich and notify may use core but not each other."
                   },
                   {
                     "group": [
@@ -121,8 +127,51 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/twiki/**", "**/tricorder/**", "**/github/**"],
-                    "message": "AD-5: leaves are peers. core is innermost; github and enrich may use core but not each other."
+                    "group": [
+                      "**/twiki/**",
+                      "**/tricorder/**",
+                      "**/github/**",
+                      "**/notify/**"
+                    ],
+                    "message": "AD-5: leaves are peers. core is innermost; github, enrich and notify may use core but not each other."
+                  },
+                  {
+                    "group": [
+                      "./index.js",
+                      "../index.js",
+                      "../../index.js",
+                      "../../../index.js",
+                      "./tricorder.js",
+                      "../tricorder.js",
+                      "../../tricorder.js",
+                      "../../../tricorder.js"
+                    ],
+                    "message": "AD-5: nothing imports an entrypoint. An entrypoint wires one side; importing it drags that whole side in behind the boundary."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/notify/**/*.ts", "src/notify/**/*.tsx"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "**/twiki/**",
+                      "**/tricorder/**",
+                      "**/github/**",
+                      "**/enrich/**"
+                    ],
+                    "message": "AD-5: leaves are peers. notify may import core and node builtins and nothing else - both roles send through it, so an import of either would drag that role's side behind the boundary."
                   },
                   {
                     "group": [

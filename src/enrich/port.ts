@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: MIT
  */
 
-// The only non-GitHub HTTP in the system (AD-15).
+// One of the two non-GitHub HTTP callers in the system: only enrich and
+// notify (AD-15). This is the enrich half; src/notify/ is the other, and it
+// arrived with Epic 4 when the chat transports moved out of src/twiki/.
 //
 // GitHub exposes no KEV flag, so without this the ranking chain's FIRST term
 // can never evaluate: every item would rank `unknown` on KEV and the chain's
