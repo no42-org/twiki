@@ -1438,8 +1438,13 @@ describe("the code scanning rows on the repository page (#156)", () => {
 
     const view = buildRepoView(store, REPO, NOW, DEPS);
 
+    // The rows survive and are still COUNTED - they were really observed,
+    // and the Always rule keeps them untombstoned. What is withdrawn is the
+    // attestation, not the number: #171 stops this page vouching for a count
+    // nobody measured this sweep, and row-level freshness is out of scope.
     expect(view.codeScanning).toHaveLength(1);
     expect(view.codeScanningAttested).toBe(false);
+    expect(view.summary.openAlerts).toBe(1);
   });
 
   it("counts a stored row it cannot read rather than dropping it", () => {

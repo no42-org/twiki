@@ -182,20 +182,22 @@ export async function collectOrgSecretScanning(
         // never full) the cache is silently off for the whole organisation,
         // and the line names exactly which repositories are holding it off.
         //
-        // A third cause is permanent and benign: a repository GitHub
-        // answers with a stable refusal instead of a listing is never
-        // confirmed, so it is named here every sweep for as long as the
-        // refusal lasts (#171). A repository that WAS confirmed reaches the
-        // same place, because the retraction below withdraws the row this
-        // set is built from - that is the new path in, and it is permanent
-        // for the same reason. Not filtered out,
-        // because the skip set is only known after the call this gate
-        // decides, and nothing is lost by it - a skipped repository exists
-        // only on the per-repository fan-out, which caches no validator at
-        // all, so this gate is already a no-op there. It is the ORGANISATION
-        // path the line exists to protect. Both siblings behave the same
-        // way, and this keeps the three agreeing rather than adding a fourth
-        // rule.
+        // One cause is permanent and benign: a repository GitHub answers
+        // with a stable refusal instead of a listing is never confirmed, so
+        // it is named here every sweep for as long as the refusal lasts
+        // (#171). A repository that WAS confirmed reaches the same place,
+        // because the retraction below withdraws the row this set is built
+        // from - that is the new path in, and it is permanent for the same
+        // reason. Not filtered out, because the skip set is only known after
+        // the call this gate decides, and nothing is lost by it - a skipped
+        // repository exists only on the per-repository fan-out, which caches
+        // no validator at all, so this gate is already a no-op there. It is
+        // the ORGANISATION path the line exists to protect.
+        //
+        // All three lanes BEHAVE this way. The Dependabot lane's own copy of
+        // this comment predates its retraction (#169) and does not yet
+        // mention that path; #163 collapses the three and is where the text
+        // gets levelled.
         log(
           `${LANE} ${installation}: conditional sweep off, unconfirmed: ${unconfirmed.join(", ")}`,
         );

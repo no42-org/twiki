@@ -614,10 +614,27 @@ describe("secret scanning lane", () => {
       // code scanning lane saw.
       await collectOrgCodeScanning(deps(), "no42-org", "full");
       await collectOrgSecretScanning(deps(), "no42-org", "full");
+      // Skipped in BOTH lanes, which is the scenario the matrix row names:
+      // with only one lane skipping, the other lane's rows are untouched
+      // whether or not any retraction happens at all, and this test would
+      // pass with the feature deleted.
       github.secretScanningSkipped.add("no42-org/other");
+      github.codeScanningSkipped.add("no42-org/other");
 
       await collectOrgSecretScanning(deps(), "no42-org", "full");
 
+      // The positive half: THIS lane retracted.
+      expect(
+        store
+          .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["no42-org/other", "resolved"],
+        ["no42-org/twiki", "present"],
+      ]);
+      // The negative half: the other lane's row is untouched, even though
+      // the same repository is skipped there too. Only its own sweep may
+      // withdraw its own attestation.
       expect(
         store
           .currentByTypeForOwner("repository_code_scanning", "no42-org")

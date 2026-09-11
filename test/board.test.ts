@@ -13,7 +13,12 @@ import {
   NOT_APPLICABLE,
 } from "../src/core/rank.js";
 import { watchKey } from "../src/core/slug.js";
-import { alertSubject, coverageSubject } from "../src/core/subject.js";
+import {
+  alertSubject,
+  codeScanningSubject,
+  coverageSubject,
+  secretScanningSubject,
+} from "../src/core/subject.js";
 import { DEFAULT_NOW_EPSS } from "../src/core/tier.js";
 import type { Topic } from "../src/core/topics.js";
 import type { RepoRef } from "../src/core/types.js";
@@ -952,6 +957,34 @@ describe("buildBoard (AD-32, AD-35)", () => {
       // the two are separate facts about separate sweeps (#158).
       expect(between?.chips.security.caveat).toBe(SECRET_SCANNING_UNSWEPT);
       expect(after?.chips.security).toEqual(linked(1, SECURITY, "high"));
+    });
+
+    it("reads a retracted scanner confirmation as no sweep at all", () => {
+      // #171 made `resolved` reachable on these two subjects for the first
+      // time: a lane now withdraws a skipped repository's own confirmation.
+      // The chip has always filtered on `present`, but nothing could produce
+      // a resolved row to prove it, so the guard was untestable until now.
+      // Without it the chip publishes the withdrawn count with no caveat,
+      // which is the defect #171 exists to remove, on the overview instead
+      // of the repository page.
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      seed("coverage", "no42-org", [cov(REPO, "covered")]);
+      scanSweep([{ repo: REPO, alerts: [] }]);
+      const r = secretSweep([{ repo: REPO, alerts: [] }]);
+      expect(
+        buildBoard(store, [REPO], NOW, DEPS).rows[0]?.chips.security,
+      ).toEqual(linked(1, SECURITY, "high"));
+
+      store.recordTombstones(r, AT, [
+        codeScanningSubject(REPO),
+        secretScanningSubject(REPO),
+      ]);
+
+      // Both caveats are back, because neither lane vouches for this
+      // repository any more.
+      expect(
+        buildBoard(store, [REPO], NOW, DEPS).rows[0]?.chips.security.caveat,
+      ).toBe(SCANNERS_UNSWEPT);
     });
 
     it("reads unconfirmed, never 0, when no sweep has confirmed the repository", () => {
