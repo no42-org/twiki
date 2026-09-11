@@ -12,6 +12,7 @@ import { watchKey } from "../src/core/slug.js";
 import { alertSubject, secretScanningSubject } from "../src/core/subject.js";
 import { OctokitGitHub } from "../src/github/octokit-adapter.js";
 import { orgSecretScanningUrl } from "../src/github/port.js";
+import { collectOrgCodeScanning } from "../src/tricorder/collect/code-scanning.js";
 import type {
   RepoSecretScanningObservation,
   SecretScanningAlertObservation,
@@ -109,6 +110,33 @@ describe("secret scanning lane", () => {
   });
 
   describe("the organisation listing", () => {
+    it("retracts nothing, because it never skips a repository", async () => {
+      // One listing covers the whole installation, so there is no such thing
+      // as a repository this path answered but could not list. The skip set
+      // is empty by construction and the retraction pass has nothing to
+      // walk, however many sweeps run (#171).
+      github.orgSecretScanningAlerts.set("no42-org", []);
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+      // Seeded on the fan-out's knob, which the fake's org branch does not
+      // read. Be honest about the reach of that: this half asserts the FAKE,
+      // not the lane. What the lane genuinely owns here is the line below -
+      // the retraction walks `page.skipped`, which the org path fills with
+      // nothing, so deriving the skip set from anywhere else fails this.
+      github.secretScanningSkipped.add("no42-org/other");
+
+      const result = await collectOrgSecretScanning(deps(), "no42-org", "full");
+
+      expect(result.skipped).toBe(0);
+      expect(
+        store
+          .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["no42-org/other", "present"],
+        ["no42-org/twiki", "present"],
+      ]);
+    });
+
     it("stores every alert and confirms every watched repository", async () => {
       github.orgSecretScanningAlerts.set("no42-org", [
         makeSecretScanningAlert({ number: 3 }),
@@ -443,9 +471,179 @@ describe("secret scanning lane", () => {
 
       await collectOrgSecretScanning(deps(), "no42-org", "full");
 
+      // BOTH subject types, as key/state pairs: this is the conjunction the
+      // change is actually about, and a single-field assertion on either one
+      // alone would hold while the other went wrong (#171).
       expect(
-        store.currentByType("secret_scanning_alert").map((v) => v.state),
-      ).toEqual(["present"]);
+        store
+          .currentByType("secret_scanning_alert")
+          .map((v) => [v.subject.key, v.state]),
+      ).toEqual([["no42-org/other#4", "present"]]);
+      expect(
+        store
+          .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["no42-org/other", "resolved"],
+        ["no42-org/twiki", "present"],
+      ]);
+    });
+
+    it("retracts the confirmation a skipped repository already had", async () => {
+      // Withholding a new one is enough only for a repository never
+      // confirmed. One confirmed last week keeps publishing that count,
+      // attested and ageing, until the assertion behind it is retracted
+      // (#171). Assert the whole pair: a key alone cannot tell a live
+      // confirmation from a retracted one.
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+      expect(
+        store
+          .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["no42-org/other", "present"],
+        ["no42-org/twiki", "present"],
+      ]);
+
+      github.secretScanningSkipped.add("no42-org/other");
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+
+      expect(
+        store
+          .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["no42-org/other", "resolved"],
+        ["no42-org/twiki", "present"],
+      ]);
+    });
+
+    it("retracts once, however many sweeps keep skipping it", async () => {
+      // `recordTombstones` TOUCHES an already-resolved subject rather than
+      // skipping it, so the `state === "present"` filter is what stops a
+      // permanently skipped repository being re-tombstoned and re-logged on
+      // every sweep for ever. Without that filter this test still passes on
+      // state alone, which is why it counts the log lines too.
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+      github.secretScanningSkipped.add("no42-org/other");
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+
+      expect(
+        store
+          .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["no42-org/other", "resolved"],
+        ["no42-org/twiki", "present"],
+      ]);
+      expect(logs.filter((l) => l.includes("confirmations retracted"))).toEqual(
+        ["rest-org-secret-scanning no42-org: 1 confirmations retracted"],
+      );
+    });
+
+    it("retracts nothing for a repository it never confirmed", async () => {
+      // The common case, and the one withholding already covered: there is
+      // no assertion to retract, so no tombstone is written for it either.
+      github.secretScanningSkipped.add("no42-org/other");
+
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+
+      expect(
+        store
+          .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([["no42-org/twiki", "present"]]);
+    });
+
+    it("confirms it again when the listing comes back", async () => {
+      // A retraction is not terminal. The repository reads its real count
+      // again on the next sweep that covers it, which is what makes this a
+      // retracted assertion rather than a permanent verdict.
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+      github.secretScanningSkipped.add("no42-org/other");
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+
+      github.secretScanningSkipped.delete("no42-org/other");
+      github.repoSecretScanningAlerts.set("no42-org/other", [
+        makeSecretScanningAlert({
+          number: 7,
+          repo: { owner: "no42-org", name: "other" },
+        }),
+      ]);
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+
+      const back = store
+        .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+        .find((c) => c.subject.key === "no42-org/other");
+      // The whole payload, not just the count: a retraction that came back
+      // with a stale or empty summary would still read `present`.
+      expect(back?.state).toBe("present");
+      expect(back?.payload).toEqual({
+        repo: "no42-org/other",
+        openAlerts: 1,
+      });
+    });
+
+    it("retracts nothing on a partial run", async () => {
+      // The same guard the tombstone pass beside it uses. A run that could
+      // not read everything must not retract on the strength of what it did
+      // read.
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+      github.secretScanningSkipped.add("no42-org/other");
+      github.secretScanningUnreachable.add("no42-org/twiki");
+
+      const result = await collectOrgSecretScanning(deps(), "no42-org", "full");
+
+      expect(result.outcome).toBe("partial");
+      expect(
+        store
+          .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["no42-org/other", "present"],
+        ["no42-org/twiki", "present"],
+      ]);
+    });
+
+    it("retracts only its own subject, never another lane's", async () => {
+      // The mirror of the code scanning case. Three lanes with their own
+      // freshness, and the retraction is bound by the same rule as the
+      // write: a skipped secret scanning listing says nothing about what the
+      // code scanning lane saw.
+      await collectOrgCodeScanning(deps(), "no42-org", "full");
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+      github.secretScanningSkipped.add("no42-org/other");
+
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+
+      expect(
+        store
+          .currentByTypeForOwner("repository_code_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["no42-org/other", "present"],
+        ["no42-org/twiki", "present"],
+      ]);
+    });
+
+    it("retracts nothing on a bounded scope", async () => {
+      // A hot sweep speaks for no repository it did not reach, so it
+      // withdraws nothing either.
+      await collectOrgSecretScanning(deps(), "no42-org", "full");
+      github.secretScanningSkipped.add("no42-org/other");
+
+      await collectOrgSecretScanning(deps(), "no42-org", "hot");
+
+      expect(
+        store
+          .currentByTypeForOwner("repository_secret_scanning", "no42-org")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["no42-org/other", "present"],
+        ["no42-org/twiki", "present"],
+      ]);
     });
 
     it("degrades when a repository reached no answer at all", async () => {

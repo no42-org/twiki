@@ -176,6 +176,26 @@ export async function collectOrgSecretScanning(
         .map(watchKey)
         .filter((slug) => !confirmedRepos.has(slug));
       if (unconfirmed.length > 0) {
+        // Normally one sweep long: the confirmation pass below writes a row
+        // for every watched repository the next full ok sweep COVERS. Logged
+        // anyway, because if this ever persists (full sweeps failing, scope
+        // never full) the cache is silently off for the whole organisation,
+        // and the line names exactly which repositories are holding it off.
+        //
+        // A third cause is permanent and benign: a repository GitHub
+        // answers with a stable refusal instead of a listing is never
+        // confirmed, so it is named here every sweep for as long as the
+        // refusal lasts (#171). A repository that WAS confirmed reaches the
+        // same place, because the retraction below withdraws the row this
+        // set is built from - that is the new path in, and it is permanent
+        // for the same reason. Not filtered out,
+        // because the skip set is only known after the call this gate
+        // decides, and nothing is lost by it - a skipped repository exists
+        // only on the per-repository fan-out, which caches no validator at
+        // all, so this gate is already a no-op there. It is the ORGANISATION
+        // path the line exists to protect. Both siblings behave the same
+        // way, and this keeps the three agreeing rather than adding a fourth
+        // rule.
         log(
           `${LANE} ${installation}: conditional sweep off, unconfirmed: ${unconfirmed.join(", ")}`,
         );
@@ -311,6 +331,48 @@ export async function collectOrgSecretScanning(
         if (gone.length > 0) {
           deps.store.recordTombstones(run, deps.now(), gone);
           log(`${LANE} ${installation}: ${gone.length} alerts resolved`);
+        }
+
+        // The CONFIRMATION of a skipped repository is retracted, though its
+        // alert rows above are not. Withholding a new one is enough only for
+        // a repository never confirmed; one confirmed at three open alerts
+        // last week would otherwise keep publishing that three, attested and
+        // ageing.
+        //
+        // This respects AD-23 rather than bending it. The skip is a stable
+        // refusal, WHATEVER it was - the fan-out classifies on
+        // `probe.answered` alone and never on which refusal arrived - so the
+        // argument has to hold for all of them. For a feature switched off
+        // it is a positive statement of absence; for an endpoint the App may
+        // not read it is that we can no longer attest. Different routes, one
+        // action: stop publishing a count nobody measured. The alert rows
+        // differ under both, because nothing said those alerts are gone -
+        // only that they cannot be listed.
+        //
+        // `present` only, and it is load-bearing: `recordTombstones` TOUCHES
+        // an already-resolved subject rather than skipping it, so without
+        // this filter a permanently skipped repository would be re-touched
+        // and re-logged on every sweep for ever. The freshness that touch
+        // exists to provide is deliberately given up here; nothing reads a
+        // retracted confirmation's `verifiedAt` today, and a row whose
+        // assertion was withdrawn has no freshness to report.
+        //
+        // No `isWatched` filter, unlike the `gone` pass above: `skipped`
+        // comes from `page.skipped`, which the port fills only from the
+        // repositories this lane handed it out of `watchedIn`. That is an
+        // invariant of the response rather than of this file, which is why
+        // it is written down rather than re-checked.
+        const retracted = deps.store
+          .currentByTypeForOwner("repository_secret_scanning", installation)
+          .filter((c) => c.state === "present")
+          .filter((c) => skipped.has(c.subject.key))
+          .map((c) => c.subject);
+
+        if (retracted.length > 0) {
+          deps.store.recordTombstones(run, deps.now(), retracted);
+          log(
+            `${LANE} ${installation}: ${retracted.length} confirmations retracted`,
+          );
         }
       }
 
