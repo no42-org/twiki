@@ -254,6 +254,43 @@ describe("code scanning lane", () => {
       expect(logs[0]).toContain("conditional sweep off, unconfirmed");
     });
 
+    it("sends no validator once a confirmation has been retracted", async () => {
+      // The gate reads PRESENT confirmations only. A retracted one is a
+      // withdrawn assertion, so the repository is unconfirmed again and the
+      // cache must go off: revalidating would confirm stored rows for a
+      // repository this lane no longer speaks for.
+      //
+      // The retraction that produces this state runs on the per-repository
+      // fan-out, which caches no validator, so the store is seeded directly -
+      // the gate's job is to react to the state, not to have produced it.
+      github.orgCodeScanningAlerts.set("no42-org", []);
+      github.codeScanningValidators.set("no42-org", {
+        etag: '"e1"',
+        lastModified: null,
+        tokenGen: "g1",
+      });
+      await collectOrgCodeScanning(deps(), "no42-org", "full");
+      await collectOrgCodeScanning(deps(), "no42-org", "full");
+      expect(github.codeScanningCachedSeen[1]).toEqual({
+        etag: '"e1"',
+        lastModified: null,
+        tokenGen: "g1",
+      });
+
+      const r = store.beginRun({
+        lane: "rest-org-code-scanning",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-09-09T10:30:00.000Z",
+      });
+      store.recordTombstones(r, "2026-09-09T10:30:00.000Z", [
+        codeScanningSubject({ owner: "no42-org", name: "other" }),
+      ]);
+      await collectOrgCodeScanning(deps(), "no42-org", "full");
+
+      expect(github.codeScanningCachedSeen[2]).toBeNull();
+    });
+
     it("confirms its stored rows on a 304 rather than rewriting them", async () => {
       github.orgCodeScanningAlerts.set("no42-org", [
         makeCodeScanningAlert({ number: 1 }),

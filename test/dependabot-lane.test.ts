@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { watchKey } from "../src/core/slug.js";
-import { alertSubject } from "../src/core/subject.js";
+import { alertSubject, repositorySubject } from "../src/core/subject.js";
 import { DEPENDABOT_ALERTS_DISABLED_BODY as DISABLED } from "../src/github/octokit-adapter.js";
 import { orgAlertsUrl } from "../src/github/port.js";
 import type { AlertObservation } from "../src/tricorder/collect/dependabot-alerts.js";
@@ -720,6 +720,114 @@ describe("Dependabot alerts lane", () => {
       ).toEqual([["indigo423/quiet", "resolved"]]);
     });
 
+    it("retracts once, however many sweeps keep skipping it", async () => {
+      // `recordTombstones` TOUCHES an already-resolved subject rather than
+      // skipping it, so the `state === "present"` filter is what stops a
+      // permanently skipped repository being re-tombstoned and re-logged on
+      // every sweep for ever. Without that filter this test still passes on
+      // state alone, which is why it counts the log lines too.
+      watched.add("indigo423/quiet");
+      github.userAccounts.add("indigo423");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+      github.alertsDisabled.add("indigo423/quiet");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(
+        store
+          .currentByTypeForOwner("repository", "indigo423")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([["indigo423/quiet", "resolved"]]);
+      expect(logs.filter((l) => l.includes("confirmations retracted"))).toEqual(
+        ["rest-org-dependabot indigo423: 1 confirmations retracted"],
+      );
+    });
+
+    it("retracts nothing for a repository it never confirmed", async () => {
+      // The common case, and the one withholding already covered: there is
+      // no assertion to retract, so no tombstone is written for it either.
+      watched.add("indigo423/quiet");
+      github.userAccounts.add("indigo423");
+      github.alertsDisabled.add("indigo423/quiet");
+
+      await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(store.currentByTypeForOwner("repository", "indigo423")).toEqual(
+        [],
+      );
+    });
+
+    it("confirms it again when the listing comes back", async () => {
+      // A retraction is not terminal. The repository reads its real count
+      // again on the next sweep that covers it, which is what makes this a
+      // retracted assertion rather than a permanent verdict.
+      watched.add("indigo423/quiet");
+      github.userAccounts.add("indigo423");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+      github.alertsDisabled.add("indigo423/quiet");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+
+      github.alertsDisabled.delete("indigo423/quiet");
+      github.repoAlerts.set("indigo423/quiet", [
+        makeAlert({ number: 7, repo: { owner: "indigo423", name: "quiet" } }),
+      ]);
+      await collectOrgAlerts(deps(), "indigo423", "full");
+
+      const back = store
+        .currentByTypeForOwner("repository", "indigo423")
+        .find((c) => c.subject.key === "indigo423/quiet");
+      // The whole payload, not just the count: a retraction that came back
+      // with a stale or empty summary would still read `present`.
+      expect(back?.state).toBe("present");
+      expect(back?.payload).toEqual({
+        repo: "indigo423/quiet",
+        openAlerts: 1,
+        worstSeverity: "high",
+      });
+    });
+
+    it("retracts nothing on a partial run", async () => {
+      // The same guard the tombstone pass beside it uses. A run that could
+      // not read everything must not retract on the strength of what it did
+      // read.
+      watched.add("indigo423/quiet");
+      watched.add("indigo423/loud");
+      github.userAccounts.add("indigo423");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+      github.alertsDisabled.add("indigo423/quiet");
+      github.unreachableRepos.add("indigo423/loud");
+
+      const result = await collectOrgAlerts(deps(), "indigo423", "full");
+
+      expect(result.outcome).toBe("partial");
+      expect(
+        store
+          .currentByTypeForOwner("repository", "indigo423")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([
+        ["indigo423/loud", "present"],
+        ["indigo423/quiet", "present"],
+      ]);
+    });
+
+    it("retracts nothing on a bounded scope", async () => {
+      // A hot sweep speaks for no repository it did not reach, so it
+      // withdraws nothing either.
+      watched.add("indigo423/quiet");
+      github.userAccounts.add("indigo423");
+      await collectOrgAlerts(deps(), "indigo423", "full");
+      github.alertsDisabled.add("indigo423/quiet");
+
+      await collectOrgAlerts(deps(), "indigo423", "hot");
+
+      expect(
+        store
+          .currentByTypeForOwner("repository", "indigo423")
+          .map((c) => [c.subject.key, c.state]),
+      ).toEqual([["indigo423/quiet", "present"]]);
+    });
+
     it("never tombstones a skipped repository's rows", async () => {
       // Its alerts are unlisted, not absent. Tombstoning them would report a
       // live alert as fixed on the strength of a listing nobody read.
@@ -929,6 +1037,35 @@ describe("Dependabot alerts lane", () => {
 
       await collectOrgAlerts(deps(), "no42-org", "full");
       expect(github.orgAlertCachedSeen[1]).toBeNull();
+    });
+
+    it("sends no validator once a confirmation has been retracted", async () => {
+      // The gate reads PRESENT confirmations only. A retracted one is a
+      // withdrawn assertion, so the repository is unconfirmed again and the
+      // cache must go off: revalidating would confirm stored rows for a
+      // repository this lane no longer speaks for.
+      //
+      // The retraction that produces this state runs on the per-repository
+      // fan-out, which caches no validator, so the store is seeded directly -
+      // the gate's job is to react to the state, not to have produced it.
+      github.orgAlerts.set("no42-org", [makeAlert({ number: 1 })]);
+      github.orgAlertValidators.set("no42-org", VALIDATOR);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      await collectOrgAlerts(deps(), "no42-org", "full");
+      expect(github.orgAlertCachedSeen[1]).toEqual(VALIDATOR);
+
+      const r = store.beginRun({
+        lane: "rest-org-dependabot",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: "2026-09-09T10:30:00.000Z",
+      });
+      store.recordTombstones(r, "2026-09-09T10:30:00.000Z", [
+        repositorySubject({ owner: "no42-org", name: "twiki" }),
+      ]);
+      await collectOrgAlerts(deps(), "no42-org", "full");
+
+      expect(github.orgAlertCachedSeen[2]).toBeNull();
     });
 
     it("fetches unconditionally until a newly-watched repo is confirmed", async () => {
