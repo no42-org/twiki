@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-// The only non-GitHub HTTP in the system (AD-15).
+// Non-GitHub HTTP is confined to two leaves, enrich and notify (AD-15). This
+// is the enrich half; the chat transports in src/notify/ are the other.
 //
 // GitHub exposes no KEV flag, so without this the ranking chain's FIRST term
 // can never evaluate: every item would rank `unknown` on KEV and the chain's
