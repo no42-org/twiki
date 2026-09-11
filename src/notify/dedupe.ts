@@ -11,10 +11,10 @@ import type { Notifier } from "./port.js";
  * Wraps a transport so a message identical to the last one is not re-sent.
  *
  * A wrapper rather than a base class. twiki remembers the last digest's hash
- * in a file it keeps between runs; gitricorder de-duplicates per item through
- * `notification_sent` rows in its store and must not inherit a file. Only the
- * caller that wants this composes it, and the transport underneath is
- * unaffected either way.
+ * in a file it keeps between runs; gitricorder is to de-duplicate per item
+ * through `notification_sent` rows in its store (story 4.2) and must not
+ * inherit a file. Only the caller that wants this composes it, and the
+ * transport underneath is unaffected either way.
  *
  * `dedupePath` has no default: the historical default is `.twiki-last-digest`,
  * which is the write side's name for it, and it stays in src/twiki/notify.ts

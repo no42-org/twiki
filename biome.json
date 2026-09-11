@@ -171,7 +171,7 @@
                       "**/github/**",
                       "**/enrich/**"
                     ],
-                    "message": "AD-5: leaves are peers. notify may import core and node builtins and nothing else - both roles send through it, so an import of either would drag that role's side behind the boundary."
+                    "message": "AD-5: leaves are peers. Both roles send through notify, so an import of either would drag that role's side behind the boundary. What this rule sees is relative imports across src/ directories; keeping notify to src/core and node builtins beyond that is convention, as it is for src/core itself."
                   },
                   {
                     "group": [

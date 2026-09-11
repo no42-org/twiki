@@ -20,6 +20,23 @@ const PATTERNS: readonly [RegExp, string][] = [
 ];
 
 /**
+ * The shortest configured value treated as a credential.
+ *
+ * The same 8 the pattern list above requires, and it is a floor on what may be
+ * rewritten, not on what may be configured. Redaction exists to PRESERVE the
+ * diagnostic while removing the credential from it; below this length the
+ * removal costs more than it buys. `TWIKI_MATRIX_TOKEN=" "` would otherwise
+ * turn every space in a homeserver's error into a marker, and test/matrix.test.ts
+ * really does construct a notifier with the token `tok`, which would rewrite the
+ * word "token" in any body that explained the failure.
+ *
+ * The cost is stated rather than hidden: a caller whose real credential is
+ * shorter than this gets no exact-match protection. No GitHub or Matrix
+ * credential is.
+ */
+const MIN_SECRET_LENGTH = 8;
+
+/**
  * Remove credentials from `text`.
  *
  * `secrets` are removed by exact match, for a caller that holds the value and
@@ -34,14 +51,17 @@ const PATTERNS: readonly [RegExp, string][] = [
  * and a caller that does not hold a secret cannot accidentally depend on some
  * other caller having configured one.
  *
- * An empty secret is skipped. That is the unset-env-var case, and splitting on
- * "" matches at every character boundary, which would rewrite the whole string.
+ * A secret that is blank, or shorter than MIN_SECRET_LENGTH once trimmed, is
+ * skipped: those are the unset and misconfigured env-var cases, and splitting
+ * on one of them rewrites ordinary text rather than a credential. The marker is
+ * shaped like the pattern list's, so a reader of a redacted message knows a
+ * configured secret was removed and not, say, a JWT.
  */
 export function redact(text: string, secrets: readonly string[] = []): string {
   let out = text;
   for (const secret of secrets) {
-    if (secret === "") continue;
-    out = out.split(secret).join("REDACTED");
+    if (secret.trim().length < MIN_SECRET_LENGTH) continue;
+    out = out.split(secret).join("SECRET_REDACTED");
   }
   for (const [pattern, replacement] of PATTERNS) {
     out = out.replace(pattern, replacement);

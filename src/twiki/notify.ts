@@ -12,11 +12,12 @@ import { MatrixTransport, WebhookTransport } from "../notify/transports.js";
 // twiki's notifiers: the shared transports composed with the file-based
 // de-duplication and the TWIKI_STATE_DIR rules that are twiki's own.
 //
-// The transports moved down into src/notify/ so gitricorder can post to
-// Matrix without importing the write side, and so it does not inherit this
-// file-based de-duplication — it de-duplicates per item through its store.
-// Nothing about twiki moved with them: the constructors below, the dedupe
-// file names and the env names are what they were.
+// The transports moved down into src/notify/ so gitricorder will be able to
+// post to Matrix without importing the write side, and without inheriting
+// this file-based de-duplication: its notify lane (story 4.2) is to
+// de-duplicate per item through its store. Nothing about twiki moved with
+// them: the constructors below, the dedupe file names and the env names are
+// what they were.
 
 export type { Notifier } from "../notify/port.js";
 
