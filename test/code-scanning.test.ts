@@ -149,6 +149,7 @@ describe("code scanning lane", () => {
         alerts: 2,
         unreadable: 0,
         skipped: 0,
+        retracted: 0,
       });
       expect(
         store.currentByType("code_scanning_alert").map((v) => v.subject.key),
@@ -312,6 +313,7 @@ describe("code scanning lane", () => {
         alerts: 1,
         unreadable: 0,
         skipped: 0,
+        retracted: 0,
       });
       const after = store.currentByType("code_scanning_alert")[0];
       // Touched, not rewritten: the observation timestamp stands and only
@@ -402,6 +404,7 @@ describe("code scanning lane", () => {
         alerts: 0,
         unreadable: 2,
         skipped: 0,
+        retracted: 0,
       });
       // A partial sweep confirms nothing: its zero would be a confident one.
       expect(store.currentByType("repository_code_scanning")).toEqual([]);
@@ -464,6 +467,7 @@ describe("code scanning lane", () => {
         alerts: 0,
         unreadable: 0,
         skipped: 0,
+        retracted: 0,
       });
       expect(github.codeScanningQueries[0]?.repos).toEqual([]);
     });
@@ -487,6 +491,7 @@ describe("code scanning lane", () => {
         alerts: 1,
         unreadable: 0,
         skipped: 1,
+        retracted: 0,
       });
       expect(
         store
@@ -571,9 +576,17 @@ describe("code scanning lane", () => {
       // state alone, which is why it counts the log lines too.
       await collectOrgCodeScanning(deps(), "no42-org", "full");
       github.codeScanningSkipped.add("no42-org/other");
+      // The sweep that withdraws it REPORTS the withdrawal, and the sweeps
+      // after it report none. Without this the `retracted` field could be
+      // hard-wired to 0 and every other assertion in this suite would hold.
+      const withdrawing = await collectOrgCodeScanning(
+        deps(),
+        "no42-org",
+        "full",
+      );
+      const after = await collectOrgCodeScanning(deps(), "no42-org", "full");
       await collectOrgCodeScanning(deps(), "no42-org", "full");
-      await collectOrgCodeScanning(deps(), "no42-org", "full");
-      await collectOrgCodeScanning(deps(), "no42-org", "full");
+      expect([withdrawing.retracted, after.retracted]).toEqual([1, 0]);
 
       expect(
         store
@@ -583,9 +596,11 @@ describe("code scanning lane", () => {
         ["no42-org/other", "resolved"],
         ["no42-org/twiki", "present"],
       ]);
-      expect(logs.filter((l) => l.includes("confirmations retracted"))).toEqual(
-        ["rest-org-code-scanning no42-org: 1 confirmations retracted"],
-      );
+      // Singular, and NAMED: the count alone cannot tell an operator which
+      // attestation was withdrawn, and `1 confirmations` reads as a bug.
+      expect(logs.filter((l) => l.includes("retracted:"))).toEqual([
+        "rest-org-code-scanning no42-org: 1 confirmation retracted: no42-org/other",
+      ]);
     });
 
     it("retracts nothing for a repository it never confirmed", async () => {

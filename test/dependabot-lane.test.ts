@@ -106,6 +106,7 @@ describe("Dependabot alerts lane", () => {
         unreadable: 0,
         // The org path reads one listing, so it has nothing to skip.
         skipped: 0,
+        retracted: 0,
       });
       expect(store.currentByType("dependabot_alert")).toHaveLength(2);
       expect(store.latestRuns(1)[0]?.outcome).toBe("ok");
@@ -604,6 +605,7 @@ describe("Dependabot alerts lane", () => {
         alerts: 1,
         unreadable: 0,
         skipped: 1,
+        retracted: 0,
       });
     });
 
@@ -685,6 +687,7 @@ describe("Dependabot alerts lane", () => {
         alerts: 0,
         unreadable: 0,
         skipped: 2,
+        retracted: 0,
       });
       expect(store.currentByTypeForOwner("repository", "indigo423")).toEqual(
         [],
@@ -730,18 +733,24 @@ describe("Dependabot alerts lane", () => {
       github.userAccounts.add("indigo423");
       await collectOrgAlerts(deps(), "indigo423", "full");
       github.alertsDisabled.add("indigo423/quiet");
+      // The sweep that withdraws it REPORTS the withdrawal, and the sweeps
+      // after it report none. Without this the `retracted` field could be
+      // hard-wired to 0 and every other assertion in this suite would hold.
+      const withdrawing = await collectOrgAlerts(deps(), "indigo423", "full");
+      const after = await collectOrgAlerts(deps(), "indigo423", "full");
       await collectOrgAlerts(deps(), "indigo423", "full");
-      await collectOrgAlerts(deps(), "indigo423", "full");
-      await collectOrgAlerts(deps(), "indigo423", "full");
+      expect([withdrawing.retracted, after.retracted]).toEqual([1, 0]);
 
       expect(
         store
           .currentByTypeForOwner("repository", "indigo423")
           .map((c) => [c.subject.key, c.state]),
       ).toEqual([["indigo423/quiet", "resolved"]]);
-      expect(logs.filter((l) => l.includes("confirmations retracted"))).toEqual(
-        ["rest-org-dependabot indigo423: 1 confirmations retracted"],
-      );
+      // Singular, and NAMED: the count alone cannot tell an operator which
+      // attestation was withdrawn, and `1 confirmations` reads as a bug.
+      expect(logs.filter((l) => l.includes("retracted:"))).toEqual([
+        "rest-org-dependabot indigo423: 1 confirmation retracted: indigo423/quiet",
+      ]);
     });
 
     it("retracts nothing for a repository it never confirmed", async () => {
@@ -898,6 +907,7 @@ describe("Dependabot alerts lane", () => {
         alerts: 0,
         unreadable: 0,
         skipped: 1,
+        retracted: 0,
       });
       expect(store.latestRuns(1)[0]?.detail).toBe(
         "1 repositories could not be read: indigo423/gone (Bad gateway)" +
@@ -971,6 +981,7 @@ describe("Dependabot alerts lane", () => {
         alerts: 1,
         unreadable: 0,
         skipped: 0,
+        retracted: 0,
       });
       const alertAfter = store.currentByType("dependabot_alert")[0];
       const repoAfter = store.currentByType("repository")[0];

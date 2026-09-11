@@ -72,6 +72,14 @@ export interface LaneResult {
   unreadable: number;
   /** Repositories GitHub answered, but with no listing to give (#171). */
   skipped: number;
+  /**
+   * Confirmations withdrawn because their repository was skipped (#163).
+   *
+   * A state-changing write needs a reporting surface: without this, the only
+   * evidence an attestation was retracted is a log line no caller aggregates,
+   * and a cycle cannot answer how many it withdrew.
+   */
+  retracted: number;
 }
 
 /**
@@ -155,6 +163,7 @@ export async function collectOrgListing<TAlert extends { repo: RepoRef }>(
       alerts: 0,
       unreadable: 0,
       skipped: 0,
+      retracted: 0,
     },
     async (run) => {
       const url = spec.url(installation);
@@ -248,8 +257,9 @@ export async function collectOrgListing<TAlert extends { repo: RepoRef }>(
           alerts,
           unreadable: 0,
           // A 304 covered the whole listing: nothing was asked about
-          // repository by repository, so nothing was skipped.
+          // repository by repository, so nothing was skipped or retracted.
           skipped: 0,
+          retracted: 0,
         };
       }
 
@@ -292,6 +302,7 @@ export async function collectOrgListing<TAlert extends { repo: RepoRef }>(
       // confirming it would publish a zero for exactly the repository we have
       // no listing for.
       const skipped = new Set(skippedSlugs);
+      let retractedCount = 0;
       const repoObservations =
         scope === "full" && outcome === "ok"
           ? deps
@@ -359,8 +370,15 @@ export async function collectOrgListing<TAlert extends { repo: RepoRef }>(
 
         if (withdrawn.length > 0) {
           deps.store.recordTombstones(run, deps.now(), withdrawn);
+          retractedCount = withdrawn.length;
+          // Named, like the run detail beside it and for the same reason: an
+          // operator who knows WHICH attestation was withdrawn can act on it,
+          // and the list is bounded by the allowlist. Pluralised because the
+          // common case is one and `1 confirmations` reads as a bug.
           log(
-            `${LANE} ${installation}: ${withdrawn.length} confirmations retracted`,
+            `${LANE} ${installation}: ${retractedCount} ${
+              retractedCount === 1 ? "confirmation" : "confirmations"
+            } retracted: ${withdrawn.map((s) => s.key).join(", ")}`,
           );
         }
       }
@@ -383,7 +401,8 @@ export async function collectOrgListing<TAlert extends { repo: RepoRef }>(
         `${LANE} ${installation}: ${observations.length} watched alerts` +
           `, ${page.alerts.length - watched.length} outside the allowlist` +
           (page.unreadable > 0 ? `, ${page.unreadable} unreadable` : "") +
-          (skippedSlugs.length > 0 ? `, ${skippedSlugs.length} skipped` : ""),
+          (skippedSlugs.length > 0 ? `, ${skippedSlugs.length} skipped` : "") +
+          (retractedCount > 0 ? `, ${retractedCount} retracted` : ""),
       );
       return {
         installation,
@@ -391,6 +410,7 @@ export async function collectOrgListing<TAlert extends { repo: RepoRef }>(
         alerts: observations.length,
         unreadable: page.unreadable,
         skipped: skippedSlugs.length,
+        retracted: retractedCount,
       };
     },
   );
