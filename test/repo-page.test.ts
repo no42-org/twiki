@@ -11,7 +11,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isDefaultBranchRun } from "../src/core/branch.js";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import { redact } from "../src/core/redact.js";
-import { KEV_SUBJECT } from "../src/core/subject.js";
+import {
+  codeScanningSubject,
+  KEV_SUBJECT,
+  secretScanningSubject,
+} from "../src/core/subject.js";
 import { OctokitGitHub } from "../src/github/octokit-adapter.js";
 import {
   normalise as normaliseScan,
@@ -1410,6 +1414,37 @@ describe("the code scanning rows on the repository page (#156)", () => {
 
     expect(view.codeScanning).toHaveLength(1);
     expect(view.codeScanningAttested).toBe(false);
+  });
+
+  it("reads a RETRACTED confirmation as no confirmation at all", () => {
+    // New state since #171: the lane tombstones a skipped repository's own
+    // confirmation, so `resolved` is reachable on this subject for the first
+    // time. The rows survive - they are unlisted, not absent - and it is the
+    // attestation alone that is withdrawn. Without the `state === "present"`
+    // guard the page reads the retracted row as live and badges these rows
+    // with a freshness word, which is the "attested and ageing" defect #171
+    // exists to remove.
+    seedScans([{ number: 21 }]);
+    const r = store.beginRun({
+      lane: "rest-org-code-scanning",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T12:00:00.000Z",
+    });
+    store.recordTombstones(r, "2026-08-20T12:00:00.000Z", [
+      codeScanningSubject(REPO),
+    ]);
+    store.finishRun(r, "ok", "2026-08-20T12:00:00.000Z");
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    // The rows survive and are still COUNTED - they were really observed,
+    // and the Always rule keeps them untombstoned. What is withdrawn is the
+    // attestation, not the number: #171 stops this page vouching for a count
+    // nobody measured this sweep, and row-level freshness is out of scope.
+    expect(view.codeScanning).toHaveLength(1);
+    expect(view.codeScanningAttested).toBe(false);
+    expect(view.summary.openAlerts).toBe(1);
   });
 
   it("counts a stored row it cannot read rather than dropping it", () => {
@@ -3251,6 +3286,29 @@ describe("the secret scanning rows on the repository page (#158)", () => {
     // Rows without a confirmation: a partial sweep stored them and vouched
     // for nothing. The badge must not claim an attestation nobody made.
     seedSecrets([{ number: 3 }], false);
+
+    const view = buildRepoView(store, REPO, NOW, DEPS);
+
+    expect(view.secretScanning).toHaveLength(1);
+    expect(view.secretScanningAttested).toBe(false);
+  });
+
+  it("reads a RETRACTED confirmation as no confirmation at all", () => {
+    // The secret scanning twin of the code scanning case above, and the same
+    // reason (#171): `resolved` is reachable on this subject for the first
+    // time, and only the `state === "present"` guard keeps the page from
+    // treating a withdrawn assertion as a live one.
+    seedSecrets([{ number: 3 }]);
+    const r = store.beginRun({
+      lane: "rest-org-secret-scanning",
+      installation: "no42-org",
+      scope: "full",
+      startedAt: "2026-08-20T12:00:00.000Z",
+    });
+    store.recordTombstones(r, "2026-08-20T12:00:00.000Z", [
+      secretScanningSubject(REPO),
+    ]);
+    store.finishRun(r, "ok", "2026-08-20T12:00:00.000Z");
 
     const view = buildRepoView(store, REPO, NOW, DEPS);
 
