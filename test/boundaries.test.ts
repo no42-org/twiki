@@ -302,7 +302,21 @@ const ENTRYPOINTS: Record<
 // default killed them under load and the failure read as flake. The budget
 // is granted HERE rather than raised globally, so a pure in-memory test
 // somewhere else still fails fast when it genuinely hangs.
-describe.sequential("module boundaries (AD-5)", { timeout: 120_000 }, () => {
+// `concurrent: false` carries forward the `describe.sequential` this used
+// before. Vitest 5 dropped `sequential` from the suite chain, so the option is
+// how the same intent is spelled now; nested suites inherit it.
+//
+// Whether it is load-bearing is NOT established: flipping it to `true` leaves
+// all 26 tests here passing, and nothing in the config enables concurrency
+// anyway, so vitest's default already runs them in order. It is kept because a
+// dependency bump is the wrong place to quietly drop a guard someone chose in
+// #33 - not because a failure was observed without it. The thing it guards is
+// the `git status --porcelain` baseline taken in beforeAll and compared at the
+// end; interleaving probes would read each other's tree.
+describe("module boundaries (AD-5)", {
+  concurrent: false,
+  timeout: 120_000,
+}, () => {
   const gitStatus = () =>
     execFileSync("git", ["status", "--porcelain", SRC], { encoding: "utf8" });
 
