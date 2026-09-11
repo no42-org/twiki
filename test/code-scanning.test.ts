@@ -587,6 +587,12 @@ describe("code scanning lane", () => {
       const after = await collectOrgCodeScanning(deps(), "no42-org", "full");
       await collectOrgCodeScanning(deps(), "no42-org", "full");
       expect([withdrawing.retracted, after.retracted]).toEqual([1, 0]);
+      // The end-of-sweep summary reports it too, and only the withdrawing
+      // sweep carries the clause. One lane asserts this: the summary line is
+      // built in the shared body, so covering it once covers all three (#163).
+      const summaries = logs.filter((l) => l.includes("watched alerts"));
+      expect(summaries[1]?.endsWith(", 1 skipped, 1 retracted")).toBe(true);
+      expect(summaries[2]?.endsWith(", 1 skipped")).toBe(true);
 
       expect(
         store
