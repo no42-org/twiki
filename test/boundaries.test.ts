@@ -193,18 +193,22 @@ const BOUNDARIES: Record<
       // resolving them, so its rule is testable before the directory exists,
       // and an untested rule is how a dead pattern survives.
       "../enrich/kev.js",
+      // notify is a leaf too, and core is below every leaf.
+      "../notify/port.js",
     ],
     allowed: ["./types.js", "node:path"],
   },
 
-  // github and enrich are peers of each other and may use core. enrich is the
-  // only directory that performs non-GitHub HTTP (AD-15), which is why it is a
-  // leaf of its own rather than a corner of github.
+  // github, enrich and notify are peers of each other and may use core.
+  // enrich and notify are the two directories that perform non-GitHub HTTP
+  // (AD-15), which is why each is a leaf of its own rather than a corner of
+  // github.
   "src/enrich": {
     forbidden: [
       "../github/port.js",
       "../twiki/executor.js",
       "../tricorder/store/port.js",
+      "../notify/port.js",
     ],
     allowed: ["../core/types.js", "./port.js"],
   },
@@ -213,6 +217,7 @@ const BOUNDARIES: Record<
       "../twiki/executor.js",
       "../tricorder/store/port.js",
       "../enrich/kev.js",
+      "../notify/port.js",
     ],
     // A bare package specifier must stay legal: the entrypoint patterns are
     // anchored to relative forms precisely so hono/dist/index.js is not read
@@ -220,10 +225,32 @@ const BOUNDARIES: Record<
     allowed: ["../core/types.js", "./port.js", "octokit", "hono/dist/index.js"],
   },
 
+  // notify is the leaf both roles are meant to send through: twiki composes
+  // its transports behind file-based de-duplication today, and gitricorder's
+  // notify lane will use the Matrix transport bare (story 4.2). It may import
+  // core and node builtins and nothing else - an import of either feature
+  // directory would put one role's code behind a boundary the other also
+  // depends on.
+  "src/notify": {
+    forbidden: [
+      "../twiki/executor.js",
+      "../tricorder/store/port.js",
+      "../github/port.js",
+      "../enrich/kev.js",
+    ],
+    // The node builtins it really imports must stay legal: crypto for the
+    // transaction ID and the dedupe hash, fs for the dedupe file itself.
+    allowed: ["../core/redact.js", "./port.js", "node:crypto", "node:fs"],
+  },
+
   // The two feature directories may use the leaves, never each other.
   "src/tricorder": {
     forbidden: ["../twiki/executor.js"],
-    allowed: ["../core/types.js", "../github/port.js"],
+    // notify is in `allowed`, not merely absent from `forbidden`: a rule broad
+    // enough to close the door this story exists to open would otherwise pass
+    // every assertion here. gitricorder's notify lane (story 4.2) is the
+    // consumer; the file's convention is to probe before the consumer lands.
+    allowed: ["../core/types.js", "../github/port.js", "../notify/port.js"],
   },
   "src/twiki": {
     forbidden: ["../tricorder/store/port.js"],
@@ -233,6 +260,9 @@ const BOUNDARIES: Record<
     allowed: [
       "../core/types.js",
       "../github/port.js",
+      // twiki composes the shared transports; without this the boundary never
+      // proves the import it was widened for.
+      "../notify/port.js",
       "@hono/node-server/dist/index.js",
     ],
   },
@@ -265,8 +295,7 @@ const BOUNDARIES: Record<
       "../../github/port.js",
       "../../twiki/executor.js",
       "../../enrich/kev.js",
-      // src/notify arrives with Epic 4; the rule is testable before it does.
-      "../notify/index.js",
+      "../../notify/port.js",
     ],
     // collect's types and LANE constants must stay legal, or the rule has
     // swallowed the one edge the module is built on.
