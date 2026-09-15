@@ -174,8 +174,12 @@ describe("a transport sends every time it is called", () => {
     const src = readFileSync("src/notify/transports.ts", "utf8");
     // No closing quote in the pattern: `node:fs/promises` is the more
     // natural choice inside an async `send()`, and requiring the quote
-    // would let it through while this assertion read as closed.
-    expect(src).not.toMatch(/["']node:fs/);
+    // would let it through while this assertion read as closed. The
+    // prefix is optional and a backtick counts, so a bare `fs` and a
+    // dynamic `import(`fs`)` are caught here too. Bare `fs` also fails
+    // `make lint` under useNodejsImportProtocol, measured at exit 1 on
+    // 2026-09-15; this assertion is the second gate, not the only one.
+    expect(src).not.toMatch(/["'`](?:node:)?fs/);
   });
 });
 
