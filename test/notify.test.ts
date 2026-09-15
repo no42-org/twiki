@@ -172,7 +172,10 @@ describe("a transport sends every time it is called", () => {
     // is a false pass. A module that imports no filesystem API has no path it
     // could write, wherever it runs.
     const src = readFileSync("src/notify/transports.ts", "utf8");
-    expect(src).not.toMatch(/["']node:fs["']/);
+    // No closing quote in the pattern: `node:fs/promises` is the more
+    // natural choice inside an async `send()`, and requiring the quote
+    // would let it through while this assertion read as closed.
+    expect(src).not.toMatch(/["']node:fs/);
   });
 });
 
@@ -484,6 +487,21 @@ describe("redact's exact-match argument", () => {
     // TWIKI_MATRIX_TOKEN=" " is a misconfiguration, not a credential, and
     // redaction exists to preserve the diagnostic.
     expect(redact("Invalid access token", [" "])).toBe("Invalid access token");
+  });
+
+  it("matches a token configured with surrounding whitespace", () => {
+    // `Headers` strips whitespace around a header value, so a token from a
+    // mounted secret file or a `.env` line reaches the homeserver trimmed
+    // and is echoed back trimmed. Guarding on the trimmed value while
+    // splitting on the raw one let exactly that case through - the leak the
+    // exact-match argument exists to close.
+    const token = "syt_AAAAAAAAAAAAAAAA";
+    const body = `{"errcode":"M_UNKNOWN_TOKEN","error":"Invalid token ${token}"}`;
+    for (const configured of [token, `${token}\n`, `${token} `, ` ${token} `]) {
+      expect(redact(body, [configured])).toBe(
+        '{"errcode":"M_UNKNOWN_TOKEN","error":"Invalid token SECRET_REDACTED"}',
+      );
+    }
   });
 
   it("ignores a secret too short to be a credential", () => {

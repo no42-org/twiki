@@ -22,7 +22,9 @@ const PATTERNS: readonly [RegExp, string][] = [
 /**
  * The shortest configured value treated as a credential.
  *
- * The same 8 the pattern list above requires, and it is a floor on what may be
+ * A chosen floor, not a derived one: the pattern list's `{8,}` is a suffix
+ * quantifier, so the shortest string those patterns match is 12 characters
+ * (`ghp_` plus 8). This is a floor on what may be
  * rewritten, not on what may be configured. Redaction exists to PRESERVE the
  * diagnostic while removing the credential from it; below this length the
  * removal costs more than it buys. `TWIKI_MATRIX_TOKEN=" "` would otherwise
@@ -60,8 +62,16 @@ const MIN_SECRET_LENGTH = 8;
 export function redact(text: string, secrets: readonly string[] = []): string {
   let out = text;
   for (const secret of secrets) {
-    if (secret.trim().length < MIN_SECRET_LENGTH) continue;
-    out = out.split(secret).join("SECRET_REDACTED");
+    // Trimmed ONCE, and the trimmed value is what we match on. Splitting on
+    // the raw value while guarding on the trimmed one is a leak, not a
+    // nicety: `Headers` normalises a header value by stripping surrounding
+    // whitespace, so a token configured with a trailing newline - a mounted
+    // secret file, a `.env` line - is sent trimmed, echoed back trimmed in
+    // the error body, and never matched by the untrimmed needle. Verified
+    // against Node's `Headers`, not assumed.
+    const needle = secret.trim();
+    if (needle.length < MIN_SECRET_LENGTH) continue;
+    out = out.split(needle).join("SECRET_REDACTED");
   }
   for (const [pattern, replacement] of PATTERNS) {
     out = out.replace(pattern, replacement);
