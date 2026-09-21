@@ -40,9 +40,9 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.12",
+    "@biomejs/biome": "^2.5.13",
     "@octokit/openapi-types": "29.0.1",
-    "@types/node": "^24.13.3",
+    "@types/node": "^24.13.4",
     "playwright": "1.63.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
