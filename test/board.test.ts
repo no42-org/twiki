@@ -70,7 +70,7 @@ const AT = "2026-08-16T11:55:00.000Z";
 /** The Release cell of a repository the release lane has not confirmed. */
 const RELEASE_UNSWEPT: ReleaseCell = {
   state: "unconfirmed",
-  reason: "not confirmed by a current, complete release-readiness run",
+  reason: "not confirmed by a current release-readiness run",
 };
 const POLICY = { cadenceMs: 15 * 60_000 };
 const HOURLY = { cadenceMs: 60 * 60_000 };
@@ -2952,7 +2952,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
         // no sweep confirmed.
         expect(html).toContain(
           cell(
-            '<span class="chip unconfirmed" title="not confirmed by a current, complete release-readiness run">unconfirmed</span>',
+            '<span class="chip unconfirmed" title="not confirmed by a current release-readiness run">unconfirmed</span>',
           ),
         );
       });

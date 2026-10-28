@@ -1447,7 +1447,7 @@ describe("the per-repository view (CAP-7)", () => {
     });
 
     const UNSWEPT =
-      '<p class="attest">Release readiness has no current, complete reading for this repository (not confirmed by a current, complete release-readiness run), so whether anything is worth releasing is unknown.</p>';
+      '<p class="attest">Release readiness has no current, complete reading for this repository (not confirmed by a current release-readiness run), so whether anything is worth releasing is unknown.</p>';
 
     it("says unconfirmed, never nothing to release, when the lane never ran", async () => {
       const section = await releasePage();
@@ -3043,7 +3043,7 @@ describe("the per-repository page", () => {
       '<h2 id="reviews">Reviews <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">0 shown</span></h2>' +
         '<p class="attest">no review requests in this repository</p>' +
         '<h2 id="release">Release <span class="badge unknown" title="never collected">never collected</span></h2>' +
-        '<p class="attest">Release readiness has no current, complete reading for this repository (not confirmed by a current, complete release-readiness run), so whether anything is worth releasing is unknown.</p>' +
+        '<p class="attest">Release readiness has no current, complete reading for this repository (not confirmed by a current release-readiness run), so whether anything is worth releasing is unknown.</p>' +
         "</section></main>",
     );
   });

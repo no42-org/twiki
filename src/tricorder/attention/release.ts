@@ -18,9 +18,9 @@ import { readReleaseEvidence, readReleaseFailure } from "./payloads.js";
 // lift and the board's Release cell so the two cannot disagree: a repository
 // is never lifted by a row its own cell calls unconfirmed or not tracked.
 
-/** No `ok` or `partial`, fresh run of the lane on the owner, or no fresh row of its own. */
+/** No `ok` or `partial` fresh run of the lane on the owner, or no fresh row of its own. */
 export const RELEASE_NOT_CONFIRMED =
-  "not confirmed by a current, complete release-readiness run";
+  "not confirmed by a current release-readiness run";
 /** The row is present and fresh, but its payload does not parse. */
 export const RELEASE_UNREADABLE =
   "the stored release reading could not be read";
