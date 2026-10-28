@@ -1822,9 +1822,121 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
       {TOPICS.map((t) => (
         <RepoSection key={t.topic} topic={t.topic} view={view} />
       ))}
+      <ReleaseSection view={view} />
     </section>
   </Layout>
 );
+
+/**
+ * What would go into a release (#196). Its own component and not a `Section`:
+ * Release is not a Topic, so it has no queue filter and no label in TOPICS.
+ * Every state says which absence it is; `unconfirmed` never reads as
+ * "nothing to release" (AD-28).
+ */
+const ReleaseSection: FC<{ view: RepoView }> = ({ view }) => {
+  const r = view.releaseSection;
+  const verdict = r.verdict;
+  return (
+    <>
+      <h2 id="release">
+        Release{" "}
+        {r.cell.state === "not-tracked" ? null : (
+          <FreshnessBadge freshness={r.freshness} age={r.age} />
+        )}
+      </h2>
+      {r.cell.state === "not-tracked" ? (
+        <p class="attest">Not tracked: release: false in repos.yaml.</p>
+      ) : verdict === null ? (
+        <p class="attest">
+          Release readiness has not been collected for this repository, so
+          whether anything is worth releasing is unknown.
+        </p>
+      ) : (
+        <>
+          <p class="attest">
+            {verdict.tag === null
+              ? "no tag yet"
+              : `latest tag ${verdict.tag}${r.tagAge === null ? "" : ` (${r.tagAge})`}`}
+          </p>
+          {verdict.truncated ? (
+            <p class="attest warn">
+              More commits exist than were read, so the improvements below are a
+              lower bound.
+            </p>
+          ) : null}
+          {!verdict.ready ? (
+            <p class="attest">
+              {verdict.tag === null
+                ? "Nothing worth releasing yet."
+                : `Nothing worth releasing since ${verdict.tag}.`}
+            </p>
+          ) : (
+            <>
+              {verdict.securityFixes.length === 0 ? null : (
+                <table class="cards" role="table">
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <Th>Security fix</Th>
+                      <Th>Package</Th>
+                      <Th>Severity</Th>
+                      <Th>Fixed</Th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    {verdict.securityFixes.map((a) => (
+                      <tr key={`fix-${a.number}`} role="row">
+                        <Td label="Security fix">
+                          <ExternalLink href={a.htmlUrl}>
+                            {a.ghsaId ?? a.cveId ?? `#${a.number}`}
+                          </ExternalLink>
+                        </Td>
+                        <Td label="Package" show>
+                          {a.packageName ?? "unknown"}
+                        </Td>
+                        <Td label="Severity" show>
+                          {a.severity}
+                        </Td>
+                        <Td label="Fixed" show>
+                          {a.fixedAt.slice(0, 10)}
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {verdict.improvements.length === 0 ? null : (
+                <table class="cards" role="table">
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <Th>Improvement</Th>
+                      <Th>Kind</Th>
+                      <Th>Commit</Th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    {verdict.improvements.map((c) => (
+                      <tr key={`commit-${c.sha}`} role="row">
+                        <Td label="Improvement">{c.subject}</Td>
+                        <Td label="Kind" show>
+                          {c.kind}
+                        </Td>
+                        <Td label="Commit" show>
+                          <ExternalLink href={c.url}>
+                            {c.sha.slice(0, 7)}
+                          </ExternalLink>
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </>
+      )}
+    </>
+  );
+};
 
 const UNKNOWN_REPO_POLICY =
   "Only repositories listed in repos.yaml have a page; nothing is discovered.";

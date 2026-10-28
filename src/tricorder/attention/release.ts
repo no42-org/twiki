@@ -24,6 +24,8 @@ export type ReleaseReading =
   | {
       state: "confirmed";
       verdict: ReleaseVerdict;
+      /** Committer date of the latest tag, ISO, or null. */
+      tagDate: string | null;
       /** The row's own confirmation time. */
       verifiedAt: string;
     };
@@ -81,6 +83,7 @@ export function releaseReadings(
     return {
       state: "confirmed",
       verdict: assessRelease(evidence),
+      tagDate: evidence.tagDate,
       verifiedAt: row.verifiedAt,
     };
   }

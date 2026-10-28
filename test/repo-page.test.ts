@@ -11,9 +11,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isDefaultBranchRun } from "../src/core/branch.js";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import { redact } from "../src/core/redact.js";
+import type { ReleaseEvidence } from "../src/core/release-worthy.js";
 import {
   codeScanningSubject,
   KEV_SUBJECT,
+  releaseSubject,
   secretScanningSubject,
 } from "../src/core/subject.js";
 import { OctokitGitHub } from "../src/github/octokit-adapter.js";
@@ -1325,6 +1327,139 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.notCovered).toBe(true);
     expect(view.summary.openAlerts).toBeNull();
   });
+
+  describe("the Release section (#196)", () => {
+    const RELEASE_LANE = "rest-release-readiness";
+    const commit = (sha: string, subject: string) => ({
+      sha,
+      subject,
+      url: `https://github.com/no42-org/twiki/commit/${sha}`,
+    });
+    const EVIDENCE: ReleaseEvidence = {
+      tag: "v1.2.0",
+      tagDate: "2026-08-10T12:00:00.000Z",
+      commits: [
+        commit("a1b2c3d4e5f6", "feat(web): a new page"),
+        commit("b2c3d4e5f6a1", "perf: faster render"),
+        commit("c3d4e5f6a1b2", "chore: tidy"),
+      ],
+      truncated: false,
+      fixedAlerts: [
+        {
+          number: 4,
+          severity: "high",
+          ghsaId: "GHSA-aaaa-bbbb-cccc",
+          cveId: "CVE-2026-0001",
+          packageName: "lodash",
+          scope: "runtime",
+          htmlUrl: "https://github.com/no42-org/twiki/security/dependabot/4",
+          fixedAt: "2026-08-15T12:00:00.000Z",
+        },
+      ],
+    };
+    const seedRelease = (evidence: unknown) =>
+      seed(RELEASE_LANE, [
+        { subject: releaseSubject(REPO), payload: evidence },
+      ] as never);
+    const releasePage = async (releaseTracked?: () => boolean) => {
+      const app = createApp({
+        defaultBranchOf: () => "main",
+        store,
+        watched: [REPO],
+        policy: SWEEP,
+        rankPolicy: DEFAULT_RANK_POLICY,
+        now: () => NOW,
+        ...(releaseTracked ? { releaseTracked } : {}),
+      });
+      const html = await (await app.request("/repo/no42-org/twiki")).text();
+      const start = html.indexOf('<h2 id="release">');
+      expect(start).toBeGreaterThan(-1);
+      return html.slice(start, html.indexOf("</section>", start));
+    };
+
+    it("lists the tag, each security fix and each improvement", async () => {
+      seedRelease(EVIDENCE);
+
+      const section = await releasePage();
+
+      expect(section).toContain('<h2 id="release">Release ');
+      expect(section).toContain("latest tag v1.2.0 (10d ago)");
+      const ext = (href: string, text: string) =>
+        `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}`;
+      expect(section).toContain(
+        ext(
+          "https://github.com/no42-org/twiki/security/dependabot/4",
+          "GHSA-aaaa-bbbb-cccc",
+        ),
+      );
+      expect(section).toContain("lodash");
+      expect(section).toContain("high");
+      expect(section).toContain("2026-08-15");
+      expect(section).toContain(
+        ext("https://github.com/no42-org/twiki/commit/a1b2c3d4e5f6", "a1b2c3d"),
+      );
+      expect(section).toContain("feat");
+      expect(section).toContain("feat(web): a new page");
+      expect(section).toContain(
+        ext("https://github.com/no42-org/twiki/commit/b2c3d4e5f6a1", "b2c3d4e"),
+      );
+      expect(section).toContain("perf: faster render");
+      expect(section).not.toContain("chore: tidy");
+      expect(section).not.toContain("Nothing worth releasing");
+    });
+
+    it("names the CVE when the alert has no GHSA", async () => {
+      seedRelease({
+        ...EVIDENCE,
+        fixedAlerts: [{ ...EVIDENCE.fixedAlerts[0], ghsaId: null }],
+      });
+
+      expect(await releasePage()).toContain("CVE-2026-0001");
+    });
+
+    it("says no tag yet when the repository has none", async () => {
+      seedRelease({ ...EVIDENCE, tag: null, tagDate: null });
+
+      const section = await releasePage();
+
+      expect(section).toContain("no tag yet");
+      expect(section).not.toContain("latest tag");
+    });
+
+    it("says nothing is worth releasing only when the lane confirmed it", async () => {
+      seedRelease({ ...EVIDENCE, fixedAlerts: [], commits: [] });
+
+      const section = await releasePage();
+
+      expect(section).toContain("Nothing worth releasing since v1.2.0.");
+    });
+
+    it("says it was not tracked when repos.yaml opted out", async () => {
+      seedRelease(EVIDENCE);
+
+      const section = await releasePage(() => false);
+
+      expect(section).toContain("Not tracked: release: false in repos.yaml.");
+      expect(section).not.toContain("GHSA-aaaa-bbbb-cccc");
+    });
+
+    it("says unconfirmed, never nothing to release, when the lane never ran", async () => {
+      const section = await releasePage();
+
+      expect(section).toContain("Release readiness has not been collected");
+      expect(section).not.toContain("Nothing worth releasing");
+    });
+
+    it("says unconfirmed when the lane's latest run failed", async () => {
+      seedRelease({ ...EVIDENCE, fixedAlerts: [], commits: [] });
+      run(RELEASE_LANE, "failed", "2026-08-20T11:58:00.000Z");
+
+      const section = await releasePage();
+
+      expect(section).toContain("Release readiness has not been collected");
+      expect(section).not.toContain("Nothing worth releasing");
+    });
+  });
 });
 
 describe("the code scanning rows on the repository page (#156)", () => {
@@ -2445,6 +2580,8 @@ describe("the per-repository page", () => {
       unswept("pulls", "Pull requests"),
       unswept("issues", "Issues"),
       unswept("reviews", "Reviews"),
+      // Release is not a topic: it follows them, with no count.
+      '<h2 id="release">Release <span class="badge unknown" title="never collected">never collected</span></h2>',
     ]);
     for (const old of [
       "Security alerts",
@@ -2766,6 +2903,8 @@ describe("the per-repository page", () => {
     expect(html).toContain(
       '<h2 id="reviews">Reviews <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">0 shown</span></h2>' +
         '<p class="attest">no review requests in this repository</p>' +
+        '<h2 id="release">Release <span class="badge unknown" title="never collected">never collected</span></h2>' +
+        '<p class="attest">Release readiness has not been collected for this repository, so whether anything is worth releasing is unknown.</p>' +
         "</section></main>",
     );
   });

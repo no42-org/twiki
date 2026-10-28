@@ -13,6 +13,10 @@ import {
 } from "../../core/coverage.js";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import {
+  type ReleaseVerdict,
+  releaseSummary,
+} from "../../core/release-worthy.js";
+import {
   DEFAULT_HUNG_AFTER_MS,
   isBrokenVerdict,
   type RunVerdict,
@@ -33,6 +37,7 @@ import {
   laneAttestation,
   type SectionState,
 } from "../attention/attestation.js";
+import type { ReleaseCell } from "../attention/board.js";
 import {
   ageLabel,
   type Freshness,
@@ -50,6 +55,7 @@ import {
   readStatus,
   readWorkflowRun,
 } from "../attention/payloads.js";
+import { releaseReadings } from "../attention/release.js";
 import { repoAttention } from "../attention/tiers.js";
 import type { RepoCodeScanningObservation } from "../collect/code-scanning.js";
 import {
@@ -58,6 +64,7 @@ import {
 } from "../collect/coverage.js";
 import type { RepoObservation } from "../collect/dependabot-alerts.js";
 import { LANE as ISSUE_LANE } from "../collect/issues.js";
+import { LANE as RELEASE_LANE } from "../collect/release-readiness.js";
 import {
   REVIEWS_INSTALLATION,
   LANE as REVIEWS_LANE,
@@ -380,6 +387,18 @@ export interface RepoView {
    */
   reviews: RepoReviewRow[];
   reviewSection: SectionState;
+  /**
+   * What would go into a release (#196). Not a topic. `cell` is the board's
+   * own reading (`releaseReadings`), so the page cannot disagree with it;
+   * `verdict` and `tagDate` are set only when `cell` is `ready` or `none`.
+   */
+  releaseSection: SectionState & {
+    cell: ReleaseCell;
+    verdict: ReleaseVerdict | null;
+    tagDate: string | null;
+    /** `tagDate` as an age, e.g. `10d ago`; null when there is no date. */
+    tagAge: string | null;
+  };
   /**
    * Rows stored for this repository that could not be read. Rendered, never
    * dropped: a page quietly missing items looks complete.
@@ -984,6 +1003,51 @@ export function buildRepoView(
     ].filter((s): s is string => typeof s === "string"),
   );
 
+  // The board's own reading, for this one repository, so the page and the
+  // Release cell cannot disagree. The lane's attestation supplies only the
+  // heading's freshness and age.
+  const releaseReading = releaseReadings(
+    store,
+    new Map([[slug, repo]]),
+    now,
+    alertPolicy,
+    deps.releaseTracked ?? (() => true),
+  ).get(slug) ?? { state: "unconfirmed" as const };
+  const releaseLane = laneAttestation(
+    store,
+    RELEASE_LANE,
+    installation,
+    now,
+    alertPolicy,
+  );
+  const releaseSection: RepoView["releaseSection"] =
+    releaseReading.state === "confirmed"
+      ? {
+          ...releaseLane,
+          attested: true,
+          cell: releaseReading.verdict.ready
+            ? {
+                state: "ready",
+                summary: releaseSummary(releaseReading.verdict),
+                href: "#release",
+              }
+            : { state: "none" },
+          verdict: releaseReading.verdict,
+          tagDate: releaseReading.tagDate,
+          tagAge:
+            releaseReading.tagDate === null
+              ? null
+              : ageLabel(releaseReading.tagDate, now),
+        }
+      : {
+          ...releaseLane,
+          attested: false,
+          cell: { state: releaseReading.state },
+          verdict: null,
+          tagDate: null,
+          tagAge: null,
+        };
+
   return {
     slug,
     coverageReasons,
@@ -1084,6 +1148,7 @@ export function buildRepoView(
       now,
       reviewPolicy,
     ),
+    releaseSection,
     unreadable,
     unattributable,
   };
