@@ -51,18 +51,13 @@ async function applyRepo(
   const repoPlan = plan.repos.find((r) => r.repo === slug);
   const enforce = config.mode === "enforce";
 
-  // Held OUTSIDE the try. Everything below can fail against GitHub, and an
-  // action already performed must survive whatever fails after it: twiki
-  // could merge three pull requests, fail on the fourth, and report `prs: []`
-  // to both the digest and the audit, because this array was a local inside
-  // the try and the catch built a fresh result without it.
-  //
-  // Only `prs` is hoisted, and deliberately so. Hoisting `remediations` too
-  // was considered and is unreachable: `remediate` is the last step, so if it
-  // completes we return normally and never reach `stopped`; and it cannot
-  // throw, because every write in it goes through `tryWrite` and the rest is
-  // pure. If a future step is added after `evaluatePrs`, or an unguarded call
-  // appears in `remediate`, hoist then and pin it with a test that can fail.
+  // Held OUTSIDE the try, so an action already performed survives whatever
+  // fails after it. Nothing below currently throws: `evaluatePrs` returns its
+  // write failure instead, and every write in `remediate` goes through
+  // `tryWrite`. The catch is a backstop with no current path in. If a step
+  // that can throw is added, or an unguarded call appears in `remediate`,
+  // pin the backstop with a test that can fail, and hoist `remediations` too
+  // if it can throw after remediations were performed.
   let prs: PrOutcome[] = [];
   const stopped = (error: string): RepoResult => ({
     repo: slug,
@@ -114,9 +109,9 @@ async function applyRepo(
       remediations,
     };
   } catch (err) {
-    // The backstop: anything above that throws. Whatever completed is kept,
-    // never discarded. Not necessarily a write, so neither this result nor
-    // the digest line claims one failed; `error` carries the real cause.
+    // The backstop (see above: no current path in). Whatever completed is
+    // kept. Not necessarily a write, so neither this result nor the digest
+    // line claims one failed; `error` carries the real cause.
     return stopped(err instanceof Error ? err.message : String(err));
   }
 }

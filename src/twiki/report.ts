@@ -47,8 +47,9 @@ function summarizeFailing(checks: FailingCheck[]): string {
 function repoHasActivity(repo: RepoResult): boolean {
   if (repo.error || repo.mainRed) return true;
   // A branch that could not be confirmed defended is news, and a QUIET
-  // repository is exactly where one hides: nothing merging, so without this the digest is suppressed and the fact is
-  // gathered every tick and shown on none of them. `protection` is only set
+  // repository is exactly where one hides: nothing merging, so without this
+  // the digest is suppressed and the fact is gathered every tick and shown on
+  // none of them. `protection` is only set
   // when the branch is not confirmed protected, so this cannot spam.
   if (repo.protection) return true;
   if (repo.prs.length > 0) return true;

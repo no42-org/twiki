@@ -363,8 +363,9 @@ async function runDirect(args: Args): Promise<void> {
     if (!step) continue;
     const [name, arg] = step.split(":");
     // Validate before issuing. Without this, `mergePR` with no colon requested
-    // /pulls/NaN/merge - surfacing as REJECTED, which is the one signal this spike exists to produce. A bad
-    // argument must not be mistakable for a genuine adapter defect.
+    // /pulls/NaN/merge, surfacing as REJECTED, which is the one signal this
+    // spike exists to produce. A bad argument must not be mistakable for a
+    // genuine adapter defect.
     const num = (v: string | undefined): number | null => {
       const n = Number(v);
       return v && Number.isInteger(n) && n > 0 ? n : null;

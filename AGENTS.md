@@ -7,7 +7,7 @@ Everything goes through `make`; CI runs the same targets.
 ```sh
 make verify                 # lint + typecheck + test — the gate
 make test                   # vitest
-npx vitest run test/semver.test.ts -t "nextPatchTag"   # one test
+npx vitest run test/semver.test.ts -t "newestStableTag"   # one test
 make image                  # local single-arch build, tags twiki:dev
 make up / down / logs / ps  # compose; `up` runs the image preflight first
 ```
