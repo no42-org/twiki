@@ -126,23 +126,6 @@ describe("each write issues the request GitHub accepted", () => {
     expect(seen[0]?.body).toEqual({ merge_method: "squash" });
   });
 
-  it("pushTag fully qualifies the ref", async () => {
-    const seen: Seen[] = [];
-    await recordingGitHub(seen).pushTag(REPO, "v1.2.3", "deadbeef");
-
-    expect(seen).toHaveLength(1);
-    expect(seen[0]?.method).toBe("POST");
-    expect(seen[0]?.path).toBe("/repos/no42-org/twiki-write-spike/git/refs");
-    // The prefix is the whole point. `v1.2.3` without `refs/tags/` is exactly
-    // the error a fake written by the same hand would mirror, and GitHub
-    // rejects it - so this assertion is what stands between the adapter and a
-    // release that never tags.
-    expect(seen[0]?.body).toEqual({
-      ref: "refs/tags/v1.2.3",
-      sha: "deadbeef",
-    });
-  });
-
   it("rerunFailedJobs names the run", async () => {
     const seen: Seen[] = [];
     await recordingGitHub(seen).rerunFailedJobs(REPO, 32774147847);

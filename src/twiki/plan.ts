@@ -16,18 +16,9 @@ export const PrDecisionSchema = z.object({
   risk: z.enum(["low", "medium", "high"]),
 });
 
-export const RepoReleaseDecisionSchema = z.object({
-  action: z.enum(["release", "wait"]),
-  reason: z.string(),
-  // Advisory only — the executor deterministically recomputes the version.
-  version: z.string().optional(),
-  notes: z.string().optional(),
-});
-
 export const RepoPlanSchema = z.object({
   repo: z.string(),
   prDecisions: z.array(PrDecisionSchema),
-  release: RepoReleaseDecisionSchema,
 });
 
 export const PlanSchema = z.object({
@@ -35,7 +26,6 @@ export const PlanSchema = z.object({
 });
 
 export type PrDecision = z.infer<typeof PrDecisionSchema>;
-export type RepoReleaseDecision = z.infer<typeof RepoReleaseDecisionSchema>;
 export type RepoPlan = z.infer<typeof RepoPlanSchema>;
 export type Plan = z.infer<typeof PlanSchema>;
 
@@ -65,17 +55,8 @@ export const planJsonSchema = {
               required: ["number", "action", "reason", "risk"],
             },
           },
-          release: {
-            type: "object",
-            properties: {
-              action: { type: "string", enum: ["release", "wait"] },
-              reason: { type: "string" },
-              notes: { type: "string" },
-            },
-            required: ["action", "reason"],
-          },
         },
-        required: ["repo", "prDecisions", "release"],
+        required: ["repo", "prDecisions"],
       },
     },
   },

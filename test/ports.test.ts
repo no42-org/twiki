@@ -18,8 +18,6 @@ describe("GitHubReadPort", () => {
 
     // @ts-expect-error GitHubReadPort must not expose mergePR
     void readOnly.mergePR;
-    // @ts-expect-error GitHubReadPort must not expose pushTag
-    void readOnly.pushTag;
     // @ts-expect-error GitHubReadPort must not expose rerunFailedJobs
     void readOnly.rerunFailedJobs;
     // @ts-expect-error GitHubReadPort must not expose requestDependabotRebase

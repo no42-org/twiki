@@ -31,7 +31,6 @@ import type {
   CodeScanningAlertPage,
   DependabotAccess,
   FeatureProbe,
-  FileAtRef,
   GitHubPort,
   GitHubReadPort,
   IssuePage,
@@ -49,7 +48,6 @@ import type {
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
-  ReleaseState,
   RequestValidator,
   ReviewRequestPage,
   SecretScanningAlertPage,
@@ -97,9 +95,6 @@ export function makeFacts(partial: Partial<RepoFacts> = {}): RepoFacts {
   return {
     repo: REPO,
     mainChecks: "green",
-    latestTag: "v1.2.3",
-    hasTagReleaseWorkflow: true,
-    unreleasedDependencyCommits: 1,
     protection: {
       state: "protected",
       rulesInForce: ["pull_request", "required_status_checks"],
@@ -324,7 +319,6 @@ export const mergeEverythingAdvisor = new StubAdvisor((input) => ({
       reason: "stub: merge",
       risk: "low" as const,
     })),
-    release: { action: "release" as const, reason: "stub: release" },
   })),
 }));
 
@@ -343,8 +337,6 @@ export interface FakeRepoData {
   /** Absent means the fake serves no commits and no tag date. */
   unreleasedCommits?: RawUnreleasedCommits;
   fixedAlerts?: FixedAlertRef[];
-  unreleased: number;
-  hasWorkflow: boolean;
   defaultSha: string;
   /** Defaults to protected; set it to exercise the reporting paths. */
   protection?: ProtectionFact;
@@ -354,12 +346,6 @@ export interface FakeRepoData {
   workflowRuns?: Record<string, WorkflowRunRef[]>;
   /** behind_by keyed by PR head SHA. */
   behindByMap?: Record<string, number | null>;
-  /**
-   * File text keyed by `<ref>:<path>`. Anything unlisted is absent AT THAT
-   * REF, which is what makes "the tree is read at the sha being tagged"
-   * expressible here: the same path can exist at one sha and not another.
-   */
-  contents?: Record<string, string>;
 }
 
 /**
@@ -909,11 +895,7 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   async branchChecks(repo: RepoRef): Promise<CheckStatus> {
     return this.get(repo).mainChecks;
   }
-  /** When set, latestTag throws: a READ failure inside the release step. */
-  failLatestTagWith: Error | null = null;
-
   async latestTag(repo: RepoRef): Promise<string | null> {
-    if (this.failLatestTagWith) throw this.failLatestTagWith;
     return this.get(repo).latestTag;
   }
   /** When set, unreleasedCommits throws: a READ failure in the release signal. */
@@ -934,12 +916,6 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   }
   async listFixedDependabotAlerts(repo: RepoRef): Promise<FixedAlertRef[]> {
     return this.get(repo).fixedAlerts ?? [];
-  }
-  async dependabotCommitsSince(repo: RepoRef): Promise<number> {
-    return this.get(repo).unreleased;
-  }
-  async hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean> {
-    return this.get(repo).hasWorkflow;
   }
   // Returns whatever a human chose, exactly like every other method here -
   // which is why the adapter carries its own recorded-payload test (D5).
@@ -969,24 +945,11 @@ export class FakeGitHubReadPort implements GitHubReadPort {
     // Default null (unknown/fail-closed), matching the real adapter on error.
     return this.get(repo).behindByMap?.[headSha] ?? null;
   }
-  /** Every content read, so a test can assert that NONE happened. */
-  contentReads: { repo: string; path: string; ref: string }[] = [];
-
-  async readFileAtRef(
-    repo: RepoRef,
-    path: string,
-    ref: string,
-  ): Promise<FileAtRef> {
-    this.contentReads.push({ repo: repoSlug(repo), path, ref });
-    const text = this.get(repo).contents?.[`${ref}:${path}`];
-    return text === undefined ? { kind: "absent" } : { kind: "text", text };
-  }
 }
 
 /** Read half plus the write half, recording every mutation for assertions. */
 export class FakeGitHub extends FakeGitHubReadPort implements GitHubPort {
   merged: { repo: string; number: number }[] = [];
-  tagged: { repo: string; tag: string; sha: string }[] = [];
   reran: { repo: string; runId: number }[] = [];
   rebased: { repo: string; number: number }[] = [];
 
@@ -1000,19 +963,6 @@ export class FakeGitHub extends FakeGitHubReadPort implements GitHubPort {
     const fail = this.failMergeOn.get(prNumber);
     if (fail) throw fail;
     this.merged.push({ repo: repoSlug(repo), number: prNumber });
-  }
-  /** When set, pushTag throws this, for exercising the release-write path. */
-  failTagWith: Error | null = null;
-
-  async pushTag(repo: RepoRef, tag: string, sha: string): Promise<void> {
-    if (this.failTagWith) throw this.failTagWith;
-    this.tagged.push({ repo: repoSlug(repo), tag, sha });
-  }
-  /** Release state per "<slug>@<tag>"; anything unlisted is "none". */
-  releaseStates = new Map<string, ReleaseState>();
-
-  async releaseStateForTag(repo: RepoRef, tag: string): Promise<ReleaseState> {
-    return this.releaseStates.get(`${repoSlug(repo)}@${tag}`) ?? "none";
   }
   async rerunFailedJobs(repo: RepoRef, runId: number): Promise<void> {
     const fail = this.failRerunOn.get(runId);

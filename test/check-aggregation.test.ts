@@ -7,15 +7,10 @@ import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type {
-  CheckStatus,
-  PullRequest,
-  RepoPolicy,
-} from "../src/core/types.js";
+import type { PullRequest, RepoPolicy } from "../src/core/types.js";
 import { DEFAULT_POLICY } from "../src/core/types.js";
 import { createGitHubFromEnv } from "../src/github/octokit-adapter.js";
-import { settledBlockers } from "../src/twiki/executor.js";
-import { canRebase, isSettled, mergeBlock } from "../src/twiki/gates.js";
+import { canRebase, mergeBlock } from "../src/twiki/gates.js";
 
 // What twiki concludes about a commit's CI, from two GitHub systems that
 // disagree.
@@ -41,13 +36,6 @@ const TEST_KEY = generateKeyPairSync("rsa", {
 }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
 
 const REPO = { owner: "no42-org", name: "twiki-write-spike" };
-/** Irrelevant to CI aggregation; no gate reads it (protection-is-a-fact D4). */
-const PROTECTED = {
-  state: "protected" as const,
-  rulesInForce: ["pull_request"],
-  inertRulesets: [],
-  unreadableSources: [],
-};
 
 /** Serve one recorded check-runs payload and one recorded status payload. */
 function githubServing(runsFixture: string, statusFixture: string) {
@@ -226,7 +214,6 @@ describe("every status decides the same way at every gate", () => {
   const policy: RepoPolicy = {
     ...DEFAULT_POLICY,
     autoMergeMinor: true,
-    mergeOnly: false,
   };
   const pr = (checks: PullRequest["checks"]): PullRequest => ({
     repo: REPO,
@@ -269,55 +256,5 @@ describe("every status decides the same way at every gate", () => {
     // exist. Nothing failed; nothing ran.
     expect(mergeBlock(pr("none"), policy)).toBe("no-checks");
     expect(mergeBlock(pr("red"), policy)).toBe("ci-not-green");
-  });
-
-  it("a branch that reported nothing is not settled", () => {
-    const facts = {
-      repo: REPO,
-      mainChecks: "none" as const,
-      latestTag: "v1.0.0",
-      hasTagReleaseWorkflow: true,
-      unreleasedDependencyCommits: 3,
-      protection: PROTECTED,
-      prs: [],
-    };
-    expect(isSettled(facts, policy)).toBe(false);
-    expect(isSettled({ ...facts, mainChecks: "green" }, policy)).toBe(true);
-  });
-});
-
-describe("the operator is told what is absent, not what is failing", () => {
-  const policy: RepoPolicy = {
-    ...DEFAULT_POLICY,
-    autoMergeMinor: true,
-    mergeOnly: false,
-  };
-  const facts = (mainChecks: CheckStatus) => ({
-    repo: REPO,
-    mainChecks,
-    latestTag: "v1.0.0",
-    hasTagReleaseWorkflow: true,
-    unreleasedDependencyCommits: 3,
-    protection: PROTECTED,
-    prs: [],
-  });
-
-  it("a branch that reported nothing is neither red nor running", () => {
-    const said = settledBlockers(facts("none"), policy).join(" ");
-    expect(said).toContain("no check results");
-    // Must not assert a cause. `none` is reached both by nothing running and
-    // by everything that ran being skipped (#88), and naming the wrong one
-    // costs the reader the search - the #70/#73 failure mode.
-    expect(said).toContain("skipped");
-    // The two lies the three-value vocabulary forced it to choose between.
-    expect(said).not.toContain("RED");
-    expect(said.toLowerCase()).not.toContain("is running");
-  });
-
-  it("a red branch still says red, and a running one still says running", () => {
-    expect(settledBlockers(facts("red"), policy).join(" ")).toContain("red");
-    expect(settledBlockers(facts("pending"), policy).join(" ")).toContain(
-      "running",
-    );
   });
 });

@@ -1,5 +1,7 @@
 ## Context
 
+> Superseded on 2026-10-28 (#197): twiki no longer releases. gitricorder's Release column informs a human instead (#196). The release sections below are history.
+
 `twiki` is a greenfield service. It manages an allowlisted set of GitHub repositories: merging green Dependabot/Security PRs within policy, cutting a single patch release once the dependency queue settles, and reporting to chat. The defining constraint is **trust**: the service is an autonomous actor with merge and release authority across many repos, and the LLM at its core reads *untrusted third-party text* (changelogs embedded in Dependabot PR bodies). The architecture must make that bold setup safe by construction, not by instruction.
 
 Locked product decisions (from exploration): standalone TypeScript Agent SDK service; GitHub App auth; hourly scheduled poll; auto-merge patch+minor only; batch/debounce release via pushed patch tag; Slack/Discord digest; shadow-mode-first rollout.

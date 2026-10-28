@@ -36,11 +36,13 @@ const OPEN_PRS = 15;
 
 /** A quiet fortnight's worth, to prove the shape does not track the count. */
 /**
- * Measured, not chosen: 16 requests for a repository with no open pull
+ * Measured, not chosen: 13 requests for a repository with no open pull
  * requests. Three of them are `protection-is-a-fact`'s - effective branch
  * rules, the ruleset listing, and the legacy-protection attempt that 403s.
+ * It was 16 while twiki read three release facts (tags, the release
+ * workflow, commits since the tag) per repository.
  */
-const BASELINE_REQUESTS_PER_REPO = 16;
+const BASELINE_REQUESTS_PER_REPO = 13;
 
 const MANY_PRS = 40;
 
@@ -232,7 +234,7 @@ describe("one tick's request shape", () => {
     expect(facts.repo).toEqual(REPO);
     expect(facts.prs.map((p) => p.number)).toEqual(PRS.map((p) => p.number));
     expect(facts.mainChecks).toBe("red");
-    expect(facts.latestTag).toBeNull();
+    expect(facts).not.toHaveProperty("latestTag");
     expect(facts.prs.every((p) => p.isDependabot)).toBe(true);
   });
 });

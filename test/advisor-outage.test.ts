@@ -53,8 +53,6 @@ function deps(notifier: Notifier, advisorErr?: Error) {
     prChecks: { "sha-1": "green" },
     mainChecks: "green",
     latestTag: "v1.2.3",
-    unreleased: 1,
-    hasWorkflow: true,
     defaultSha: "main-sha",
   };
   return {
@@ -198,11 +196,10 @@ describe("the outage report says only what it can support", () => {
   });
 
   it("does not discount the decisions the advisor never made", () => {
-    // NOT everything below the banner is advisor-derived. evaluateRelease
-    // gates on isSettled and never reads the plan; a major bump is flagged
-    // before the plan is consulted. An earlier banner told the reader to
-    // discount everything, which would have discounted a real tag push and an
-    // URGENT security flag.
+    // NOT everything below the banner is advisor-derived: a major bump is
+    // flagged before the plan is consulted. An earlier banner told the reader
+    // to discount everything, which would have discounted an URGENT security
+    // flag. twiki cuts no releases, so the banner names none.
     const digest = buildDigest({
       mode: "enforce",
       advisorFailed: "credit balance is too low",
@@ -219,15 +216,16 @@ describe("the outage report says only what it can support", () => {
               detail: "URGENT security major",
             },
           ],
-          release: { status: "released", version: "v1.2.4", detail: "cut" },
         },
       ],
     });
 
-    expect(digest).toMatch(/releases and flagged majors.*still stand/i);
+    expect(digest).toMatch(
+      /flagged majors are decided without the advisor and still stand/i,
+    );
+    expect(digest).not.toMatch(/releas/i);
     expect(digest).not.toMatch(/nothing below is a merge decision/i);
-    // Both are still rendered, not swallowed by the banner.
-    expect(digest).toContain("released v1.2.4");
+    // Still rendered, not swallowed by the banner.
     expect(digest).toContain("URGENT security major");
   });
 

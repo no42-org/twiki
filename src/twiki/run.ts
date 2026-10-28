@@ -49,7 +49,6 @@ export async function runOnce(
         repo: repoSlug(repo),
         mainRed: false,
         prs: [],
-        release: { status: "waiting", detail: "fact-gathering failed" },
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -63,7 +62,7 @@ export async function runOnce(
   // when it is being careful, so the two must not look the same.
   if (failure !== undefined) result.advisorFailed = failure;
 
-  // Skip purely-routine ticks (nothing to release, deps up to date) so the
+  // Skip purely-routine ticks (no merges, holds or remediations) so the
   // channel isn't spammed every poll; the audit log still records every tick.
   if (hasActionableActivity(result)) {
     const digest = buildDigest(result);

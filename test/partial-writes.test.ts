@@ -13,13 +13,7 @@ import { JsonlAudit } from "../src/twiki/audit.js";
 import { applyPlan } from "../src/twiki/executor.js";
 import type { Plan } from "../src/twiki/plan.js";
 import { buildDigest, hasActionableActivity } from "../src/twiki/report.js";
-import {
-  FakeGitHub,
-  type FakeRepoData,
-  makeBump,
-  makeFacts,
-  makePr,
-} from "./fakes.js";
+import { FakeGitHub, type FakeRepoData, makeFacts, makePr } from "./fakes.js";
 
 // What a run reports when it stops part-way through a repository.
 //
@@ -48,8 +42,6 @@ function gh(over: Partial<FakeRepoData> = {}): FakeGitHub {
     prChecks: {},
     mainChecks: "green",
     latestTag: "v1.2.3",
-    unreleased: 1,
-    hasWorkflow: true,
     defaultSha: "main-sha",
     ...over,
   };
@@ -68,7 +60,6 @@ function mergePlan(numbers: number[]): Plan {
           reason: "ok",
           risk: "low" as const,
         })),
-        release: { action: "wait", reason: "n/a" },
       },
     ],
   };
@@ -158,88 +149,6 @@ describe("a repository that stops part-way still reports what it did", () => {
   });
 });
 
-describe("a failure after the merges is caught by the backstop", () => {
-  it("keeps the pull-request outcomes when the RELEASE write fails", async () => {
-    // The other way into applyRepo's catch, and the one the executor cannot
-    // see coming: evaluatePrs returns cleanly, then pushTag throws. Nothing
-    // exercised this path before, so `prs` being held outside the try was
-    // deletable with a green suite - the mutation battery found it, not a
-    // review.
-    const github = gh();
-    github.failTagWith = new Error(
-      "refusing to create tag: ref already exists",
-    );
-
-    // A major bump is out of policy, so it is flagged rather than merged.
-    // That matters here: a MERGEABLE pull request would hold the release
-    // (`isSettled` requires none open), and the release write is the failure
-    // this test needs.
-    const flagged = makePr({ number: 9, bump: makeBump({ level: "major" }) });
-
-    const result = await applyPlan(
-      [makeFacts({ prs: [flagged] })],
-      {
-        repos: [
-          {
-            repo: SLUG,
-            prDecisions: [],
-            release: { action: "release" as const, reason: "settled" },
-          },
-        ],
-      },
-      config(),
-      github,
-    );
-
-    // The outcome computed before the release failed is still reported.
-    expect(result.repos[0]?.prs.map((p) => p.number)).toEqual([9]);
-    expect(result.repos[0]?.error).toMatch(/ref already exists/);
-    // Every pull request WAS evaluated; only the release failed.
-    expect(result.repos[0]?.notEvaluated).toBe(0);
-    expect(buildDigest(result)).toContain("#9");
-  });
-});
-
-describe("the stop does not claim a cause it cannot know", () => {
-  it("a read failure in the release step is not called a failed write", async () => {
-    // evaluateRelease reads latestTag and defaultBranchSha BEFORE it pushes
-    // anything, so a 502 on either stops the repository with no write
-    // attempted. The digest used to say "stopped early after a failed write"
-    // regardless, and RepoResult documented the flag as "true when a write
-    // failed".
-    const github = gh();
-    github.failLatestTagWith = new Error(
-      "502 Bad Gateway from the tag listing",
-    );
-
-    const result = await applyPlan(
-      [
-        makeFacts({
-          prs: [makePr({ number: 9, bump: makeBump({ level: "major" }) })],
-        }),
-      ],
-      {
-        repos: [
-          {
-            repo: SLUG,
-            prDecisions: [],
-            release: { action: "release" as const, reason: "settled" },
-          },
-        ],
-      },
-      config(),
-      github,
-    );
-
-    const digest = buildDigest(result);
-    expect(result.repos[0]?.stoppedEarly).toBe(true);
-    expect(digest).toContain("stopped early");
-    expect(digest).not.toMatch(/failed write/);
-    // The real cause is still on the page, from `error`.
-    expect(digest).toMatch(/502/);
-  });
-});
-
 describe("a skipped remediation says why it was skipped", () => {
   // tryWrite caught everything and returned false, so the remediation was
   // simply absent from the output. Absent is also what an INELIGIBLE pull
@@ -252,7 +161,6 @@ describe("a skipped remediation says why it was skipped", () => {
       {
         repo: SLUG,
         prDecisions: [],
-        release: { action: "wait", reason: "n/a" },
       },
     ],
   });
@@ -343,7 +251,7 @@ describe("a skipped remediation says why it was skipped", () => {
 
   it("a remediation failure does not stop the repository", async () => {
     // The existing contract, kept: "a remediation failure must NOT discard the
-    // merge/release outcomes already computed for this repo".
+    // merge outcomes already computed for this repo".
     const github = gh();
     github.failRebaseOn.set(7, new Error("nope"));
 

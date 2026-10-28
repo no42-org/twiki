@@ -15,7 +15,6 @@ import {
   type RepoRef,
   repoSlug,
 } from "./types.js";
-import { versionPatternProblem } from "./version-agreement.js";
 
 // Strict schemas: unknown keys are rejected so a typo in repos.yaml fails loudly
 // rather than silently disabling a policy override.
@@ -23,7 +22,6 @@ import { versionPatternProblem } from "./version-agreement.js";
 const RepoEntrySchema = z.strictObject({
   repo: z.string().regex(/^[^/]+\/[^/]+$/, "must be owner/name"),
   autoMergeMinor: z.boolean().optional(),
-  mergeOnly: z.boolean().optional(),
   /**
    * `false` opts this repository out of gitricorder's release signal; absent
    * means tracked. Read by gitricorder only, so it is not part of RepoPolicy.
@@ -48,52 +46,6 @@ const RepoEntrySchema = z.strictObject({
       (v) => !v.startsWith("refs/"),
       "must name the branch, not the ref: write `main`, not `refs/heads/main`",
     )
-    .optional(),
-  /**
-   * Where this repository's tree carries its version; absent means nowhere.
-   *
-   * Absence is a real answer rather than an opt-out, so there is no default
-   * to fall back to and nothing is guessed.
-   *
-   * The pattern is validated HERE, where it was written, because a pattern
-   * that cannot compile or that captures the wrong number of things is a
-   * mistake in the document and not a fact about any repository. An
-   * empty list is refused for the same reason `defaultBranch: ""` is:
-   * somebody who wrote it meant something, and silently reading it as
-   * "declares nothing" would hide the one declaration that is definitely
-   * wrong.
-   */
-  versionSources: z
-    .array(
-      z.strictObject({
-        path: z
-          .string()
-          .transform((v) => v.trim())
-          .refine((v) => v.length > 0, "must name a file in the tree")
-          // Each of these reaches the contents endpoint exactly as written,
-          // so a path that can never name a file is refused where it was
-          // typed rather than blocking a release months later.
-          .refine(
-            (v) => !v.startsWith("/"),
-            "must be a path within the tree, with no leading slash",
-          )
-          .refine(
-            (v) => !v.endsWith("/"),
-            "must name a file, not a directory: drop the trailing slash",
-          )
-          .refine(
-            (v) => !v.split("/").includes(".."),
-            "must not climb out of the tree with `..`",
-          ),
-        pattern: z.string().superRefine((v, ctx) => {
-          const problem = versionPatternProblem(v);
-          if (problem !== null) {
-            ctx.addIssue({ code: "custom", message: problem });
-          }
-        }),
-      }),
-    )
-    .min(1, "list at least one source, or leave the key out entirely")
     .optional(),
 });
 
@@ -189,6 +141,32 @@ function locate(segments: readonly PropertyKey[]): string {
 }
 
 /**
+ * Keys a repos.yaml entry used to accept and no longer does. A config carrying
+ * one is OLDER than this twiki, so the generic "typo, or written for a newer
+ * twiki" sentence would name two causes that are both false (#197).
+ */
+const REMOVED_REPO_KEYS: ReadonlySet<string> = new Set([
+  "mergeOnly",
+  "versionSources",
+]);
+
+/** The entry's `repo` value when `key` is a removed key on `repos[N]`, else null. */
+function removedKeyEntry(
+  path: readonly PropertyKey[],
+  key: string,
+  doc: unknown,
+): string | null {
+  if (!REMOVED_REPO_KEYS.has(key)) return null;
+  if (path.length !== 2 || path[0] !== "repos" || typeof path[1] !== "number") {
+    return null;
+  }
+  const repos = (doc as { repos?: unknown }).repos;
+  const entry = Array.isArray(repos) ? repos[path[1]] : undefined;
+  const repo = (entry as { repo?: unknown } | undefined)?.repo;
+  return typeof repo === "string" ? repo : "unnamed entry";
+}
+
+/**
  * One sentence per problem, built from the issue's structured fields rather
  * than by matching text zod owns - a zod upgrade that changes the wording
  * must not silently change ours.
@@ -199,11 +177,15 @@ function locate(segments: readonly PropertyKey[]): string {
  * written against a newer build than the image running it, and saying only
  * "typo" sends the reader hunting for a mistake they did not make.
  */
-function renderIssue(issue: z.core.$ZodIssue): string[] {
+function renderIssue(issue: z.core.$ZodIssue, doc: unknown): string[] {
   const at = locate(issue.path);
   if (issue.code === "unrecognized_keys") {
     return issue.keys.map((key) => {
       const where = at === "" ? key : `${at}.${key}`;
+      const entry = removedKeyEntry(issue.path, key, doc);
+      if (entry !== null) {
+        return `${where} (${entry}): removed because twiki no longer releases. Delete the key.`;
+      }
       return (
         `${where}: unrecognized key. Either a typo, or this config was ` +
         "written for a newer twiki than the one reading it."
@@ -246,7 +228,9 @@ export function loadConfig(
 
   const parsed = ConfigSchema.safeParse(doc);
   if (!parsed.success) {
-    const problems = parsed.error.issues.flatMap(renderIssue);
+    const problems = parsed.error.issues.flatMap((issue) =>
+      renderIssue(issue, doc),
+    );
     throw new Error(
       `${path} is not a valid twiki config:\n` +
         problems.map((p) => `  - ${p}`).join("\n"),
@@ -283,9 +267,7 @@ export function buildConfig(
     repos.push(ref);
     policies.set(slug, {
       autoMergeMinor: entry.autoMergeMinor ?? DEFAULT_POLICY.autoMergeMinor,
-      mergeOnly: entry.mergeOnly ?? DEFAULT_POLICY.mergeOnly,
       defaultBranch: entry.defaultBranch ?? DEFAULT_POLICY.defaultBranch,
-      versionSources: entry.versionSources ?? DEFAULT_POLICY.versionSources,
     });
     declaredSlugs.set(key, slug);
     if (entry.release === false) releaseUntracked.add(key);

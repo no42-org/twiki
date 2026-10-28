@@ -8,7 +8,7 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 
 // GitHub App authentication (design agent-D7, docs/design/dependabot-release-agent.md). The App mints short-lived per-install
-// tokens; merges and tags then show as `twiki[bot]`, keeping the audit trail
+// tokens; merges and CI re-runs then show as `twiki[bot]`, keeping the audit trail
 // honest and the blast radius scoped per installation.
 
 export interface AppAuthConfig {
@@ -74,8 +74,8 @@ function readKey(keyPath: string, prefix: string): string {
  * Credentials for one App, chosen by environment-variable prefix.
  *
  * The prefix is a parameter because twiki and gitricorder are deliberately
- * DIFFERENT Apps with different permissions (AD-21): twiki can merge and tag,
- * gitricorder can only read. Sharing one credential would give the dashboard
+ * DIFFERENT Apps with different permissions (AD-21): twiki can merge and re-run
+ * CI, gitricorder can only read. Sharing one credential would give the dashboard
  * the ability to write, which is the single thing its design rules out, so the
  * two must not be able to reach each other's variables by accident.
  */

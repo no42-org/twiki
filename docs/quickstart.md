@@ -17,15 +17,14 @@ You need three credentials: a **GitHub App** (App ID + private key), an
 
 ### 1a. Create the GitHub App and get its App ID + private key
 
-twiki authenticates as a GitHub App so merges/tags show as `twiki[bot]`, tokens
-are short-lived, and the blast radius is scoped per install.
+twiki authenticates as a GitHub App so merges show as `twiki[bot]`, tokens are short-lived, and the blast radius is scoped per install.
 
 1. Go to **org → Settings → Developer settings → GitHub Apps → New GitHub App**
    (a personal App under your user settings works too for testing).
 2. Name it (e.g. `twiki`), set any homepage URL, and **uncheck *Active*** under
    *Webhook* — twiki polls, so no webhook is needed.
 3. Grant these **repository permissions**:
-   - **Contents:** Read & write (push tags, read workflow files, compare commits)
+   - **Contents:** Read & write (merge pull requests, compare commits)
    - **Pull requests:** Read & write (merge, post `@dependabot rebase`)
    - **Actions:** Read & write (re-run failed CI jobs — CI remediation)
    - **Checks:** Read-only
@@ -64,18 +63,11 @@ repos:
   - repo: your-org/service-a
   - repo: your-org/service-b
     autoMergeMinor: false   # patch only; minor waits for a human
-  - repo: your-org/legacy
-    mergeOnly: true         # never cut releases here
   - repo: your-org/venerable
     defaultBranch: master   # branch name, not a ref; absent means "main"
-  - repo: your-org/versioned
-    versionSources:         # where the tree carries its version
-      - path: internal/version/version.go
-        pattern: 'const version = "([^"]+)"'
+  - repo: your-org/scripts
+    release: false          # no release signal in gitricorder for this repo
 ```
-
-`versionSources` is read at the commit twiki is about to tag, and a file that disagrees with the computed version blocks the release instead of publishing a tag the tree contradicts.
-Absent means the tree carries no version, which is a real answer: that repository releases exactly as it would without the key, and no file is read for it.
 
 gitricorder's setup check reads this same file.
 `tricorder doctor` names any repository whose `defaultBranch` is not the branch GitHub reports.
@@ -125,7 +117,7 @@ docker run --rm \
   ghcr.io/no42-org/twiki:latest
 ```
 
-A "would merge / would release" digest should land in your Slack channel.
+A "would merge" digest should land in your Slack channel.
 
 ## 3b. Discord
 
@@ -183,8 +175,8 @@ docker run --rm \
 ## 4. Verify
 
 - The single-tick run above should **post a digest** to your channel and exit.
-- It's **shadow mode**, so nothing was merged or released — the digest is
-  labelled as what twiki *would* do.
+- It's **shadow mode**, so nothing was merged.
+  The digest is labelled as what twiki *would* do.
 - Re-running this `docker run --rm` example posts again each time — the
   identical-digest de-dup is kept in a file inside the container, so it only
   persists within the long-running poller (section 5), not across throwaway

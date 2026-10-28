@@ -70,11 +70,10 @@ export function classifyBump(
  * none qualifies. Order of the input is irrelevant: GitHub's tag listings
  * carry no defined order, so the maximum is computed here.
  *
- * Prerelease tags (`v1.0.0-rc1`) are skipped rather than compared: twiki only
- * cuts patch releases on the current stable line, and an rc is a human's
- * in-progress major or minor. Tags that do not parse are ignored, matching
- * what `nextPatchTag` would refuse anyway. The returned string is the tag
- * exactly as given, prefix included, so `nextPatchTag` keeps the scheme.
+ * Prerelease tags (`v1.0.0-rc1`) are skipped rather than compared: an rc is a
+ * human's in-progress major or minor, not the release the stable line was
+ * last cut from. Tags that do not parse are ignored. The returned string is
+ * the tag exactly as given, prefix included.
  */
 export function newestStableTag(tags: readonly string[]): string | null {
   let best: { tag: string; v: Parsed } | null = null;
@@ -92,23 +91,6 @@ export function newestStableTag(tags: readonly string[]): string | null {
 
 function compareVersions(a: Parsed, b: Parsed): number {
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
-}
-
-/**
- * Compute the next patch tag from the newest tag, preserving a leading "v" if
- * present. With no prior tag, the first release is v0.0.1.
- */
-export function nextPatchTag(latestTag: string | null): string {
-  if (!latestTag) return "v0.0.1";
-  const hasV = /^v/i.test(latestTag.trim());
-  const parsed = parseVersion(latestTag);
-  if (!parsed) {
-    throw new Error(
-      `Cannot compute next patch from unparseable tag: "${latestTag}"`,
-    );
-  }
-  const next = `${parsed.major}.${parsed.minor}.${parsed.patch + 1}`;
-  return hasV ? `v${next}` : next;
 }
 
 /**

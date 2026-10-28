@@ -39,18 +39,15 @@ it("shadow run reports would-do actions and writes nothing", async () => {
     prChecks: { a1: "green" },
     mainChecks: "green",
     latestTag: "v2.0.0",
-    unreleased: 0,
-    hasWorkflow: true,
     defaultSha: "alpha-sha",
   };
-  // beta is settled (no open mergeable PRs, green main, unreleased changes).
+  // beta has no open PRs and a green main, so there is nothing to merge and
+  // nothing to report.
   const beta: FakeRepoData = {
     rawPrs: [],
     prChecks: {},
     mainChecks: "green",
     latestTag: "v0.4.7",
-    unreleased: 2,
-    hasWorkflow: true,
     defaultSha: "beta-sha",
   };
   const github = new FakeGitHub(
@@ -74,33 +71,27 @@ it("shadow run reports would-do actions and writes nothing", async () => {
 
   // No writes in shadow mode.
   expect(github.merged).toEqual([]);
-  expect(github.tagged).toEqual([]);
 
-  // alpha would merge #1; beta would release the next patch.
+  // alpha would merge #1; beta has nothing to do.
   expect(res.repos.find((r) => r.repo === A)?.prs[0]?.status).toBe(
     "would-merge",
   );
-  expect(res.repos.find((r) => r.repo === B)?.release).toMatchObject({
-    status: "would-release",
-    version: "v0.4.8",
-  });
+  expect(res.repos.find((r) => r.repo === B)?.prs).toEqual([]);
 
   const digest = notifier.messages[0] ?? "";
   expect(digest).toContain("SHADOW");
   expect(digest).toContain("would merge #1");
-  expect(digest).toContain("would release v0.4.8");
+  expect(digest).not.toMatch(/releas/i);
 });
 
 it("suppresses the digest on a purely routine tick", async () => {
-  // No PRs, green main, nothing unreleased → every repo is in the routine
-  // `waiting` state with no actionable news, so no message should be sent.
+  // No PRs and green main: nothing merged, held or remediated, so no message
+  // should be sent.
   const quiet: FakeRepoData = {
     rawPrs: [],
     prChecks: {},
     mainChecks: "green",
     latestTag: "v1.0.0",
-    unreleased: 0,
-    hasWorkflow: true,
     defaultSha: "quiet-sha",
   };
   const github = new FakeGitHub(new Map([[A, quiet]]));
@@ -117,6 +108,6 @@ it("suppresses the digest on a purely routine tick", async () => {
     },
   );
 
-  expect(res.repos[0]?.release.status).toBe("waiting");
+  expect(res.repos[0]?.prs).toEqual([]);
   expect(notifier.messages).toEqual([]);
 });

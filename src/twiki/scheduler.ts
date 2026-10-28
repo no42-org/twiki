@@ -22,7 +22,7 @@ export interface ScheduleOptions {
  * A poll interval that cannot turn the loop into a hot loop. `Number("")` is 0
  * and `Number("60m")` is NaN; both would reach setInterval and be clamped to a
  * few milliseconds, re-running the tick continuously. In enforce mode that
- * means merge and tag attempts in a tight loop, so anything not finite and
+ * means merge attempts in a tight loop, so anything not finite and
  * positive falls back to the default.
  */
 export function normalisePollMinutes(value: number): number {

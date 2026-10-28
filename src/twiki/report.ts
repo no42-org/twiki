@@ -22,7 +22,7 @@ const REMEDIATION_VERB = {
  * multi-kilobyte dump of issues. Interpolated raw, that pushes the digest past
  * Discord's 2000-character limit, the webhook answers 400, `deliver` throws,
  * and runOnce catches it into "notify failed" - losing the entire digest,
- * including any merges and releases that DID happen. The Matrix notifier
+ * including any merges that DID happen. The Matrix notifier
  * already bounds its input for the same reason.
  */
 const MAX_REASON_CHARS = 500;
@@ -41,32 +41,19 @@ function summarizeFailing(checks: FailingCheck[]): string {
 }
 
 // A repo contributes "actionable" news when something happened or needs
-// attention: an error, red main, any PR outcome, a CI-remediation, or an actual
-// release move. The routine `waiting`/`skipped-merge-only` states (nothing to
-// release, deps up to date, CI still running) are not actionable — reporting
-// them every tick just spams the channel.
+// attention: an error, red main, an unprotected branch, any PR outcome, or a
+// CI-remediation. A repository with none of these is routine, and reporting
+// it every tick just spams the channel.
 function repoHasActivity(repo: RepoResult): boolean {
   if (repo.error || repo.mainRed) return true;
   // A branch that could not be confirmed defended is news, and a QUIET
-  // repository is exactly where one hides: nothing merging, nothing
-  // releasing, so without this the digest is suppressed and the fact is
-  // gathered every tick and shown on none of them. `protection` is only set
+  // repository is exactly where one hides: nothing merging, so without this
+  // the digest is suppressed and the fact is gathered every tick and shown on
+  // none of them. `protection` is only set
   // when the branch is not confirmed protected, so this cannot spam.
   if (repo.protection) return true;
   if (repo.prs.length > 0) return true;
-  if ((repo.remediations ?? []).length > 0) return true;
-  const s = repo.release.status;
-  return (
-    s === "released" ||
-    s === "would-release" ||
-    s === "no-release-workflow" ||
-    s === "tag-exists" ||
-    // A blocked release is news, and it hides in exactly the repository this
-    // suppression is aimed at: one whose only other states are routine. Left
-    // out, a quiet repository would be blocked every tick and reported on
-    // none of them, which is the failure this check exists to end.
-    s === "tree-version-mismatch"
-  );
+  return (repo.remediations ?? []).length > 0;
 }
 
 /** True when at least one repo has actionable news worth posting this tick. */
@@ -107,15 +94,14 @@ export function buildDigest(result: RunResult): string {
     // failure is also a plausible prompt-injection symptom.
     //
     // The scope line is load-bearing too. NOT everything below is advisor-
-    // derived: evaluateRelease gates on isSettled and never consults the
-    // plan, and a major bump is flagged before the plan is read. An earlier
+    // derived: a major bump is flagged before the plan is read. An earlier
     // version told the reader to discount everything, which would have
-    // discounted a real tag push and an URGENT security flag.
+    // discounted an URGENT security flag.
     anyActivity = true;
     blocks.push(
       `\n🧠 *The advisor did not produce a plan, so nothing was merged on its advice.*` +
         `\n   Every "held" below is a decision not taken, not a decision to hold.` +
-        `\n   Releases and flagged majors are decided without the advisor and still stand.` +
+        `\n   Flagged majors are decided without the advisor and still stand.` +
         `\n   ${truncateReason(result.advisorFailed)}`,
     );
   }
@@ -148,8 +134,8 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
     // Said, never left to inference. Otherwise the pull requests it never got
     // to look exactly like pull requests it checked and found nothing to do.
     // The cause is NOT asserted here. `repo.error` is rendered just above and
-    // carries it; claiming "after a failed write" was wrong whenever the
-    // release step's reads (latestTag, defaultBranchSha) were what threw.
+    // carries it; claiming "after a failed write" would be wrong whenever a
+    // read was what threw.
     const n = repo.notEvaluated ?? 0;
     lines.push(
       `  ⏹️ stopped early` +
@@ -160,7 +146,7 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
   }
   if (repo.protection) {
     // Reported, never gated on (protection-is-a-fact D4). twiki merges into
-    // this branch and cuts releases from it; whether anything defends it is
+    // this branch; whether anything defends it is
     // worth a line, and nothing here changes what twiki does.
     //
     // Only speaks when the branch is NOT confirmed defended. A line that
@@ -187,7 +173,7 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
     }
   }
   if (repo.mainRed) {
-    lines.push("  🔴 *main is RED* — releases blocked until fixed");
+    lines.push("  🔴 *main is RED*");
     for (const c of repo.mainFailingChecks ?? []) {
       lines.push(`     ↳ ${c.name}${c.detailsUrl ? ` (${c.detailsUrl})` : ""}`);
     }
@@ -224,40 +210,6 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
     lines.push(
       `  ${icon} ${REMEDIATION_VERB[rem.status]} ${rem.ref} — ${rem.detail}`,
     );
-  }
-
-  const rel = repo.release;
-  switch (rel.status) {
-    case "released":
-      lines.push(`  🚀 released ${rel.version}`);
-      break;
-    case "would-release":
-      lines.push(`  🚀 would release ${rel.version}`);
-      break;
-    case "no-release-workflow":
-      lines.push(`  ⚠️ ${rel.detail}`);
-      break;
-    case "tag-exists":
-      // Someone else's tag, not a failed write: the wording must not read
-      // like one. The release state tells the reader whether a human is
-      // mid-release (draft, published) or a stray tag wants attention (none).
-      lines.push(`  ⏭️ ${rel.detail}`);
-      break;
-    case "tree-version-mismatch":
-      // No write was attempted and none failed: the tree has to be bumped by
-      // a human before this repository can release. The detail names the
-      // file and both versions, so the reader knows what to go and change.
-      lines.push(`  🛑 ${rel.detail}`);
-      break;
-    case "skipped-merge-only":
-      // Only interesting if it would otherwise have released — keep quiet.
-      break;
-    case "waiting":
-      // Routine; omit unless nothing else happened for this repo.
-      if (lines.length === 0) {
-        lines.push(`  🌈 Nothing to release. ${rel.detail}`);
-      }
-      break;
   }
 
   return lines;

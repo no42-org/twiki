@@ -123,7 +123,7 @@ export interface PullRequest {
   checks: CheckStatus;
   /** Untrusted: contains third-party changelog text. Treated as data only. */
   body: string;
-  // --- Remediation facts (read-only; never feed mergeBlock/isSettled, and are
+  // --- Remediation facts (read-only; never feed mergeBlock, and are
   // stripped from the advisor's input by toAdvisorFacts). ---
   /** Commits the head is behind its base; `null`/absent = unknown (fail-closed). */
   behindBy?: number | null;
@@ -136,17 +136,10 @@ export interface PullRequest {
 export interface RepoFacts {
   repo: RepoRef;
   mainChecks: CheckStatus;
-  latestTag: string | null;
-  /** Whether the repo has a tag-triggered release workflow. */
-  hasTagReleaseWorkflow: boolean;
-  /** Count of Dependabot-attributable commits since the latest tag. */
-  unreleasedDependencyCommits: number;
   prs: PullRequest[];
   /**
-   * Whether `main` is defended. Gathered and REPORTED ONLY - no gate reads it.
-   * Refusing to release from an undefended branch is a policy decision with a
-   * deadlock attached, and this fact exists so that decision can be made with
-   * evidence rather than in the abstract (D4).
+   * Whether `main` is defended. Gathered and REPORTED ONLY - no gate reads it
+   * (D4).
    */
   protection: ProtectionFact;
   // --- Remediation facts for `main` (read-only; advisor never sees these). ---
@@ -156,30 +149,9 @@ export interface RepoFacts {
   mainWorkflowRuns?: WorkflowRunRef[];
 }
 
-/**
- * Where a repository's tree carries its version.
- *
- * A file path and a pattern with exactly one capture group; the group is what
- * the tree says its version is. Declared, never discovered: there is no
- * universal answer to where a tree keeps its version, and guessing produces
- * the confident wrongness this system exists to refuse.
- *
- * The pattern is matched with the `g` and `m` flags, so `^` and `$` anchor to
- * a line rather than to the whole file, which is what somebody writing a
- * pattern for a version LINE means by them.
- */
-export interface VersionSource {
-  /** Path in the tree, as `repos.getContent` takes it: no leading slash. */
-  path: string;
-  /** The pattern source, as declared. Compiled by `compileVersionPattern`. */
-  pattern: string;
-}
-
 export interface RepoPolicy {
   /** Auto-merge minor bumps (in addition to always-on patch). Default true. */
   autoMergeMinor: boolean;
-  /** Never cut releases for this repo; merge only. Default false. */
-  mergeOnly: boolean;
   /**
    * What this repository calls its default branch. Default `main`.
    *
@@ -190,28 +162,11 @@ export interface RepoPolicy {
    * the declaration against what GitHub reports; nothing repairs it.
    */
   defaultBranch: string;
-  /**
-   * Where this repository's tree carries its version. Default: nowhere.
-   *
-   * Empty is a real answer, not an opt-out and not a gap to fill. A module
-   * tagged by ref alone genuinely carries no version in its tree, and for
-   * that repository tagging head is correct - so an undeclared repository
-   * releases exactly as it did before this check existed, and no content is
-   * read for it at all.
-   *
-   * When it is non-empty, every source must agree with the version twiki
-   * computed before a tag is pushed. Disagreement blocks the release; twiki
-   * never edits the tree, opens a bump pull request, or runs a command a
-   * repository supplied.
-   */
-  versionSources: readonly VersionSource[];
 }
 
 export const DEFAULT_POLICY: RepoPolicy = {
   autoMergeMinor: true,
-  mergeOnly: false,
   defaultBranch: "main",
-  versionSources: [],
 };
 
 export type Mode = "shadow" | "enforce";
