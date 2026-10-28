@@ -41,8 +41,8 @@ it("shadow run reports would-do actions and writes nothing", async () => {
     latestTag: "v2.0.0",
     defaultSha: "alpha-sha",
   };
-  // beta is what twiki used to release: no open PRs, green main, unreleased
-  // changes. It merges only now, so beta has nothing to report.
+  // beta has no open PRs and a green main, so there is nothing to merge and
+  // nothing to report.
   const beta: FakeRepoData = {
     rawPrs: [],
     prChecks: {},

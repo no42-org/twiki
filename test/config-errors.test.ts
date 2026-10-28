@@ -250,7 +250,11 @@ describe("a rejected config says which file and what is wrong", () => {
     } catch (err) {
       const msg = (err as Error).message;
       expect(msg).toContain(p);
-      expect(msg).toContain("repos[0].mergeOnly");
+      // The upgrade case: an older config, not a typo and not a newer one.
+      expect(msg).toContain(
+        "repos[0].mergeOnly (no42-org/a): removed because twiki no longer releases. Delete the key.",
+      );
+      expect(msg).not.toContain("newer twiki");
     }
   });
 
@@ -272,7 +276,10 @@ describe("a rejected config says which file and what is wrong", () => {
     } catch (err) {
       const msg = (err as Error).message;
       expect(msg).toContain(p);
-      expect(msg).toContain("repos[0].versionSources");
+      expect(msg).toContain(
+        "repos[0].versionSources (no42-org/a): removed because twiki no longer releases. Delete the key.",
+      );
+      expect(msg).not.toContain("newer twiki");
     }
   });
 

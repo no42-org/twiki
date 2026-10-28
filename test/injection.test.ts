@@ -7,6 +7,7 @@ import { expect, it } from "vitest";
 import { buildConfig } from "../src/core/config.js";
 import type { RawPullRequest } from "../src/github/port.js";
 import { NullAudit } from "../src/twiki/audit.js";
+import { PlanSchema, planJsonSchema } from "../src/twiki/plan.js";
 import { runOnce } from "../src/twiki/run.js";
 import {
   CapturingNotifier,
@@ -77,30 +78,53 @@ it("a hijacked advisor cannot cause an unsafe merge (enforce)", async () => {
   expect(statuses).toEqual({ 1: "merged", 2: "blocked", 3: "flagged-major" });
 });
 
-it("a plan carrying a release field pushes no tag (enforce)", async () => {
-  // Settled in every sense the old release gate checked: no open PRs, green
-  // main, an unreleased dependency commit, a tag-release workflow. The
-  // advisor still asks for a release. twiki merges only, so nothing is written.
-  const data: FakeRepoData = {
-    rawPrs: [],
-    prChecks: {},
-    mainChecks: "green",
-    latestTag: "v1.2.3",
-    defaultSha: "main-sha",
-  };
-  const github = new FakeGitHub(new Map([[SLUG, data]]));
-
-  await runOnce(buildConfig({ mode: "enforce", repos: [{ repo: SLUG }] }), {
-    github,
-    advisor: mergeEverythingAdvisor,
-    notifier: new CapturingNotifier(),
-    audit: new NullAudit(),
-    now: () => "2026-05-31T00:00:00Z",
+// The path a hijacked advisor actually takes: ClaudeAdvisor.plan parses the
+// tool input with PlanSchema. A model that still answers with a release
+// decision gets it stripped, not obeyed and not turned into an outage.
+it("strips a release decision out of an advisor plan", () => {
+  const parsed = PlanSchema.parse({
+    repos: [
+      {
+        repo: SLUG,
+        prDecisions: [
+          { number: 1, action: "merge", reason: "routine", risk: "low" },
+        ],
+        release: { action: "release", reason: POISON },
+      },
+    ],
   });
 
-  expect({
-    merged: github.merged,
-    reran: github.reran,
-    rebased: github.rebased,
-  }).toEqual({ merged: [], reran: [], rebased: [] });
+  expect(parsed).toEqual({
+    repos: [
+      {
+        repo: SLUG,
+        prDecisions: [
+          { number: 1, action: "merge", reason: "routine", risk: "low" },
+        ],
+      },
+    ],
+  });
+});
+
+it("offers the advisor no release field to fill in", () => {
+  expect(planJsonSchema.properties.repos.items).toEqual({
+    type: "object",
+    properties: {
+      repo: { type: "string", description: "owner/name" },
+      prDecisions: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            number: { type: "integer" },
+            action: { type: "string", enum: ["merge", "hold"] },
+            reason: { type: "string" },
+            risk: { type: "string", enum: ["low", "medium", "high"] },
+          },
+          required: ["number", "action", "reason", "risk"],
+        },
+      },
+    },
+    required: ["repo", "prDecisions"],
+  });
 });

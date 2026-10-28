@@ -141,6 +141,32 @@ function locate(segments: readonly PropertyKey[]): string {
 }
 
 /**
+ * Keys a repos.yaml entry used to accept and no longer does. A config carrying
+ * one is OLDER than this twiki, so the generic "typo, or written for a newer
+ * twiki" sentence would name two causes that are both false (#197).
+ */
+const REMOVED_REPO_KEYS: ReadonlySet<string> = new Set([
+  "mergeOnly",
+  "versionSources",
+]);
+
+/** The entry's `repo` value when `key` is a removed key on `repos[N]`, else null. */
+function removedKeyEntry(
+  path: readonly PropertyKey[],
+  key: string,
+  doc: unknown,
+): string | null {
+  if (!REMOVED_REPO_KEYS.has(key)) return null;
+  if (path.length !== 2 || path[0] !== "repos" || typeof path[1] !== "number") {
+    return null;
+  }
+  const repos = (doc as { repos?: unknown }).repos;
+  const entry = Array.isArray(repos) ? repos[path[1]] : undefined;
+  const repo = (entry as { repo?: unknown } | undefined)?.repo;
+  return typeof repo === "string" ? repo : "unnamed entry";
+}
+
+/**
  * One sentence per problem, built from the issue's structured fields rather
  * than by matching text zod owns - a zod upgrade that changes the wording
  * must not silently change ours.
@@ -151,11 +177,15 @@ function locate(segments: readonly PropertyKey[]): string {
  * written against a newer build than the image running it, and saying only
  * "typo" sends the reader hunting for a mistake they did not make.
  */
-function renderIssue(issue: z.core.$ZodIssue): string[] {
+function renderIssue(issue: z.core.$ZodIssue, doc: unknown): string[] {
   const at = locate(issue.path);
   if (issue.code === "unrecognized_keys") {
     return issue.keys.map((key) => {
       const where = at === "" ? key : `${at}.${key}`;
+      const entry = removedKeyEntry(issue.path, key, doc);
+      if (entry !== null) {
+        return `${where} (${entry}): removed because twiki no longer releases. Delete the key.`;
+      }
       return (
         `${where}: unrecognized key. Either a typo, or this config was ` +
         "written for a newer twiki than the one reading it."
@@ -198,7 +228,9 @@ export function loadConfig(
 
   const parsed = ConfigSchema.safeParse(doc);
   if (!parsed.success) {
-    const problems = parsed.error.issues.flatMap(renderIssue);
+    const problems = parsed.error.issues.flatMap((issue) =>
+      renderIssue(issue, doc),
+    );
     throw new Error(
       `${path} is not a valid twiki config:\n` +
         problems.map((p) => `  - ${p}`).join("\n"),

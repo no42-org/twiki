@@ -296,11 +296,9 @@ main().catch((err) => {
 /**
  * Pass A: call each write method on the port, bypassing the executor (D7).
  *
- * The executor cannot reach all three in one repository state - `mergePR`
- * needs main green and a green pull request, while `rerunFailedJobs` needs
- * main red.
- * This answers the narrower question the contract test cannot: does GitHub
- * accept the request the adapter builds.
+ * Pass A tests request shapes, not which repository state reaches which
+ * write: it answers the narrower question the contract test cannot, whether
+ * GitHub accepts the request the adapter builds.
  *
  * It proves NOTHING about the gates. Pass B does that.
  */
