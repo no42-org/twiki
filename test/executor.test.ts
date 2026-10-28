@@ -18,8 +18,8 @@ import {
 
 const SLUG = "no42-org/demo";
 
-function config(mode: Mode, mergeOnly = false): Config {
-  return buildConfig({ mode, repos: [{ repo: SLUG, mergeOnly }] });
+function config(mode: Mode): Config {
+  return buildConfig({ mode, repos: [{ repo: SLUG }] });
 }
 
 function gh(over: Partial<FakeRepoData> = {}): FakeGitHub {

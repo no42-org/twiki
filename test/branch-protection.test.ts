@@ -228,7 +228,6 @@ describe("protection is reported, never gated on", () => {
   const policy: RepoPolicy = {
     ...DEFAULT_POLICY,
     autoMergeMinor: true,
-    mergeOnly: false,
   };
   const facts = (state: ProtectionFact["state"]) => ({
     repo: REPO,

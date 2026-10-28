@@ -214,7 +214,6 @@ describe("every status decides the same way at every gate", () => {
   const policy: RepoPolicy = {
     ...DEFAULT_POLICY,
     autoMergeMinor: true,
-    mergeOnly: false,
   };
   const pr = (checks: PullRequest["checks"]): PullRequest => ({
     repo: REPO,

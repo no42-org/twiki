@@ -192,204 +192,6 @@ describe("a rejected config says which file and what is wrong", () => {
     }
   });
 
-  it("names the field when a version pattern will not compile", () => {
-    // Validated where it was written. A pattern that cannot compile is a
-    // mistake in the document, not a fact about any repository, so it must
-    // not wait until the one tick that would have released.
-    const p = write(
-      "repos.yaml",
-      [
-        "mode: shadow",
-        "repos:",
-        "  - repo: no42-org/a",
-        "    versionSources:",
-        "      - path: version.go",
-        "        pattern: 'version = ([0-9'",
-      ].join("\n"),
-    );
-    try {
-      loadConfig(p);
-      expect.unreachable("an uncompilable pattern must be rejected");
-    } catch (err) {
-      const msg = (err as Error).message;
-      expect(msg).toContain(p);
-      expect(msg).toContain("repos[0].versionSources[0].pattern");
-      expect(msg).not.toContain('"code"');
-    }
-  });
-
-  it("names the field when a version pattern captures nothing", () => {
-    const p = write(
-      "repos.yaml",
-      [
-        "mode: shadow",
-        "repos:",
-        "  - repo: no42-org/a",
-        "    versionSources:",
-        "      - path: version.go",
-        "        pattern: 'version = .*'",
-      ].join("\n"),
-    );
-    try {
-      loadConfig(p);
-      expect.unreachable("a pattern with no capture group must be rejected");
-    } catch (err) {
-      const msg = (err as Error).message;
-      expect(msg).toContain("repos[0].versionSources[0].pattern");
-      expect(msg).toContain("capture group");
-    }
-  });
-
-  it("names the field when a version pattern captures twice", () => {
-    // Two groups is the same problem as two matches: the declaration does not
-    // identify WHICH of them is the version.
-    const p = write(
-      "repos.yaml",
-      [
-        "mode: shadow",
-        "repos:",
-        "  - repo: no42-org/a",
-        "    versionSources:",
-        "      - path: version.go",
-        "        pattern: 'version = (\\d+)\\.(\\d+)'",
-      ].join("\n"),
-    );
-    try {
-      loadConfig(p);
-      expect.unreachable("a pattern with two capture groups must be rejected");
-    } catch (err) {
-      const msg = (err as Error).message;
-      expect(msg).toContain("repos[0].versionSources[0].pattern");
-      // The count, not just the word: "no42-org" contains a 2, so asserting
-      // on the digit alone could not fail.
-      expect(msg).toContain("exactly one capture group");
-      expect(msg).toContain("has 2");
-    }
-  });
-
-  it("rejects an empty version-source list rather than reading it as absence", () => {
-    // Same reason as `defaultBranch: ""`. Somebody who wrote the key meant
-    // something, and treating it as "declares nothing" would silently turn
-    // the check off for the repository that asked for it.
-    const p = write(
-      "repos.yaml",
-      [
-        "mode: shadow",
-        "repos:",
-        "  - repo: no42-org/a",
-        "    versionSources: []",
-      ].join("\n"),
-    );
-    try {
-      loadConfig(p);
-      expect.unreachable("an empty versionSources must be rejected");
-    } catch (err) {
-      expect((err as Error).message).toContain("repos[0].versionSources");
-    }
-  });
-
-  it("names the field when a version source has no path", () => {
-    const p = write(
-      "repos.yaml",
-      [
-        "mode: shadow",
-        "repos:",
-        "  - repo: no42-org/a",
-        "    versionSources:",
-        '      - path: ""',
-        "        pattern: 'version = (.*)'",
-      ].join("\n"),
-    );
-    try {
-      loadConfig(p);
-      expect.unreachable("an empty path must be rejected");
-    } catch (err) {
-      expect((err as Error).message).toContain(
-        "repos[0].versionSources[0].path",
-      );
-    }
-  });
-
-  it("rejects a version-source path that cannot name a file", () => {
-    // Each of these reaches the contents endpoint exactly as written, so a
-    // path that can never name a file is refused where it was typed rather
-    // than blocking a release months later.
-    for (const [path, expected] of [
-      ["/version.go", "leading slash"],
-      ["internal/", "trailing slash"],
-      ["../other/version.go", "`..`"],
-    ] as const) {
-      const p = write(
-        "repos.yaml",
-        [
-          "mode: shadow",
-          "repos:",
-          "  - repo: no42-org/a",
-          "    versionSources:",
-          `      - path: "${path}"`,
-          "        pattern: 'version = (.*)'",
-        ].join("\n"),
-      );
-      try {
-        loadConfig(p);
-        expect.unreachable(`${path} must be rejected`);
-      } catch (err) {
-        const msg = (err as Error).message;
-        expect(msg).toContain("repos[0].versionSources[0].path");
-        expect(msg).toContain(expected);
-      }
-    }
-  });
-
-  it("refuses a pattern long enough to cost the whole digest", () => {
-    // A pattern that fails to match is quoted verbatim in the outcome, and a
-    // chat transport drops an over-long message whole - so one long pattern
-    // could cost the digest, the merges reported in it included.
-    const p = write(
-      "repos.yaml",
-      [
-        "mode: shadow",
-        "repos:",
-        "  - repo: no42-org/a",
-        "    versionSources:",
-        "      - path: version.go",
-        `        pattern: '(${"a".repeat(300)})'`,
-      ].join("\n"),
-    );
-    try {
-      loadConfig(p);
-      expect.unreachable("an over-long pattern must be rejected");
-    } catch (err) {
-      const msg = (err as Error).message;
-      expect(msg).toContain("repos[0].versionSources[0].pattern");
-      expect(msg).toContain("at most 200 characters");
-    }
-  });
-
-  it("keeps a declared version source, and leaves an undeclared one empty", () => {
-    const p = write(
-      "repos.yaml",
-      [
-        "mode: shadow",
-        "repos:",
-        "  - repo: no42-org/a",
-        "    versionSources:",
-        "      - path: internal/version/version.go",
-        '        pattern: \'const version = "([^"]+)"\'',
-        "  - repo: no42-org/b",
-      ].join("\n"),
-    );
-    const config = loadConfig(p);
-    expect(config.policies.get("no42-org/a")?.versionSources).toEqual([
-      {
-        path: "internal/version/version.go",
-        pattern: 'const version = "([^"]+)"',
-      },
-    ]);
-    // Absence is a real answer, not a gap to fill.
-    expect(config.policies.get("no42-org/b")?.versionSources).toEqual([]);
-  });
-
   it("release: false opts a repository out of the release signal", () => {
     const p = write(
       "repos.yaml",
@@ -434,6 +236,46 @@ describe("a rejected config says which file and what is wrong", () => {
     }
   });
 
+  it("rejects mergeOnly, which no longer exists", () => {
+    // twiki no longer releases, so there is nothing left to opt out of. An
+    // operator upgrading with the old key must hear about it at startup
+    // rather than believe it still does something.
+    const p = write(
+      "repos.yaml",
+      "mode: shadow\nrepos:\n  - repo: no42-org/a\n    mergeOnly: true\n",
+    );
+    try {
+      loadConfig(p);
+      expect.unreachable("mergeOnly must be rejected");
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain(p);
+      expect(msg).toContain("repos[0].mergeOnly");
+    }
+  });
+
+  it("rejects versionSources, which no longer exists", () => {
+    const p = write(
+      "repos.yaml",
+      [
+        "mode: shadow",
+        "repos:",
+        "  - repo: no42-org/a",
+        "    versionSources:",
+        "      - path: package.json",
+        '        pattern: \'"version": "([^"]+)"\'',
+      ].join("\n"),
+    );
+    try {
+      loadConfig(p);
+      expect.unreachable("versionSources must be rejected");
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain(p);
+      expect(msg).toContain("repos[0].versionSources");
+    }
+  });
+
   it("parses the example config this repository ships", () => {
     // The file the README tells every operator to copy. Nothing else parses
     // it, so a misspelled key here would break first startup with the whole
@@ -456,14 +298,6 @@ describe("a rejected config says which file and what is wrong", () => {
     expect(
       resolveReleaseTracked(config, { owner: "no42-org", name: "scripts" }),
     ).toBe(false);
-    // Every pattern the example ships is compiled by the strict parse, so a
-    // documented pattern that could never identify a version fails here.
-    expect(
-      config.policies.get("no42-org/versioned-service")?.versionSources,
-    ).toHaveLength(2);
-    expect(
-      config.policies.get("no42-org/example-service")?.versionSources,
-    ).toEqual([]);
   });
 
   it("still accepts what it accepted before, unchanged", () => {
@@ -476,7 +310,7 @@ describe("a rejected config says which file and what is wrong", () => {
         "repos:",
         "  - repo: no42-org/a",
         "  - repo: no42-org/b",
-        "    mergeOnly: true",
+        "    autoMergeMinor: false",
         "  - repo: no42-org/c",
         "    defaultBranch: master",
         "bots:",
@@ -488,7 +322,7 @@ describe("a rejected config says which file and what is wrong", () => {
     const config = loadConfig(p);
     expect(config.mode).toBe("enforce");
     expect(config.repos.map((r) => r.name)).toEqual(["a", "b", "c"]);
-    expect(config.policies.get("no42-org/b")?.mergeOnly).toBe(true);
+    expect(config.policies.get("no42-org/b")?.autoMergeMinor).toBe(false);
     expect(config.policies.get("no42-org/c")?.defaultBranch).toBe("master");
     expect(config.policies.get("no42-org/a")?.defaultBranch).toBe("main");
     expect(config.bots).toEqual(["app/dependabot"]);

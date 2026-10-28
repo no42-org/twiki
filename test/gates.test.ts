@@ -14,7 +14,7 @@ import {
 } from "../src/twiki/gates.js";
 import { makeBump, makePr, makeRun } from "./fakes.js";
 
-const minorOff = { ...DEFAULT_POLICY, autoMergeMinor: false, mergeOnly: false };
+const minorOff = { ...DEFAULT_POLICY, autoMergeMinor: false };
 
 describe("withinMergePolicy", () => {
   it("allows patch always", () => {
