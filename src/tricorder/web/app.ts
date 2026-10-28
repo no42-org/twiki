@@ -87,6 +87,12 @@ export interface AppDeps {
    * item, so a run one paints red is one the other ranks.
    */
   hungAfterMs?: number;
+  /**
+   * False for a repository repos.yaml opted out with `release: false`, in
+   * production `resolveReleaseTracked` bound to the loaded config (#196).
+   * Defaults to tracked, which is what an absent key means.
+   */
+  releaseTracked?: (repo: RepoRef) => boolean;
   now: () => Date;
 }
 
@@ -143,6 +149,8 @@ export interface ResolvedDeps {
   hungAfterMs: number;
   /** The guarded resolver; null where the caller's resolver threw. */
   defaultBranchOf: (repo: RepoRef) => string | null;
+  /** Whether repos.yaml leaves the release signal on for a repository. */
+  releaseTracked: (repo: RepoRef) => boolean;
 }
 
 /** Every default this role applies, in one place. */
@@ -174,6 +182,7 @@ export function resolveAppDeps(deps: AppDeps): ResolvedDeps {
     // `main` inside it would be indistinguishable from having dropped the
     // binding.
     defaultBranchOf: (repo) => defaultBranchOrNull(deps, repo),
+    releaseTracked: deps.releaseTracked ?? (() => true),
   };
 }
 
@@ -190,7 +199,7 @@ export function resolveAppDeps(deps: AppDeps): ResolvedDeps {
 // optional for the many tests that legitimately want the defaults, so the
 // guard costs no test call site.
 //
-// `ResolvedDeps` carries the same ten members `BoardDeps` needs today. That
+// `ResolvedDeps` carries the same eleven members `BoardDeps` needs today. That
 // is a coincidence of the overview wanting everything, not an identity: the
 // queue takes six of them and the repository view swaps the resolver for one
 // resolved branch.
@@ -208,6 +217,7 @@ export function boardDeps(resolved: ResolvedDeps): Required<BoardDeps> {
     reviewBudgetDays: resolved.reviewBudgetDays,
     hungAfterMs: resolved.hungAfterMs,
     defaultBranchOf: resolved.defaultBranchOf,
+    releaseTracked: resolved.releaseTracked,
   };
 }
 

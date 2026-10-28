@@ -19,6 +19,7 @@ import {
   type BoardRow,
   type Chip,
   chipText,
+  type ReleaseCell,
   type Tile,
 } from "../attention/board.js";
 import type { FilteredQueue, QueueFilter } from "../attention/filter.js";
@@ -353,6 +354,36 @@ const CountChip: FC<{ chip: Chip; text?: string }> = ({
 };
 
 /**
+ * The Release cell (#196). Not a topic chip: never a count. `ready` links to
+ * the repository page's release section, with the summary on its title and
+ * on the why-line; `unconfirmed` is the same marker CountChip uses, so a
+ * value nobody collected never reads as `none`.
+ */
+const ReleaseChip: FC<{ cell: ReleaseCell }> = ({ cell }) => {
+  switch (cell.state) {
+    case "ready":
+      return (
+        <a class="chip" href={cell.href} title={cell.summary}>
+          ready
+        </a>
+      );
+    case "none":
+      return <span class="chip zero">none</span>;
+    case "not-tracked":
+      return <span class="chip zero">not tracked</span>;
+    case "unconfirmed":
+      return <span class="chip unconfirmed">unconfirmed</span>;
+  }
+};
+
+/**
+ * Columns the board shows on desktop after the why-line's row header: the
+ * second half of Repository, Tier, one per topic, Release and Last confirmed.
+ * The tablet's Signals cell is hidden on desktop and not counted.
+ */
+const WHY_COLSPAN = 1 + 1 + TOPICS.length + 1 + 1;
+
+/**
  * A lane of this tile's topic failed or stalled, so the count is a lower
  * bound. Said on the tile, where the reader looks, and not only in the
  * health table at the foot of the page (#127).
@@ -625,6 +656,7 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
                 {t.label}
               </Th>
             ))}
+            <Th>Release</Th>
             <Th>Last confirmed</Th>
           </tr>
         </thead>
@@ -656,6 +688,9 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
                   <CountChip chip={row.chips[t.topic]} />
                 </Td>
               ))}
+              <Td label="Release" show>
+                <ReleaseChip cell={row.release} />
+              </Td>
               <Td class="fresh-cell" label="Last confirmed">
                 <FreshnessBadge freshness={row.freshness} age={row.age} />
               </Td>
@@ -664,7 +699,7 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
               <th scope="row" role="rowheader">
                 <span class="sr-only">why</span>
               </th>
-              <Td colspan={9} label="why">
+              <Td colspan={WHY_COLSPAN} label="why">
                 <span class="why">
                   {row.reason}
                   {/* The reason is on the chip's title too, but a title is
@@ -678,6 +713,9 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
                   {row.chips.security.caveat === null
                     ? ""
                     : ` · ${row.chips.security.caveat}`}
+                  {row.release.state === "ready"
+                    ? ` · ready to release: ${row.release.summary}`
+                    : ""}
                   <SignalsRest rest={row.signalsRest} />
                 </span>
               </Td>

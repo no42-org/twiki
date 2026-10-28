@@ -8,14 +8,15 @@ import {
   type CoverageFeature,
 } from "../../core/coverage.js";
 import { NOT_APPLICABLE } from "../../core/rank.js";
+import { assessRelease } from "../../core/release-worthy.js";
 import type { SeverityReading } from "../../core/severity.js";
 import { UNKNOWN_SEVERITY, worstSeverity } from "../../core/severity.js";
 import { foldSlug, watchKey } from "../../core/slug.js";
 import { maxTier, type Tier, tier } from "../../core/tier.js";
 import { topicOf } from "../../core/topics.js";
 import type { RepoRef } from "../../core/types.js";
-import type { StorePort } from "../store/port.js";
-import { readReviewRequest } from "./payloads.js";
+import type { CurrentValue, StorePort } from "../store/port.js";
+import { readReleaseEvidence, readReviewRequest } from "./payloads.js";
 import {
   buildQueue,
   type Queue,
@@ -155,10 +156,32 @@ function overdueAmong(
     : { number: oldest.number, days: Math.floor(oldest.ageMs / DAY_MS) };
 }
 
+/**
+ * The present release-readiness row of each watched slug (#196).
+ *
+ * Present rows only, as every queue row is read: a tombstoned row is a
+ * retracted assertion. Freshness is not judged here, matching the queue,
+ * which tiers present rows whatever their age; the board judges freshness
+ * for the Release cell only.
+ */
+function releaseRowsBySlug(
+  store: StorePort,
+  watched: ReadonlySet<string>,
+): Map<string, CurrentValue> {
+  const bySlug = new Map<string, CurrentValue>();
+  for (const row of store.currentByType("release_readiness")) {
+    if (row.state !== "present") continue;
+    if (!watched.has(row.subject.key)) continue;
+    bySlug.set(row.subject.key, row);
+  }
+  return bySlug;
+}
+
 /** One repository's verdict over its own items and reviews. */
 function judge(
   items: QueueItem[],
   reviews: readonly OpenReview[],
+  release: CurrentValue | undefined,
   deps: AttentionDeps,
 ): RepoAttention {
   const tiers = items.map((item) => tier(item.ranking, deps.cutRank));
@@ -183,6 +206,21 @@ function judge(
     reason = nameItem(first);
   } else {
     reason = "no open items";
+  }
+
+  // An unreleased security fix lifts to soon and never to now (#196). The
+  // reason is rewritten only when the lift changed the tier, so a repository
+  // already soon or now keeps the item or review that put it there.
+  const evidence =
+    release === undefined ? null : readReleaseEvidence(release.payload);
+  if (evidence !== null) {
+    const verdict = assessRelease(evidence);
+    const lifted = maxTier(repoTier, "soon");
+    if (verdict.securityFixes.length > 0 && lifted !== repoTier) {
+      repoTier = lifted;
+      first = null;
+      reason = `unreleased security fix since ${verdict.tag ?? "the first commit"}`;
+    }
   }
 
   const alerts = items.filter((item) => topicOf(item.kind) === "security");
@@ -255,7 +293,12 @@ export function attentionByRepo(
   now: Date,
   deps: AttentionDeps,
   suppressed: SuppressedByFeature = {},
-): { byRepo: Map<string, RepoAttention>; queue: Queue } {
+): {
+  byRepo: Map<string, RepoAttention>;
+  queue: Queue;
+  /** The present release-readiness row per watched slug, read once (#196). */
+  release: Map<string, CurrentValue>;
+} {
   const queue = buildQueue(store, now, deps);
 
   const itemsBySlug = new Map<string, QueueItem[]>();
@@ -274,18 +317,24 @@ export function attentionByRepo(
     itemsBySlug.get(foldSlug(item.repo))?.push(item);
   }
 
-  const reviews = reviewsBySlug(store, new Set(itemsBySlug.keys()), now);
+  const slugs = new Set(itemsBySlug.keys());
+  const reviews = reviewsBySlug(store, slugs, now);
+  const release = releaseRowsBySlug(store, slugs);
 
   const byRepo = new Map<string, RepoAttention>();
   for (const [slug, items] of itemsBySlug) {
-    byRepo.set(slug, judge(items, reviews.get(slug) ?? [], deps));
+    byRepo.set(
+      slug,
+      judge(items, reviews.get(slug) ?? [], release.get(slug), deps),
+    );
   }
-  return { byRepo, queue };
+  return { byRepo, queue, release };
 }
 
 /**
  * One repository's tier: the maximum over its open queue items, raised to at
- * least `soon` by a review request older than the budget.
+ * least `soon` by a review request older than the budget or by an
+ * unreleased security fix.
  *
  * A wrapper over the batch form, so a page about one repository and a page
  * about all of them read the same computation.

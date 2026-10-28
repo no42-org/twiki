@@ -685,6 +685,9 @@ export function buildWebDeps(input: {
     // The same expression the lane's wiring uses, so a run the page paints as
     // broken is one the lane counted as failing.
     hungAfterMs: ACTIONS_CADENCE_MS * 2,
+    // The same accessor the release-readiness lane is wired with, so the
+    // board says `not tracked` for exactly the repositories it skips.
+    releaseTracked: (repo) => resolveReleaseTracked(config, repo),
     now,
   };
 }

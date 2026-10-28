@@ -158,6 +158,13 @@ Its only ranking term is whether its checks are stuck, read from the workflow ru
 The ordering is a local policy, not SSVC or any published standard: a broken default branch, then CISA KEV listing, then EPSS, then severity, then update size, then whether GitHub could prepare the update.
 A failed or hung workflow run on a repository's default branch leads the chain, because nothing ships from a red main whatever else is open.
 
+The overview's Release column says whether each repository is worth releasing since its latest stable semver tag (or since the first commit when there is no tag).
+It reads `ready` when a Dependabot alert with runtime or unknown scope was fixed after the tag, or when a default-branch commit is a Conventional Commit `feat`, `fix` or `perf`, or carries `!`; commits scoped `deps` never count, and the `BREAKING CHANGE:` footer is not read.
+The summary appears on the row's rationale line, and a quiet repository that is ready is shown as a row rather than folded into the quiet block.
+An unreleased security fix lifts a repository to at least `soon`, never to `now`; code improvements alone never change the tier.
+The cell reads `none` when nothing qualifies, `unconfirmed` when the lane has no current, successful reading, and `not tracked` for a repository opted out with `release: false` in `repos.yaml`.
+Release is not a topic: it has no tile and no `/queue` filter.
+
 ### The read-only GitHub App
 
 gitricorder uses **its own App**, separate from twiki's. This is the point, not

@@ -3,6 +3,11 @@
  * SPDX-License-Identifier: MIT
  */
 
+import type {
+  CommitRef,
+  FixedAlertRef,
+  ReleaseEvidence,
+} from "../../core/release-worthy.js";
 import type { CodeScanningAlertObservation } from "../collect/code-scanning.js";
 import type { AlertObservation } from "../collect/dependabot-alerts.js";
 import type { IssueObservation } from "../collect/issues.js";
@@ -51,6 +56,49 @@ export function readAlert(payload: unknown): AlertObservation | null {
     return null;
   }
   return a;
+}
+
+function readCommit(value: unknown): value is CommitRef {
+  const c = value as CommitRef | null | undefined;
+  if (!c || typeof c !== "object") return false;
+  return (
+    typeof c.sha === "string" &&
+    typeof c.subject === "string" &&
+    typeof c.url === "string"
+  );
+}
+
+function readFixedAlert(value: unknown): value is FixedAlertRef {
+  const a = value as FixedAlertRef | null | undefined;
+  if (!a || typeof a !== "object") return false;
+  return (
+    typeof a.number === "number" &&
+    typeof a.severity === "string" &&
+    typeof a.fixedAt === "string" &&
+    stringOrNull(a.ghsaId) &&
+    stringOrNull(a.cveId) &&
+    stringOrNull(a.packageName) &&
+    stringOrNull(a.scope) &&
+    stringOrNull(a.htmlUrl)
+  );
+}
+
+/**
+ * The release evidence shape check (#196), same posture as readAlert:
+ * counted, not guessed at. Every field `assessRelease` and `releaseSummary`
+ * read is checked, down to each commit and each fixed alert, because one bad
+ * element would otherwise reach `new Date(...)` or a string join downstream.
+ */
+export function readReleaseEvidence(payload: unknown): ReleaseEvidence | null {
+  const e = payload as ReleaseEvidence | null | undefined;
+  if (!e || typeof e !== "object") return null;
+  if (!stringOrNull(e.tag) || !stringOrNull(e.tagDate)) return null;
+  if (typeof e.truncated !== "boolean") return null;
+  if (!Array.isArray(e.commits) || !e.commits.every(readCommit)) return null;
+  if (!Array.isArray(e.fixedAlerts) || !e.fixedAlerts.every(readFixedAlert)) {
+    return null;
+  }
+  return e;
 }
 
 /**
