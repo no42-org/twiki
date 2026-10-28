@@ -254,6 +254,7 @@ export function repoViewDeps(
     cutRank: resolved.cutRank,
     reviewBudgetDays: resolved.reviewBudgetDays,
     hungAfterMs: resolved.hungAfterMs,
+    releaseTracked: resolved.releaseTracked,
     defaultBranch,
   };
 }

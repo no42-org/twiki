@@ -2696,6 +2696,87 @@ describe("buildBoard (AD-32, AD-35)", () => {
       ]);
     });
 
+    describe("a runtime fix nobody renewed lifts nothing", () => {
+      /** Evidence holding one runtime fix after the tag. */
+      const FIXED: ReleaseEvidence = {
+        ...NOTHING,
+        fixedAlerts: [
+          {
+            number: 3,
+            severity: "high",
+            ghsaId: "GHSA-aaaa-bbbb-cccc",
+            cveId: null,
+            packageName: "lodash",
+            scope: "runtime",
+            htmlUrl: "https://github.com/no42-org/quiet/security/dependabot/3",
+            fixedAt: daysAgo(1),
+          },
+        ],
+      };
+      /** OTHER, quiet, as the board files it when nothing lifted it. */
+      const expectQuiet = (board: Board) => {
+        expect(board.rows).toEqual([]);
+        expect(board.quiet).toEqual(["no42-org/quiet"]);
+        expect(board.summary).toEqual({
+          watched: 1,
+          now: 0,
+          soon: 0,
+          quiet: 1,
+          unconfirmed: 0,
+        });
+      };
+
+      it("lifts a quiet repository when the reading is current, so the cases below can fail", () => {
+        sweep([{ repo: OTHER, alerts: [] }]);
+        release([{ repo: OTHER, evidence: FIXED }]);
+
+        expect(buildBoard(store, [OTHER], NOW, DEPS).rows).toEqual([
+          {
+            slug: "no42-org/quiet",
+            tier: "soon",
+            reason: "unreleased security fix since v1.2.0",
+            chips: alertsOnly(unswept(ZERO)),
+            signals: [],
+            signalsRest: { zero: ["security"], unconfirmed: REST_TOPICS },
+            release: {
+              state: "ready",
+              summary: "1 security fix (high, lodash) since v1.2.0",
+              href: "/repo/no42-org/quiet#release",
+            },
+            freshness: "fresh",
+            age: "5m ago",
+          } satisfies BoardRow,
+        ]);
+      });
+
+      it("after a failed run, though an older row is present", () => {
+        sweep([{ repo: OTHER, alerts: [] }]);
+        release([{ repo: OTHER, evidence: FIXED }], "2026-08-16T11:50:00.000Z");
+        release([], AT, "failed");
+
+        expectQuiet(buildBoard(store, [OTHER], NOW, DEPS));
+      });
+
+      it("from a row aged past the lane's cadence", () => {
+        sweep([{ repo: OTHER, alerts: [] }]);
+        release([{ repo: OTHER, evidence: FIXED }], hoursAgo(2));
+
+        expectQuiet(buildBoard(store, [OTHER], NOW, DEPS));
+      });
+
+      it("for a repository repos.yaml opted out", () => {
+        sweep([{ repo: OTHER, alerts: [] }]);
+        release([{ repo: OTHER, evidence: FIXED }]);
+
+        expectQuiet(
+          buildBoard(store, [OTHER], NOW, {
+            ...DEPS,
+            releaseTracked: () => false,
+          }),
+        );
+      });
+    });
+
     it("adds no tile and no queue filter", async () => {
       sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
       release([{ repo: REPO, evidence: READY }]);

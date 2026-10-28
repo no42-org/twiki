@@ -429,6 +429,11 @@ export interface RepoViewDeps {
    */
   hungAfterMs?: number;
   /**
+   * False when repos.yaml opted this repository out with `release: false`,
+   * so the header's tier gets no release lift (#196). Absent means tracked.
+   */
+  releaseTracked?: (repo: RepoRef) => boolean;
+  /**
    * What this repository calls its default branch, in production
    * `resolveDefaultBranch` bound to the loaded config (AD-33), or null when
    * the caller could not say.
@@ -604,6 +609,7 @@ export function buildRepoView(
       cutRank,
       reviewBudgetDays,
       hungAfterMs,
+      releaseTracked: deps.releaseTracked ?? (() => true),
       // One repository's page, so one branch: `repoAttention` keeps only this
       // repository's items and discards the rest, so a run in some other
       // repository judged against this branch reaches nothing. Constant

@@ -8,21 +8,21 @@ import {
   type CoverageFeature,
 } from "../../core/coverage.js";
 import { NOT_APPLICABLE } from "../../core/rank.js";
-import { assessRelease } from "../../core/release-worthy.js";
 import type { SeverityReading } from "../../core/severity.js";
 import { UNKNOWN_SEVERITY, worstSeverity } from "../../core/severity.js";
 import { foldSlug, watchKey } from "../../core/slug.js";
 import { maxTier, type Tier, tier } from "../../core/tier.js";
 import { topicOf } from "../../core/topics.js";
 import type { RepoRef } from "../../core/types.js";
-import type { CurrentValue, StorePort } from "../store/port.js";
-import { readReleaseEvidence, readReviewRequest } from "./payloads.js";
+import type { StorePort } from "../store/port.js";
+import { readReviewRequest } from "./payloads.js";
 import {
   buildQueue,
   type Queue,
   type QueueDeps,
   type QueueItem,
 } from "./queue.js";
+import { type ReleaseReading, releaseReadings } from "./release.js";
 
 // One attention tier per repository (AD-29, AD-34).
 //
@@ -36,6 +36,12 @@ export interface AttentionDeps extends QueueDeps {
   cutRank: number;
   /** Days a review request may wait before the repository is at least soon. */
   reviewBudgetDays: number;
+  /**
+   * False for a repository repos.yaml opted out with `release: false`, which
+   * then gets no release lift (#196). Absent means every repository is
+   * tracked, as an absent key does; the web wiring always binds it.
+   */
+  releaseTracked?: (repo: RepoRef) => boolean;
 }
 
 export interface RepoAttention {
@@ -156,32 +162,11 @@ function overdueAmong(
     : { number: oldest.number, days: Math.floor(oldest.ageMs / DAY_MS) };
 }
 
-/**
- * The present release-readiness row of each watched slug (#196).
- *
- * Present rows only, as every queue row is read: a tombstoned row is a
- * retracted assertion. Freshness is not judged here, matching the queue,
- * which tiers present rows whatever their age; the board judges freshness
- * for the Release cell only.
- */
-function releaseRowsBySlug(
-  store: StorePort,
-  watched: ReadonlySet<string>,
-): Map<string, CurrentValue> {
-  const bySlug = new Map<string, CurrentValue>();
-  for (const row of store.currentByType("release_readiness")) {
-    if (row.state !== "present") continue;
-    if (!watched.has(row.subject.key)) continue;
-    bySlug.set(row.subject.key, row);
-  }
-  return bySlug;
-}
-
 /** One repository's verdict over its own items and reviews. */
 function judge(
   items: QueueItem[],
   reviews: readonly OpenReview[],
-  release: CurrentValue | undefined,
+  release: ReleaseReading | undefined,
   deps: AttentionDeps,
 ): RepoAttention {
   const tiers = items.map((item) => tier(item.ranking, deps.cutRank));
@@ -210,11 +195,10 @@ function judge(
 
   // An unreleased security fix lifts to soon and never to now (#196). The
   // reason is rewritten only when the lift changed the tier, so a repository
-  // already soon or now keeps the item or review that put it there.
-  const evidence =
-    release === undefined ? null : readReleaseEvidence(release.payload);
-  if (evidence !== null) {
-    const verdict = assessRelease(evidence);
+  // already soon or now keeps the item or review that put it there. Only a
+  // confirmed reading lifts: the same one the board's Release cell shows.
+  if (release?.state === "confirmed") {
+    const { verdict } = release;
     const lifted = maxTier(repoTier, "soon");
     if (verdict.securityFixes.length > 0 && lifted !== repoTier) {
       repoTier = lifted;
@@ -296,13 +280,17 @@ export function attentionByRepo(
 ): {
   byRepo: Map<string, RepoAttention>;
   queue: Queue;
-  /** The present release-readiness row per watched slug, read once (#196). */
-  release: Map<string, CurrentValue>;
+  /** The release reading per watched slug, read once (#196). */
+  release: Map<string, ReleaseReading>;
 } {
   const queue = buildQueue(store, now, deps);
 
   const itemsBySlug = new Map<string, QueueItem[]>();
-  for (const repo of watched) itemsBySlug.set(watchKey(repo), []);
+  const repos = new Map<string, RepoRef>();
+  for (const repo of watched) {
+    itemsBySlug.set(watchKey(repo), []);
+    if (!repos.has(watchKey(repo))) repos.set(watchKey(repo), repo);
+  }
   // Derived from the map rather than written as one branch per feature, so
   // a fourth counted feature withdraws its own kind by appearing in
   // SUPPRESSES and not by anyone remembering to add a fourth `if`.
@@ -319,7 +307,13 @@ export function attentionByRepo(
 
   const slugs = new Set(itemsBySlug.keys());
   const reviews = reviewsBySlug(store, slugs, now);
-  const release = releaseRowsBySlug(store, slugs);
+  const release = releaseReadings(
+    store,
+    repos,
+    now,
+    deps.policy,
+    deps.releaseTracked ?? (() => true),
+  );
 
   const byRepo = new Map<string, RepoAttention>();
   for (const [slug, items] of itemsBySlug) {

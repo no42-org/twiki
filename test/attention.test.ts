@@ -556,6 +556,57 @@ describe("repoAttention (AD-29, AD-34)", () => {
       expect(repoAttention(store, REPO, NOW, DEPS)).toEqual(QUIET);
     });
 
+    /** One release-readiness run at `at`, with these rows, ending `outcome`. */
+    const releaseRun = (
+      at: string,
+      outcome: "ok" | "failed",
+      payloads: ReleaseEvidence[],
+    ) => {
+      const r = store.beginRun({
+        lane: "rest-release-readiness",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: at,
+      });
+      store.recordObservations(
+        r,
+        at,
+        payloads.map((payload) => ({
+          subject: releaseSubject(REPO),
+          payload,
+        })) as never[],
+      );
+      store.finishRun(r, outcome, at);
+    };
+
+    it("lifts nothing when the lane's latest run failed, though an older row is present", () => {
+      releaseRun("2026-08-20T11:50:00.000Z", "ok", [
+        evidence({ fixedAlerts: [fixedAlert()] }),
+      ]);
+      releaseRun("2026-08-20T11:55:00.000Z", "failed", []);
+
+      expect(repoAttention(store, REPO, NOW, DEPS)).toEqual(QUIET);
+    });
+
+    it("lifts nothing from a row aged past the lane's cadence", () => {
+      releaseRun("2026-08-20T10:00:00.000Z", "ok", [
+        evidence({ fixedAlerts: [fixedAlert()] }),
+      ]);
+
+      expect(repoAttention(store, REPO, NOW, DEPS)).toEqual(QUIET);
+    });
+
+    it("lifts nothing for a repository repos.yaml opted out", () => {
+      release(evidence({ fixedAlerts: [fixedAlert()] }));
+
+      expect(
+        repoAttention(store, REPO, NOW, {
+          ...DEPS,
+          releaseTracked: () => false,
+        }),
+      ).toEqual(QUIET);
+    });
+
     it("lifts nothing from a tombstoned row", () => {
       release(evidence({ fixedAlerts: [fixedAlert()] }));
       const at = "2026-08-20T11:58:00.000Z";

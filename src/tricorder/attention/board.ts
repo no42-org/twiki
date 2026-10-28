@@ -16,7 +16,7 @@ import {
   unconfirmedNotes,
 } from "../../core/coverage.js";
 import { compareRankings } from "../../core/rank.js";
-import { assessRelease, releaseSummary } from "../../core/release-worthy.js";
+import { releaseSummary } from "../../core/release-worthy.js";
 import type { SeverityReading } from "../../core/severity.js";
 import { watchKey } from "../../core/slug.js";
 import { type Tier, tier } from "../../core/tier.js";
@@ -29,7 +29,6 @@ import {
 } from "../collect/coverage.js";
 import { LANE as ISSUE_LANE } from "../collect/issues.js";
 import { LANE as PULL_REQUEST_LANE } from "../collect/pull-requests.js";
-import { LANE as RELEASE_LANE } from "../collect/release-readiness.js";
 import {
   REVIEWS_INSTALLATION,
   LANE as REVIEWS_LANE,
@@ -51,7 +50,6 @@ import {
 import { buildCollectionHealth, type CollectionHealth } from "./health.js";
 import { laneTopic } from "./lane-topics.js";
 import { repoPath, topicPath } from "./links.js";
-import { readReleaseEvidence } from "./payloads.js";
 import type { QueueItem } from "./queue.js";
 import {
   type AttentionDeps,
@@ -72,12 +70,6 @@ export interface BoardDeps extends AttentionDeps {
   coveragePolicy?: FreshnessPolicy;
   /** Per-lane cadences for the attesting lanes. A lane absent here is judged on `policy`. */
   lanePolicies?: Readonly<Record<string, FreshnessPolicy>>;
-  /**
-   * False for a repository repos.yaml opted out with `release: false`. A
-   * board built without it treats every repository as tracked, which is what
-   * an absent key means; the web wiring always binds it (`boardDeps`).
-   */
-  releaseTracked?: (repo: RepoRef) => boolean;
 }
 
 /**
@@ -595,34 +587,25 @@ export function buildBoard(
 
   /**
    * One repository's Release cell, and the confirmation behind it when there
-   * is one. Ready or none only while the lane's latest full run on this
-   * owner is `ok` and current AND this repository's own row is current: a
-   * failed run leaves an older row behind, and reading it would publish a
-   * verdict nobody renewed.
+   * is one. Read from the same reading the tier lift used (`releaseReadings`),
+   * so a repository is never lifted by a row its own cell calls unconfirmed.
    */
   const releaseFor = (
-    repo: RepoRef,
     slug: string,
   ): { cell: ReleaseCell; source: Source | null } => {
-    if (deps.releaseTracked?.(repo) === false) {
+    const reading = release.get(slug);
+    if (reading === undefined || reading.state === "unconfirmed") {
+      return { cell: { state: "unconfirmed" }, source: null };
+    }
+    if (reading.state === "not-tracked") {
       return { cell: { state: "not-tracked" }, source: null };
     }
-    const lane = standing(RELEASE_LANE, repo.owner.toLowerCase());
-    const row = release.get(slug);
-    if (!lane.current || !confirmationVouches(row, now, lane.policy)) {
-      return { cell: { state: "unconfirmed" }, source: null };
-    }
-    const evidence = readReleaseEvidence(row.payload);
-    if (evidence === null) {
-      return { cell: { state: "unconfirmed" }, source: null };
-    }
-    const verdict = assessRelease(evidence);
-    const source = { verifiedAt: row.verifiedAt, policy: lane.policy };
-    return verdict.ready
+    const source = { verifiedAt: reading.verifiedAt, policy: deps.policy };
+    return reading.verdict.ready
       ? {
           cell: {
             state: "ready",
-            summary: releaseSummary(verdict),
+            summary: releaseSummary(reading.verdict),
             href: `${repoPath(slug)}#release`,
           },
           source,
@@ -846,7 +829,7 @@ export function buildBoard(
     if (attention === undefined) continue;
     const { chips, sources } = chipsFor(repo, slug, attention);
     chipsBySlug.set(slug, chips);
-    const releaseCell = releaseFor(repo, slug);
+    const releaseCell = releaseFor(slug);
     if (releaseCell.source !== null) sources.push(releaseCell.source);
     // A quiet repository that is ready to release is shown as a row, still
     // tiered quiet: the cell is the reason to look at it.

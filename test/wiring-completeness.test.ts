@@ -445,6 +445,7 @@ describe("the routes' own wiring", () => {
       cutRank: 41,
       reviewBudgetDays: 9,
       hungAfterMs: 5_000,
+      releaseTracked: appDeps.releaseTracked,
       defaultBranch: "master",
     });
   });
@@ -531,7 +532,7 @@ describe("Required<QueueDeps>", () => {
 
 describe("Required<RepoViewDeps>", () => {
   it("rejects a literal missing any binding", () => {
-    // All six optional members, not the two somebody worried about: the
+    // All seven optional members, not the two somebody worried about: the
     // annotation covers every one, and a demonstration that covers a subset
     // is the shape this file exists to argue against.
     const { coveragePolicy: _coverage, ...noCoveragePolicy } = repoView;
@@ -559,6 +560,12 @@ describe("Required<RepoViewDeps>", () => {
     const { hungAfterMs: _hung, ...noHungAfterMs } = repoView;
     // @ts-expect-error the hung threshold cannot be dropped from the wiring
     wireRepoView(noHungAfterMs);
+
+    // repos.yaml `release: false`. Dropped, the page header would lift an
+    // opted-out repository the overview calls not tracked (#196).
+    const { releaseTracked: _tracked, ...noReleaseTracked } = repoView;
+    // @ts-expect-error the release opt-out cannot be dropped from the wiring
+    wireRepoView(noReleaseTracked);
 
     expect(wireRepoView(repoView)).toBe(repoView);
   });
