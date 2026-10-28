@@ -45,6 +45,7 @@ export const REQUIRED_READS: Record<string, string> = {
   actions: "workflow run status",
   pull_requests: "dependency-update PRs and the review queue",
   issues: "untriaged issues",
+  contents: "release readiness: tags and commits since the latest tag",
 };
 
 /** Required reads this App does not hold. */

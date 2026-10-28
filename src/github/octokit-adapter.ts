@@ -7,6 +7,7 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import { NOT_APPLICABLE } from "../core/rank.js";
 import { redact } from "../core/redact.js";
+import type { CommitRef, FixedAlertRef } from "../core/release-worthy.js";
 import { newestStableTag, parseDependency } from "../core/semver.js";
 import type {
   BranchProtection,
@@ -47,6 +48,7 @@ import type {
   RawRepoMeta,
   RawReviewRequest,
   RawSecretScanningAlert,
+  RawUnreleasedCommits,
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
@@ -519,6 +521,9 @@ export function validatorFrom(
   if (!etag && !lastModified) return null;
   return { etag, lastModified, tokenGen };
 }
+
+const errorMessage = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err);
 
 interface PageResponse {
   data: unknown;
@@ -1206,6 +1211,141 @@ export class OctokitGitHub implements GitHubPort {
       .filter((ref) => ref.startsWith("refs/tags/"))
       .map((ref) => ref.slice("refs/tags/".length));
     return newestStableTag(names);
+  }
+
+  async unreleasedCommits(
+    repo: RepoRef,
+    tag: string | null,
+    branch: string,
+  ): Promise<RawUnreleasedCommits> {
+    const gh = await this.client(repo);
+    const slug = repoSlug(repo);
+    const toRef = (c: unknown): CommitRef | null => {
+      const x = c as {
+        sha?: unknown;
+        html_url?: unknown;
+        commit?: { message?: unknown };
+      };
+      if (
+        typeof x?.sha !== "string" ||
+        typeof x.html_url !== "string" ||
+        typeof x.commit?.message !== "string"
+      ) {
+        return null;
+      }
+      return {
+        sha: x.sha,
+        subject: x.commit.message.split("\n", 1)[0] ?? "",
+        url: x.html_url,
+      };
+    };
+    const refsOf = (list: unknown[], what: string): CommitRef[] =>
+      list.map((c) => {
+        const ref = toRef(c);
+        if (ref === null) {
+          throw new Error(
+            `${what} for ${slug} held a commit with no sha, message or url`,
+          );
+        }
+        return ref;
+      });
+
+    if (tag === null) {
+      const what = `commit listing of ${branch} for ${slug}`;
+      let res: PageResponse;
+      try {
+        res = await gh.request("GET /repos/{owner}/{repo}/commits", {
+          owner: repo.owner,
+          repo: repo.name,
+          sha: branch,
+          per_page: 100,
+        });
+      } catch (err) {
+        throw new Error(`${what} failed: ${errorMessage(err)}`);
+      }
+      if (!Array.isArray(res.data)) {
+        throw new Error(`${what} returned a non-array body`);
+      }
+      const link = typeof res.headers.link === "string" ? res.headers.link : "";
+      return {
+        tagDate: null,
+        commits: refsOf(res.data as unknown[], what),
+        truncated: nextLink(link) !== null,
+      };
+    }
+
+    const what = `comparison ${tag}...${branch} for ${slug}`;
+    let data: Awaited<
+      ReturnType<Octokit["repos"]["compareCommitsWithBasehead"]>
+    >["data"];
+    try {
+      ({ data } = await gh.repos.compareCommitsWithBasehead({
+        owner: repo.owner,
+        repo: repo.name,
+        basehead: `${tag}...${branch}`,
+        per_page: 100,
+      }));
+    } catch (err) {
+      throw new Error(`${what} failed: ${errorMessage(err)}`);
+    }
+    const tagDate = data.base_commit?.commit?.committer?.date;
+    if (typeof tagDate !== "string" || !Array.isArray(data.commits)) {
+      throw new Error(`${what} carried no tag commit date or no commit list`);
+    }
+    return {
+      tagDate,
+      // The comparison lists oldest first; the port promises newest first.
+      commits: refsOf(data.commits, what).reverse(),
+      truncated: data.total_commits > data.commits.length,
+    };
+  }
+
+  async listFixedDependabotAlerts(repo: RepoRef): Promise<FixedAlertRef[]> {
+    const gh = await this.client(repo);
+    const slug = repoSlug(repo);
+    let walked: Awaited<ReturnType<typeof walkLinkedPages>>;
+    try {
+      walked = await walkLinkedPages(
+        `fixed alert listing for ${slug}`,
+        () =>
+          gh.request("GET /repos/{owner}/{repo}/dependabot/alerts", {
+            owner: repo.owner,
+            repo: repo.name,
+            state: "fixed",
+            per_page: 100,
+          }),
+        (url) => gh.request(`GET ${url}`),
+      );
+    } catch (err) {
+      // Same recognition the per-repository open-alert fan-out uses.
+      if (translateDependabotProbe(err).state === "feature_off") return [];
+      throw new Error(
+        `fixed alert listing for ${slug} failed: ${errorMessage(err)}`,
+      );
+    }
+    if (walked.truncated) {
+      throw new Error(
+        `fixed alert listing for ${slug} exceeded ${MAX_ALERT_PAGES} pages; ` +
+          "the fixes after the tag cannot be known",
+      );
+    }
+    const fixed: FixedAlertRef[] = [];
+    for (const item of walked.items) {
+      const alert = toDependabotAlert(item, repo);
+      const fixedAt = (item as { fixed_at?: unknown } | null)?.fixed_at;
+      if (alert === null || typeof fixedAt !== "string") continue;
+      fixed.push({
+        number: alert.number,
+        severity: alert.severity,
+        ghsaId: alert.ghsaId,
+        cveId: alert.cveId,
+        packageName: alert.packageName,
+        scope: alert.scope,
+        htmlUrl: alert.htmlUrl,
+        fixedAt,
+      });
+    }
+    return fixed;
   }
 
   async dependabotCommitsSince(

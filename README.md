@@ -176,6 +176,11 @@ Create a new GitHub App and grant **read-only** on exactly these, nothing more:
 | Actions | `actions` | workflow run status |
 | Pull requests | `pull_requests` | dependency-update PRs, open human PRs and the review queue |
 | Issues | `issues` | untriaged issues |
+| Contents | `contents` | release readiness: tags and commits since the latest tag |
+
+Contents is new with the Release column. An App created earlier must be
+edited to add it, and each installation must approve the new permission
+before it takes effect. `tricorder doctor` reports it missing until then.
 
 Grant no write permission at all, and subscribe to no webhook events: nothing
 in gitricorder listens.

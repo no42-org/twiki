@@ -5,6 +5,10 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+// The one measured sentence, from the one place that owns it: a copy here
+// would be a body string the adapter could stop matching without any test
+// noticing.
+import type { FixedAlertRef } from "../src/core/release-worthy.js";
 import {
   type Bump,
   type CheckStatus,
@@ -22,9 +26,6 @@ import type {
   KevCatalogue,
   KevFetchOutcome,
 } from "../src/enrich/port.js";
-// The one measured sentence, from the one place that owns it: a copy here
-// would be a body string the adapter could stop matching without any test
-// noticing.
 import { DEPENDABOT_ALERTS_DISABLED_BODY } from "../src/github/octokit-adapter.js";
 import type {
   CodeScanningAlertPage,
@@ -44,6 +45,7 @@ import type {
   RawRepoMeta,
   RawReviewRequest,
   RawSecretScanningAlert,
+  RawUnreleasedCommits,
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
@@ -338,6 +340,9 @@ export interface FakeRepoData {
   prChecks: Record<string, CheckStatus>;
   mainChecks: CheckStatus;
   latestTag: string | null;
+  /** Absent means the fake serves no commits and no tag date. */
+  unreleasedCommits?: RawUnreleasedCommits;
+  fixedAlerts?: FixedAlertRef[];
   unreleased: number;
   hasWorkflow: boolean;
   defaultSha: string;
@@ -910,6 +915,25 @@ export class FakeGitHubReadPort implements GitHubReadPort {
   async latestTag(repo: RepoRef): Promise<string | null> {
     if (this.failLatestTagWith) throw this.failLatestTagWith;
     return this.get(repo).latestTag;
+  }
+  /** When set, unreleasedCommits throws: a READ failure in the release signal. */
+  private readonly unreleasedFailures = new Map<string, Error>();
+  failUnreleasedCommitsWith(slug: string, err: Error): void {
+    this.unreleasedFailures.set(slug, err);
+  }
+  async unreleasedCommits(repo: RepoRef): Promise<RawUnreleasedCommits> {
+    const err = this.unreleasedFailures.get(repoSlug(repo));
+    if (err) throw err;
+    return (
+      this.get(repo).unreleasedCommits ?? {
+        tagDate: null,
+        commits: [],
+        truncated: false,
+      }
+    );
+  }
+  async listFixedDependabotAlerts(repo: RepoRef): Promise<FixedAlertRef[]> {
+    return this.get(repo).fixedAlerts ?? [];
   }
   async dependabotCommitsSince(repo: RepoRef): Promise<number> {
     return this.get(repo).unreleased;
