@@ -1675,11 +1675,11 @@ describe("unreleased commits", () => {
       "v1.0.0",
       "main",
     );
-    expect(compared[0]).toMatchObject({
-      owner: "o",
-      repo: "r",
-      basehead: "v1.0.0...main",
-    });
+    // No per_page or page: GitHub's docs say the list then holds up to 250
+    // commits and ends at the newest; a paged first page holds at most 100.
+    expect(compared).toEqual([
+      { owner: "o", repo: "r", basehead: "v1.0.0...main" },
+    ]);
     expect(got).toEqual({
       tagDate: "2026-10-01T00:00:00Z",
       commits: [
@@ -1756,6 +1756,50 @@ describe("unreleased commits", () => {
       "main",
     );
     expect(got.truncated).toBe(true);
+  });
+
+  it("throws naming the repository and the tag when the tag is not on the branch", async () => {
+    // A three-dot compare against a tag off the default branch answers 200
+    // with status "diverged"; its commit list is not "since the tag".
+    const { gh } = stub({
+      compare: {
+        status: "diverged",
+        total_commits: 1,
+        base_commit: {
+          commit: { committer: { date: "2026-10-01T00:00:00Z" } },
+        },
+        commits: [commit("a1", "feat: on main only")],
+      },
+    });
+    await expect(
+      adapterFor(gh, "organization").unreleasedCommits(REPO, "v1.0.0", "main"),
+    ).rejects.toThrow(
+      "comparison v1.0.0...main for o/r: tag v1.0.0 is not reachable from main (the comparison diverged)",
+    );
+  });
+
+  it("reads a branch that is behind its tag as nothing since the tag", async () => {
+    const { gh } = stub({
+      compare: {
+        status: "behind",
+        total_commits: 0,
+        base_commit: {
+          commit: { committer: { date: "2026-10-01T00:00:00Z" } },
+        },
+        commits: [],
+      },
+    });
+    expect(
+      await adapterFor(gh, "organization").unreleasedCommits(
+        REPO,
+        "v1.0.0",
+        "main",
+      ),
+    ).toEqual({
+      tagDate: "2026-10-01T00:00:00Z",
+      commits: [],
+      truncated: false,
+    });
   });
 
   it("throws naming the repository and the tag when the comparison 404s", async () => {

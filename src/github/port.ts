@@ -20,7 +20,12 @@ import type {
 export interface RawUnreleasedCommits {
   /** Committer date of the tag's commit; null when there is no tag. */
   tagDate: string | null;
-  /** Newest first. `subject` is the first line of the message. */
+  /**
+   * Newest first. `subject` is the first line of the message. When
+   * `truncated`, this is a subset: with no tag it is the newest page of the
+   * branch; with a tag GitHub documents only that the newest commit of the
+   * comparison is in it, not which others are.
+   */
   commits: CommitRef[];
   /** GitHub reported more commits than it returned. */
   truncated: boolean;

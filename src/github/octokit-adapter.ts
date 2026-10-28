@@ -1279,14 +1279,28 @@ export class OctokitGitHub implements GitHubPort {
       ReturnType<Octokit["repos"]["compareCommitsWithBasehead"]>
     >["data"];
     try {
+      // No per_page or page: GitHub's REST docs say the list is then capped
+      // at 250 commits, in chronological order, and its last commit is the
+      // newest of the whole comparison. With any paging parameter the first
+      // page holds at most 100 and need not reach the newest. Which commits a
+      // truncated list keeps besides the newest is not documented, so
+      // releaseReadings refuses to call a truncated read with nothing in it
+      // `none`.
       ({ data } = await gh.repos.compareCommitsWithBasehead({
         owner: repo.owner,
         repo: repo.name,
         basehead: `${tag}...${branch}`,
-        per_page: 100,
       }));
     } catch (err) {
       throw new Error(`${what} failed: ${errorMessage(err)}`);
+    }
+    // A tag off the branch answers 200, not 404, and lists the branch's
+    // commits since the merge base: not "since the tag". `behind` (the branch
+    // is an ancestor of the tag) lists nothing and is read as such.
+    if (data.status === "diverged") {
+      throw new Error(
+        `${what}: tag ${tag} is not reachable from ${branch} (the comparison diverged)`,
+      );
     }
     const tagDate = data.base_commit?.commit?.committer?.date;
     if (typeof tagDate !== "string" || !Array.isArray(data.commits)) {
