@@ -35,14 +35,7 @@ export async function gatherFacts(
   // nobody was spending.
   const rawPrs = await github.listOpenDependabotPRs(repo);
   const mainChecks = await github.branchChecks(repo, "main");
-  const latestTag = await github.latestTag(repo);
-  const hasTagReleaseWorkflow = await github.hasTagReleaseWorkflow(repo);
   const protection = await github.branchProtection(repo, "main");
-
-  const unreleasedDependencyCommits = await github.dependabotCommitsSince(
-    repo,
-    latestTag,
-  );
 
   // Remediation detail for `main` — only fetched when main is not green.
   let mainFailingChecks: FailingCheck[] | undefined;
@@ -97,10 +90,7 @@ export async function gatherFacts(
   return {
     repo,
     mainChecks,
-    latestTag,
-    hasTagReleaseWorkflow,
     protection,
-    unreleasedDependencyCommits,
     prs,
     mainFailingChecks,
     mainWorkflowRuns,

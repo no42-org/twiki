@@ -53,8 +53,6 @@ function deps(notifier: Notifier, advisorErr?: Error) {
     prChecks: { "sha-1": "green" },
     mainChecks: "green",
     latestTag: "v1.2.3",
-    unreleased: 1,
-    hasWorkflow: true,
     defaultSha: "main-sha",
   };
   return {

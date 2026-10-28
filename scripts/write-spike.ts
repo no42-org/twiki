@@ -17,7 +17,7 @@ import { runOnce } from "../src/twiki/run.js";
 // Exercise twiki's WRITE paths against real GitHub.
 //
 // `test/adapter-contract.test.ts` binds the fakes to recorded payloads for the
-// READ side, and covers none of the four write methods. Every lane test runs
+// READ side, and covers none of the three write methods. Every lane test runs
 // against a fake written from the same reading of the API as the adapter, so a
 // wrong merge method or a malformed ref would leave the suite green: the fake
 // agrees with the bug. That exact gap already shipped a real defect once - 31
@@ -25,7 +25,7 @@ import { runOnce } from "../src/twiki/run.js";
 // never been checked at all.
 //
 // This is NOT a test. It needs a live token and a scratch repository, it
-// merges pull requests and pushes tags, and it must never run in CI.
+// merges pull requests, and it must never run in CI.
 //
 // It also does not need Anthropic credits. The advisor and the executor are
 // separable by design (the advisor holds no write tools; the executor
@@ -42,7 +42,7 @@ usage: npx tsx scripts/write-spike.ts --repo <owner/name> [--plan <file>] [--rec
   --record  directory to write the observed requests and responses into.
   --direct  PASS A: call the write port directly, bypassing the executor and
             its preconditions. Comma-separated. One of:
-            mergePR:<pr>  pushTag:<tag>@<sha>  rerunFailedJobs:<runId>
+            mergePR:<pr>  rerunFailedJobs:<runId>
             requestDependabotRebase:<pr>
             (each needs its argument; "all" alone is not enough)
 
@@ -92,8 +92,8 @@ function parseArgs(argv: string[]): Args | null {
 /**
  * The target is named on the command line and nowhere else.
  *
- * Deliberately NOT read from repos.yaml. This script merges pull requests and
- * pushes tags; a version of it that could be pointed at a real repository by a
+ * Deliberately NOT read from repos.yaml. This script merges pull requests; a
+ * version of it that could be pointed at a real repository by a
  * stray environment variable would be a worse risk than the gap it closes. The
  * adapter's own allowlist guard still applies underneath - this refuses to be
  * the place that first weakens it.
@@ -116,8 +116,8 @@ function guard(args: Args): void {
   try {
     // Lowercased on both sides. GitHub resolves owner/name case-insensitively
     // and this comparison did not, so `--repo No42-Org/twiki` slipped past a
-    // repos.yaml naming `no42-org/twiki` - and the script would then merge and
-    // tag in a repository twiki actually manages, which is the exact outcome
+    // repos.yaml naming `no42-org/twiki` - and the script would then merge in
+    // a repository twiki actually manages, which is the exact outcome
     // this guard exists to prevent.
     const text = readFileSync(configured, "utf8").toLowerCase();
     if (text.includes(args.repo.toLowerCase())) {
@@ -296,9 +296,9 @@ main().catch((err) => {
 /**
  * Pass A: call each write method on the port, bypassing the executor (D7).
  *
- * The executor cannot reach all four in one repository state - `mergePR` needs
- * an open Dependabot pull request while `pushTag` needs `isSettled()` with
- * none, and `rerunFailedJobs` needs main red while `pushTag` needs it green.
+ * The executor cannot reach all three in one repository state - `mergePR`
+ * needs main green and a green pull request, while `rerunFailedJobs` needs
+ * main red.
  * This answers the narrower question the contract test cannot: does GitHub
  * accept the request the adapter builds.
  *
@@ -350,7 +350,7 @@ async function runDirect(args: Args): Promise<void> {
     flush(); // incremental: a crash mid-run must not lose what was learned
   };
 
-  const ALL = "mergePR,pushTag,rerunFailedJobs,requestDependabotRebase";
+  const ALL = "mergePR,rerunFailedJobs,requestDependabotRebase";
   const spec = args.direct === "all" ? ALL : (args.direct ?? "");
   if (args.direct === "all") {
     console.error(
@@ -365,8 +365,7 @@ async function runDirect(args: Args): Promise<void> {
     if (!step) continue;
     const [name, arg] = step.split(":");
     // Validate before issuing. Without this, `mergePR` with no colon requested
-    // /pulls/NaN/merge and `pushTag:v1` sent an undefined sha - both surfacing
-    // as REJECTED, which is the one signal this spike exists to produce. A bad
+    // /pulls/NaN/merge - surfacing as REJECTED, which is the one signal this spike exists to produce. A bad
     // argument must not be mistakable for a genuine adapter defect.
     const num = (v: string | undefined): number | null => {
       const n = Number(v);
@@ -383,13 +382,6 @@ async function runDirect(args: Args): Promise<void> {
           ? github.mergePR(ref, n)
           : github.requestDependabotRebase(ref, n),
       );
-    } else if (name === "pushTag") {
-      const [tag, sha] = (arg ?? "").split("@");
-      if (!tag || !sha) {
-        console.error(`[spike] ${step}: needs pushTag:<tag>@<sha>; skipped`);
-        continue;
-      }
-      await attempt(step, () => github.pushTag(ref, tag, sha));
     } else if (name === "rerunFailedJobs") {
       const n = num(arg);
       if (n === null) {

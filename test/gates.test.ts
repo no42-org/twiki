@@ -6,7 +6,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY } from "../src/core/types.js";
 import {
-  canMerge,
   canRebase,
   canRerunCi,
   isFailing,
@@ -50,7 +49,6 @@ describe("withinMergePolicy", () => {
 describe("mergeBlock", () => {
   it("passes a green patch", () => {
     expect(mergeBlock(makePr(), DEFAULT_POLICY)).toBeNull();
-    expect(canMerge(makePr(), DEFAULT_POLICY)).toBe(true);
   });
   it("blocks when CI is not green", () => {
     expect(mergeBlock(makePr({ checks: "red" }), DEFAULT_POLICY)).toBe(

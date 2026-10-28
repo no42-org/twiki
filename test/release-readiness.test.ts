@@ -23,8 +23,6 @@ function repoData(over: Partial<FakeRepoData> = {}): FakeRepoData {
     prChecks: {},
     mainChecks: "green",
     latestTag: null,
-    unreleased: 0,
-    hasWorkflow: true,
     defaultSha: "sha-main",
     ...over,
   };

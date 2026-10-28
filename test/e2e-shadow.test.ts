@@ -39,8 +39,6 @@ it("shadow run reports would-do actions and writes nothing", async () => {
     prChecks: { a1: "green" },
     mainChecks: "green",
     latestTag: "v2.0.0",
-    unreleased: 0,
-    hasWorkflow: true,
     defaultSha: "alpha-sha",
   };
   // beta is what twiki used to release: no open PRs, green main, unreleased
@@ -50,8 +48,6 @@ it("shadow run reports would-do actions and writes nothing", async () => {
     prChecks: {},
     mainChecks: "green",
     latestTag: "v0.4.7",
-    unreleased: 2,
-    hasWorkflow: true,
     defaultSha: "beta-sha",
   };
   const github = new FakeGitHub(
@@ -75,7 +71,6 @@ it("shadow run reports would-do actions and writes nothing", async () => {
 
   // No writes in shadow mode.
   expect(github.merged).toEqual([]);
-  expect(github.tagged).toEqual([]);
 
   // alpha would merge #1; beta has nothing to do.
   expect(res.repos.find((r) => r.repo === A)?.prs[0]?.status).toBe(
@@ -97,8 +92,6 @@ it("suppresses the digest on a purely routine tick", async () => {
     prChecks: {},
     mainChecks: "green",
     latestTag: "v1.0.0",
-    unreleased: 0,
-    hasWorkflow: true,
     defaultSha: "quiet-sha",
   };
   const github = new FakeGitHub(new Map([[A, quiet]]));

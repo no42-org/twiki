@@ -31,7 +31,6 @@ import type {
   CodeScanningAlertPage,
   DependabotAccess,
   FeatureProbe,
-  FileAtRef,
   GitHubAppPort,
   GitHubPort,
   GitHubReadPort,
@@ -52,7 +51,6 @@ import type {
   RawUpdatePr,
   RawUpdateStatus,
   RawWorkflowRun,
-  ReleaseState,
   RequestValidator,
   ReviewRequestPage,
   SecretScanningAlertPage,
@@ -60,19 +58,8 @@ import type {
   UpdatePrPage,
   WorkflowRunPage,
 } from "./port.js";
-import { TagExistsError } from "./port.js";
 
 const DEPENDABOT_LOGIN = "dependabot[bot]";
-
-/**
- * The largest file the contents endpoint will inline.
- *
- * GitHub documents 1 MB: above it the JSON answer carries empty `content` and
- * `encoding: "none"`, and the raw media type or the blob endpoint is the
- * documented way to fetch one. Named here so the number that reaches an
- * operator is the API's own limit rather than a guess made further up.
- */
-const CONTENTS_INLINE_LIMIT_BYTES = 1024 * 1024;
 
 /**
  * Branch rules that gate what LANDS on a branch, as opposed to what survives.
@@ -123,34 +110,6 @@ const GATING_RULES = [
   "restrictions",
   "lock_branch",
 ];
-
-/**
- * Whether a commit came from Dependabot, decided HERE rather than by GitHub.
- *
- * GitHub's `author` query parameter on the commit-listing endpoint does not
- * match bot logins: `?author=dependabot%5Bbot%5D` returns zero results for
- * repositories whose unfiltered listing plainly contains commits with
- * `author.login === "dependabot[bot]"` - measured at 0 against 42 on one
- * repository and 0 against 28 on another (#90). Asking the API to filter
- * silently returned nothing, which read as "no unreleased work" and meant no
- * repository could ever be released for the first time.
- *
- * The `name` fallback covers a commit GitHub could not map to an account, so
- * `author` is null while the git author name still identifies Dependabot. No
- * commit in this estate is currently in that state; it is covered by a derived
- * fixture rather than left to be assumed.
- */
-interface CommitLike {
-  author?: { login?: string } | null;
-  commit: { author?: { name?: string } | null };
-}
-
-function isDependabotCommit(c: CommitLike): boolean {
-  return (
-    c.author?.login === DEPENDABOT_LOGIN ||
-    /dependabot/i.test(c.commit.author?.name ?? "")
-  );
-}
 
 /** Check-run conclusions that count as a red/failing result. */
 const FAILED_CONCLUSIONS = [
@@ -1362,61 +1321,6 @@ export class OctokitGitHub implements GitHubPort {
     return fixed;
   }
 
-  async dependabotCommitsSince(
-    repo: RepoRef,
-    tag: string | null,
-  ): Promise<number> {
-    const gh = await this.client(repo);
-    if (!tag) {
-      // No release yet, so every commit in history is unreleased and there is
-      // no base to compare against. NOT filtered by GitHub - see the predicate.
-      //
-      // This MUST walk rather than read one page. Filtering locally moved the
-      // bound from "the first 100 matches" to "the first 100 commits scanned",
-      // so a repository whose Dependabot merges sit behind 100 newer human
-      // commits would count 0 and be told there was nothing to release - #90
-      // again, through a narrower window. Review caught it; the first version
-      // of this fix read one page and claimed in a comment that it merely
-      // under-reported, which was not true of the 0 case.
-      const walked = await walkLinkedPages(
-        `commit listing for ${repoSlug(repo)}`,
-        () =>
-          gh.request("GET /repos/{owner}/{repo}/commits", {
-            owner: repo.owner,
-            repo: repo.name,
-            per_page: 100,
-          }),
-        (url) => gh.request(`GET ${url}`),
-      );
-      // Residual, stated rather than implied: if the walk hit its page cap
-      // AND matched nothing, 0 means "not in the first MAX_ALERT_PAGES pages",
-      // not "none exist". That needs a repository with no release and tens of
-      // thousands of commits, none of them Dependabot's. Not engineered for,
-      // but not silently claimed correct either.
-      return (walked.items as CommitLike[]).filter(isDependabotCommit).length;
-    }
-    const { data } = await gh.repos.compareCommitsWithBasehead({
-      owner: repo.owner,
-      repo: repo.name,
-      basehead: `${tag}...HEAD`,
-    });
-    // The sibling bound, which the first version of this fix documented on the
-    // listing branch while leaving silent here. GitHub caps `commits` on a
-    // comparison and reports the true size separately, so the two disagreeing
-    // is how truncation shows. Undercounting is harmless while something
-    // matched - the gate reads `> 0` - and only misleads the advisor, which
-    // sees the number.
-    const seen = data.commits.filter(isDependabotCommit).length;
-    if (seen === 0 && data.total_commits > data.commits.length) {
-      throw new Error(
-        `comparison ${tag}...HEAD for ${repoSlug(repo)} returned ${data.commits.length} ` +
-          `of ${data.total_commits} commits and none of them were Dependabot's; ` +
-          `a 0 here cannot be trusted`,
-      );
-    }
-    return seen;
-  }
-
   async branchProtection(
     repo: RepoRef,
     branch: string,
@@ -1538,34 +1442,6 @@ export class OctokitGitHub implements GitHubPort {
     return { state, rulesInForce, inertRulesets, unreadableSources };
   }
 
-  async hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean> {
-    const gh = await this.client(repo);
-    let files: { name: string }[];
-    try {
-      const { data } = await gh.repos.getContent({
-        owner: repo.owner,
-        repo: repo.name,
-        path: ".github/workflows",
-      });
-      if (!Array.isArray(data)) return false;
-      files = data.filter((f) => /\.ya?ml$/.test(f.name));
-    } catch {
-      return false;
-    }
-    for (const f of files) {
-      const { data } = await gh.repos.getContent({
-        owner: repo.owner,
-        repo: repo.name,
-        path: `.github/workflows/${f.name}`,
-      });
-      if (Array.isArray(data) || data.type !== "file" || !("content" in data))
-        continue;
-      const text = Buffer.from(data.content, "base64").toString("utf8");
-      if (/on:[\s\S]*?push:[\s\S]*?tags:/.test(text)) return true;
-    }
-    return false;
-  }
-
   async defaultBranchSha(repo: RepoRef): Promise<string> {
     const gh = await this.client(repo);
     const { data: meta } = await gh.repos.get({
@@ -1578,57 +1454,6 @@ export class OctokitGitHub implements GitHubPort {
       branch: meta.default_branch,
     });
     return data.commit.sha;
-  }
-
-  async readFileAtRef(
-    repo: RepoRef,
-    path: string,
-    ref: string,
-  ): Promise<FileAtRef> {
-    const gh = await this.client(repo);
-    let data: Awaited<ReturnType<typeof gh.repos.getContent>>["data"];
-    try {
-      ({ data } = await gh.repos.getContent({
-        owner: repo.owner,
-        repo: repo.name,
-        path,
-        ref,
-      }));
-    } catch (err) {
-      // 404 only. `hasTagReleaseWorkflow` above swallows every error into
-      // "no workflow", which is safe there because the answer only ever
-      // withholds a release. Here the answer BLOCKS one, so a 403 or a 502
-      // reported as "the file is not in the tree" would name the repository
-      // for twiki's own outage.
-      if (
-        typeof err === "object" &&
-        err !== null &&
-        (err as { status?: number }).status === 404
-      ) {
-        return { kind: "absent" };
-      }
-      throw err;
-    }
-    // An array is the listing of a directory. Otherwise GitHub names what it
-    // found, and its word for it is repeated rather than guessed at.
-    if (Array.isArray(data)) return { kind: "not-a-file", type: "dir" };
-    if (data.type !== "file") return { kind: "not-a-file", type: data.type };
-    // Anything but base64 means GitHub declined to inline the content and
-    // sent an empty string instead. Decoding it would produce a file that
-    // reads as empty, and the operator would be told their pattern matched
-    // nothing in a file that is perfectly fine.
-    if (data.encoding !== "base64") {
-      return {
-        kind: "too-large",
-        bytes: data.size,
-        limitBytes: CONTENTS_INLINE_LIMIT_BYTES,
-        encoding: data.encoding,
-      };
-    }
-    return {
-      kind: "text",
-      text: Buffer.from(data.content, "base64").toString("utf8"),
-    };
   }
 
   async failingChecks(repo: RepoRef, ref: string): Promise<FailingCheck[]> {
@@ -2404,39 +2229,6 @@ export class OctokitGitHub implements GitHubPort {
       pull_number: prNumber,
       merge_method: "squash",
     });
-  }
-
-  async pushTag(repo: RepoRef, tag: string, sha: string): Promise<void> {
-    const gh = await this.client(repo);
-    try {
-      await gh.git.createRef({
-        owner: repo.owner,
-        repo: repo.name,
-        ref: `refs/tags/${tag}`,
-        sha,
-      });
-    } catch (err) {
-      const status = (err as { status?: number }).status;
-      const message = err instanceof Error ? err.message : String(err);
-      if (status === 422 && /already exists/i.test(message)) {
-        throw new TagExistsError(tag);
-      }
-      throw err;
-    }
-  }
-
-  async releaseStateForTag(repo: RepoRef, tag: string): Promise<ReleaseState> {
-    const gh = await this.client(repo);
-    // One page is enough: the tag in question is by construction the newest
-    // one, and drafts are included for an App with contents access.
-    const { data } = await gh.repos.listReleases({
-      owner: repo.owner,
-      repo: repo.name,
-      per_page: 100,
-    });
-    const rel = data.find((r) => r.tag_name === tag);
-    if (!rel) return "none";
-    return rel.draft ? "draft" : "published";
   }
 
   async rerunFailedJobs(repo: RepoRef, runId: number): Promise<void> {

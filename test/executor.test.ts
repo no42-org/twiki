@@ -28,8 +28,6 @@ function gh(over: Partial<FakeRepoData> = {}): FakeGitHub {
     prChecks: {},
     mainChecks: "green",
     latestTag: "v1.2.3",
-    unreleased: 1,
-    hasWorkflow: true,
     defaultSha: "main-sha",
     ...over,
   };

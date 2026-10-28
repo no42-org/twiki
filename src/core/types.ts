@@ -123,7 +123,7 @@ export interface PullRequest {
   checks: CheckStatus;
   /** Untrusted: contains third-party changelog text. Treated as data only. */
   body: string;
-  // --- Remediation facts (read-only; never feed mergeBlock/isSettled, and are
+  // --- Remediation facts (read-only; never feed mergeBlock, and are
   // stripped from the advisor's input by toAdvisorFacts). ---
   /** Commits the head is behind its base; `null`/absent = unknown (fail-closed). */
   behindBy?: number | null;
@@ -136,17 +136,10 @@ export interface PullRequest {
 export interface RepoFacts {
   repo: RepoRef;
   mainChecks: CheckStatus;
-  latestTag: string | null;
-  /** Whether the repo has a tag-triggered release workflow. */
-  hasTagReleaseWorkflow: boolean;
-  /** Count of Dependabot-attributable commits since the latest tag. */
-  unreleasedDependencyCommits: number;
   prs: PullRequest[];
   /**
-   * Whether `main` is defended. Gathered and REPORTED ONLY - no gate reads it.
-   * Refusing to release from an undefended branch is a policy decision with a
-   * deadlock attached, and this fact exists so that decision can be made with
-   * evidence rather than in the abstract (D4).
+   * Whether `main` is defended. Gathered and REPORTED ONLY - no gate reads it
+   * (D4).
    */
   protection: ProtectionFact;
   // --- Remediation facts for `main` (read-only; advisor never sees these). ---

@@ -37,8 +37,6 @@ function gh(over: Partial<FakeRepoData> = {}): FakeGitHub {
     prChecks: {},
     mainChecks: "green",
     latestTag: "v1.2.3",
-    unreleased: 0,
-    hasWorkflow: true,
     defaultSha: "main-sha",
     ...over,
   };
@@ -277,8 +275,6 @@ describe("ci-remediation — resilience", () => {
             prChecks: {},
             mainChecks: "red",
             latestTag: "v1.2.3",
-            unreleased: 0,
-            hasWorkflow: true,
             defaultSha: "main-sha",
           },
         ],

@@ -3,12 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type {
-  PullRequest,
-  RepoFacts,
-  RepoPolicy,
-  WorkflowRunRef,
-} from "../core/types.js";
+import type { PullRequest, RepoPolicy, WorkflowRunRef } from "../core/types.js";
 
 // The deterministic safety gates. These are pure functions with no I/O and no
 // dependency on the LLM. The executor re-validates them immediately before any
@@ -45,26 +40,6 @@ export function mergeBlock(pr: PullRequest, policy: RepoPolicy): MergeBlock {
   if (pr.checks !== "green") return "ci-not-green";
   if (!withinMergePolicy(pr, policy)) return "above-minor";
   return null;
-}
-
-export function canMerge(pr: PullRequest, policy: RepoPolicy): boolean {
-  return mergeBlock(pr, policy) === null;
-}
-
-/**
- * The "settled" predicate (design agent-D5, docs/design/dependabot-release-agent.md). Release iff: no open Dependabot PR
- * remains that policy would merge, AND main is green, AND there are
- * merged-but-unreleased dependency commits.
- *
- * A stuck *red* PR is not something we'd merge, so it does not block release.
- * Note: `mergeOnly` and a missing release workflow are handled by the executor
- * as separate, reportable conditions — they are intentionally not folded here.
- */
-export function isSettled(facts: RepoFacts, policy: RepoPolicy): boolean {
-  const noMergeablePrOpen = facts.prs.every((pr) => !canMerge(pr, policy));
-  const mainGreen = facts.mainChecks === "green";
-  const hasUnreleased = facts.unreleasedDependencyCommits > 0;
-  return noMergeablePrOpen && mainGreen && hasUnreleased;
 }
 
 // --- CI remediation gates (spec: ci-remediation). Pure, no I/O. The advisor is
