@@ -1398,7 +1398,10 @@ describe("the per-repository view (CAP-7)", () => {
       expect(section).toContain(
         ext("https://github.com/no42-org/twiki/commit/a1b2c3d4e5f6", "a1b2c3d"),
       );
-      expect(section).toContain("feat");
+      const kind = (k: string) =>
+        `<td role="cell"><span class="lbl">Kind</span>${k}</td>`;
+      expect(section).toContain(kind("feat"));
+      expect(section).toContain(kind("perf"));
       expect(section).toContain("feat(web): a new page");
       expect(section).toContain(
         ext("https://github.com/no42-org/twiki/commit/b2c3d4e5f6a1", "b2c3d4e"),
@@ -1443,21 +1446,60 @@ describe("the per-repository view (CAP-7)", () => {
       expect(section).not.toContain("GHSA-aaaa-bbbb-cccc");
     });
 
+    const UNSWEPT =
+      '<p class="attest">Release readiness has no current, complete reading for this repository (not confirmed by a current, complete release-readiness run), so whether anything is worth releasing is unknown.</p>';
+
     it("says unconfirmed, never nothing to release, when the lane never ran", async () => {
       const section = await releasePage();
 
-      expect(section).toContain("Release readiness has not been collected");
+      expect(section).toContain(UNSWEPT);
       expect(section).not.toContain("Nothing worth releasing");
     });
 
     it("says unconfirmed when the lane's latest run failed", async () => {
+      // A row was collected once; "has not been collected" would be false.
       seedRelease({ ...EVIDENCE, fixedAlerts: [], commits: [] });
       run(RELEASE_LANE, "failed", "2026-08-20T11:58:00.000Z");
 
       const section = await releasePage();
 
-      expect(section).toContain("Release readiness has not been collected");
+      expect(section).toContain(UNSWEPT);
       expect(section).not.toContain("Nothing worth releasing");
+    });
+
+    it("says unconfirmed, never nothing to release, when the read was truncated and nothing read counts", async () => {
+      seedRelease({
+        ...EVIDENCE,
+        fixedAlerts: [],
+        commits: [EVIDENCE.commits[2]],
+        truncated: true,
+      });
+
+      const section = await releasePage();
+
+      expect(section).toContain(
+        '<p class="attest">Release readiness has no current, complete reading for this repository (more commits exist than were read, and none of those read count toward a release), so whether anything is worth releasing is unknown.</p>',
+      );
+      expect(section).not.toContain("Nothing worth releasing");
+      expect(section).not.toContain("latest tag");
+    });
+
+    it("warns that a truncated ready reading is a lower bound, and still lists it", async () => {
+      seedRelease({ ...EVIDENCE, truncated: true });
+
+      const section = await releasePage();
+
+      expect(section).toContain(
+        '<p class="attest warn">More commits exist than were read, so the improvements below are a lower bound.</p>',
+      );
+      expect(section).toContain("feat(web): a new page");
+      expect(section).toContain("GHSA-aaaa-bbbb-cccc");
+    });
+
+    it("gives no lower-bound warning on a complete reading", async () => {
+      seedRelease(EVIDENCE);
+
+      expect(await releasePage()).not.toContain("lower bound");
     });
   });
 });
@@ -2904,7 +2946,7 @@ describe("the per-repository page", () => {
       '<h2 id="reviews">Reviews <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">0 shown</span></h2>' +
         '<p class="attest">no review requests in this repository</p>' +
         '<h2 id="release">Release <span class="badge unknown" title="never collected">never collected</span></h2>' +
-        '<p class="attest">Release readiness has not been collected for this repository, so whether anything is worth releasing is unknown.</p>' +
+        '<p class="attest">Release readiness has no current, complete reading for this repository (not confirmed by a current, complete release-readiness run), so whether anything is worth releasing is unknown.</p>' +
         "</section></main>",
     );
   });

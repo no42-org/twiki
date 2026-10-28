@@ -18,9 +18,22 @@ import { readReleaseEvidence } from "./payloads.js";
 // lift and the board's Release cell so the two cannot disagree: a repository
 // is never lifted by a row its own cell calls unconfirmed or not tracked.
 
+/** No `ok`, fresh run of the lane on the owner, or no fresh row of its own. */
+export const RELEASE_NOT_CONFIRMED =
+  "not confirmed by a current, complete release-readiness run";
+/** The row is present and fresh, but its payload does not parse. */
+export const RELEASE_UNREADABLE =
+  "the stored release reading could not be read";
+/**
+ * The read stopped short and nothing it read counts. The commits past it may
+ * hold a feature, so `none` would claim a history nobody read.
+ */
+export const RELEASE_TRUNCATED =
+  "more commits exist than were read, and none of those read count toward a release";
+
 export type ReleaseReading =
   | { state: "not-tracked" }
-  | { state: "unconfirmed" }
+  | { state: "unconfirmed"; reason: string }
   | {
       state: "confirmed";
       verdict: ReleaseVerdict;
@@ -37,6 +50,11 @@ export type ReleaseReading =
  * is `ok` and fresh, AND the repository's own present row is fresh, AND its
  * payload reads. A failed run leaves an older row behind; reading it would
  * publish a verdict nobody renewed (AD-28).
+ *
+ * A truncated read that is not ready is unconfirmed too, decided here so the
+ * board cell and the repository page cannot differ on it. A truncated read
+ * that is ready stays confirmed: what was read already counts. The tier lift
+ * reads only security fixes, and a reading that is not ready has none.
  *
  * Judged on `policy`, the sweep budget: the lane is scheduled on the alert
  * cadence and has no `lanePolicies` entry (see the schedule in tricorder.ts).
@@ -76,13 +94,19 @@ export function releaseReadings(
       !laneCurrent(repo.owner.toLowerCase()) ||
       !confirmationVouches(row, now, policy)
     ) {
-      return { state: "unconfirmed" };
+      return { state: "unconfirmed", reason: RELEASE_NOT_CONFIRMED };
     }
     const evidence = readReleaseEvidence(row.payload);
-    if (evidence === null) return { state: "unconfirmed" };
+    if (evidence === null) {
+      return { state: "unconfirmed", reason: RELEASE_UNREADABLE };
+    }
+    const verdict = assessRelease(evidence);
+    if (verdict.truncated && !verdict.ready) {
+      return { state: "unconfirmed", reason: RELEASE_TRUNCATED };
+    }
     return {
       state: "confirmed",
-      verdict: assessRelease(evidence),
+      verdict,
       tagDate: evidence.tagDate,
       verifiedAt: row.verifiedAt,
     };

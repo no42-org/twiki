@@ -539,7 +539,7 @@ describe("issues found in review (round 2)", () => {
      * reads the unconfirmed marker (#196), then the freshness badge.
      */
     const badge = (b: string) =>
-      '<td role="cell"><span class="lbl">Release</span><span class="chip unconfirmed">unconfirmed</span></td>' +
+      '<td role="cell"><span class="lbl">Release</span><span class="chip unconfirmed" title="not confirmed by a current, complete release-readiness run">unconfirmed</span></td>' +
       `<td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span>${b}</td>`;
     const FRESH = badge(
       '<span class="badge fresh" title="5m ago">fresh · 5m ago</span>',

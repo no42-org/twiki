@@ -185,9 +185,11 @@ Create a new GitHub App and grant **read-only** on exactly these, nothing more:
 | Issues | `issues` | untriaged issues |
 | Contents | `contents` | release readiness: tags and commits since the latest tag |
 
-Contents is new with the Release column. An App created earlier must be
-edited to add it, and each installation must approve the new permission
-before it takes effect. `tricorder doctor` reports it missing until then.
+Contents is new with the Release column.
+An App created earlier must be edited to add it, and each installation must approve the new permission before it takes effect.
+`tricorder doctor` confirms the App declares Contents.
+It reads the App's permissions, not each installation's, so it cannot see an approval still pending.
+An installation that has not approved it shows as a partial release-readiness run in Collection health, and the log names each repository that failed and GitHub's error.
 
 Grant no write permission at all, and subscribe to no webhook events: nothing
 in gitricorder listens.

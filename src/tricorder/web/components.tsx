@@ -123,6 +123,7 @@ export const STYLE = `${TOKEN_STYLE}
   .chip.high { color: var(--high); font-weight: 400; }
   .chip.uncovered { color: var(--warn); font-style: normal; text-decoration: underline dotted; }
   .chip.unconfirmed { color: var(--muted); font-style: italic; }
+  .chip.untracked { color: var(--muted); font-style: normal; border: 1px dashed var(--muted); }
   .attest { color: var(--muted); font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; font-style: italic; margin: ${SPACE[2]} 0 0; }
   .attest.warn { color: var(--warn); }
   .shown { color: var(--muted); font-size: ${TYPE.small.size}; font-weight: 400; line-height: ${TYPE.small.lineHeight}; }
@@ -356,8 +357,10 @@ const CountChip: FC<{ chip: Chip; text?: string }> = ({
 /**
  * The Release cell (#196). Not a topic chip: never a count. `ready` links to
  * the repository page's release section, with the summary on its title and
- * on the why-line; `unconfirmed` is the same marker CountChip uses, so a
- * value nobody collected never reads as `none`.
+ * on the why-line; `unconfirmed` is the same marker CountChip uses, with its
+ * reason on the title, so a value nobody collected never reads as `none`.
+ * `not tracked` is an opt-out, so it has its own outline and never wears
+ * `none`'s class.
  */
 const ReleaseChip: FC<{ cell: ReleaseCell }> = ({ cell }) => {
   switch (cell.state) {
@@ -370,9 +373,13 @@ const ReleaseChip: FC<{ cell: ReleaseCell }> = ({ cell }) => {
     case "none":
       return <span class="chip zero">none</span>;
     case "not-tracked":
-      return <span class="chip zero">not tracked</span>;
+      return <span class="chip untracked">not tracked</span>;
     case "unconfirmed":
-      return <span class="chip unconfirmed">unconfirmed</span>;
+      return (
+        <span class="chip unconfirmed" title={cell.reason}>
+          unconfirmed
+        </span>
+      );
   }
 };
 
@@ -1848,7 +1855,8 @@ const ReleaseSection: FC<{ view: RepoView }> = ({ view }) => {
         <p class="attest">Not tracked: release: false in repos.yaml.</p>
       ) : verdict === null ? (
         <p class="attest">
-          Release readiness has not been collected for this repository, so
+          Release readiness has no current, complete reading for this repository
+          {r.cell.state === "unconfirmed" ? ` (${r.cell.reason})` : ""}, so
           whether anything is worth releasing is unknown.
         </p>
       ) : (

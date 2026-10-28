@@ -51,6 +51,7 @@ import { buildCollectionHealth, type CollectionHealth } from "./health.js";
 import { laneTopic } from "./lane-topics.js";
 import { repoPath, topicPath } from "./links.js";
 import type { QueueItem } from "./queue.js";
+import { RELEASE_NOT_CONFIRMED } from "./release.js";
 import {
   type AttentionDeps,
   attentionByRepo,
@@ -81,7 +82,8 @@ export type ReleaseCell =
   | { state: "ready"; summary: string; href: string }
   | { state: "none" }
   | { state: "not-tracked" }
-  | { state: "unconfirmed" };
+  /** `reason` says which absence it is, as a CountChip's does. */
+  | { state: "unconfirmed"; reason: string };
 
 /**
  * One count chip.
@@ -594,8 +596,14 @@ export function buildBoard(
     slug: string,
   ): { cell: ReleaseCell; source: Source | null } => {
     const reading = release.get(slug);
-    if (reading === undefined || reading.state === "unconfirmed") {
-      return { cell: { state: "unconfirmed" }, source: null };
+    if (reading === undefined) {
+      return {
+        cell: { state: "unconfirmed", reason: RELEASE_NOT_CONFIRMED },
+        source: null,
+      };
+    }
+    if (reading.state === "unconfirmed") {
+      return { cell: reading, source: null };
     }
     if (reading.state === "not-tracked") {
       return { cell: { state: "not-tracked" }, source: null };

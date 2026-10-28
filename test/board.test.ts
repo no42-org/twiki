@@ -67,6 +67,11 @@ import {
 
 const NOW = new Date("2026-08-16T12:00:00.000Z");
 const AT = "2026-08-16T11:55:00.000Z";
+/** The Release cell of a repository the release lane has not confirmed. */
+const RELEASE_UNSWEPT: ReleaseCell = {
+  state: "unconfirmed",
+  reason: "not confirmed by a current, complete release-readiness run",
+};
 const POLICY = { cadenceMs: 15 * 60_000 };
 const HOURLY = { cadenceMs: 60 * 60_000 };
 const DEPS = {
@@ -616,7 +621,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           zero: ["security"],
           unconfirmed: ["ci", "dependencies", "pulls", "issues"],
         },
-        release: { state: "unconfirmed" },
+        release: RELEASE_UNSWEPT,
         freshness: "fresh",
         age: "5m ago",
       },
@@ -697,7 +702,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["dependencies", "pulls", "issues", "reviews"],
           },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -893,7 +898,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: [],
             unconfirmed: ["ci", "dependencies", "pulls", "issues"],
           },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -942,7 +947,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           chips: alertsOnly(linked(1, SECURITY, "high", SCANNERS_UNSWEPT)),
           signals: [{ topic: "security", text: "Security 1 high" }],
           signalsRest: { zero: [], unconfirmed: REST_TOPICS },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1009,7 +1014,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: [],
             unconfirmed: ["security", "ci", "dependencies", "pulls", "issues"],
           },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1034,7 +1039,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["ci", "dependencies", "pulls", "issues"],
           },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1053,7 +1058,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           chips: alertsOnly(unswept(linked(2, SECURITY, "high"))),
           signals: [{ topic: "security", text: "Security 2 high" }],
           signalsRest: { zero: [], unconfirmed: REST_TOPICS },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1290,7 +1295,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           ),
           signals: [{ topic: "security", text: "Security 1 high" }],
           signalsRest: { zero: [], unconfirmed: REST_TOPICS },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1762,7 +1767,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["ci", "pulls", "issues"],
           },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1948,7 +1953,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["ci", "dependencies", "pulls"],
           },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           // The issue sweep, three minutes newer than the alert sweep.
           freshness: "fresh",
           age: "2m ago",
@@ -1985,7 +1990,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: [],
             unconfirmed: ["security", "ci", "dependencies", "pulls", "reviews"],
           },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -2017,7 +2022,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["ci", "dependencies", "pulls", "issues"],
           },
-          release: { state: "unconfirmed" },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -2127,7 +2132,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             chips: alertsOnly(unswept(linked(1, SECURITY, "high"))),
             signals: [{ topic: "security", text: "Security 1 high" }],
             signalsRest: { zero: [], unconfirmed: REST_TOPICS },
-            release: { state: "unconfirmed" },
+            release: RELEASE_UNSWEPT,
             freshness: "fresh",
             age: "5m ago",
           },
@@ -2389,7 +2394,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             chips: alertsOnly(unswept(linked(1, SECURITY, "high"))),
             signals: [{ topic: "security", text: "Security 1 high" }],
             signalsRest: { zero: [], unconfirmed: REST_TOPICS },
-            release: { state: "unconfirmed" },
+            release: RELEASE_UNSWEPT,
             freshness: "stale",
             age: "3h ago",
           },
@@ -2664,7 +2669,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
       sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
 
       expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
-        soonRow({ state: "unconfirmed" }),
+        soonRow(RELEASE_UNSWEPT),
       ]);
     });
 
@@ -2674,7 +2679,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
       release([], AT, "failed");
 
       expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
-        soonRow({ state: "unconfirmed" }),
+        soonRow(RELEASE_UNSWEPT),
       ]);
     });
 
@@ -2683,7 +2688,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
       release([{ repo: REPO, evidence: READY }], hoursAgo(2));
 
       expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
-        soonRow({ state: "unconfirmed" }),
+        soonRow(RELEASE_UNSWEPT),
       ]);
     });
 
@@ -2692,7 +2697,37 @@ describe("buildBoard (AD-32, AD-35)", () => {
       release([{ repo: REPO, evidence: { ...READY, commits: "lots" } }]);
 
       expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
-        soonRow({ state: "unconfirmed" }),
+        soonRow({
+          state: "unconfirmed",
+          reason: "the stored release reading could not be read",
+        }),
+      ]);
+    });
+
+    it("says unconfirmed, never none, when the read was truncated and nothing read counts", () => {
+      // The commits past the ones read may hold a feature: `none` would
+      // claim a whole history nobody read.
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: { ...NOTHING, truncated: true } }]);
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow({
+          state: "unconfirmed",
+          reason:
+            "more commits exist than were read, and none of those read count toward a release",
+        }),
+      ]);
+    });
+
+    it("stays ready when the read was truncated and something read counts, as a lower bound", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: { ...READY, truncated: true } }]);
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow({
+          ...READY_CELL,
+          summary: "1+ features, 1+ perf since v1.2.0",
+        }),
       ]);
     });
 
@@ -2849,8 +2884,10 @@ describe("buildBoard (AD-32, AD-35)", () => {
           ),
         );
         expect(html).toContain(cell('<span class="chip zero">none</span>'));
+        // Not tracked is a choice in repos.yaml, not a confirmed nothing:
+        // it must not wear `none`'s class.
         expect(html).toContain(
-          cell('<span class="chip zero">not tracked</span>'),
+          cell('<span class="chip untracked">not tracked</span>'),
         );
         expect(html).toContain(
           `stuck state unknown · ${SCANNERS_UNSWEPT} · ready to release: 1 feature, 1 perf since v1.2.0`,
@@ -2859,7 +2896,9 @@ describe("buildBoard (AD-32, AD-35)", () => {
         // FOURTH has no release row: the marker CountChip uses for a topic
         // no sweep confirmed.
         expect(html).toContain(
-          cell('<span class="chip unconfirmed">unconfirmed</span>'),
+          cell(
+            '<span class="chip unconfirmed" title="not confirmed by a current, complete release-readiness run">unconfirmed</span>',
+          ),
         );
       });
 

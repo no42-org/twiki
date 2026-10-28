@@ -55,7 +55,10 @@ import {
   readStatus,
   readWorkflowRun,
 } from "../attention/payloads.js";
-import { releaseReadings } from "../attention/release.js";
+import {
+  RELEASE_NOT_CONFIRMED,
+  releaseReadings,
+} from "../attention/release.js";
 import { repoAttention } from "../attention/tiers.js";
 import type { RepoCodeScanningObservation } from "../collect/code-scanning.js";
 import {
@@ -1012,7 +1015,10 @@ export function buildRepoView(
     now,
     alertPolicy,
     deps.releaseTracked ?? (() => true),
-  ).get(slug) ?? { state: "unconfirmed" as const };
+  ).get(slug) ?? {
+    state: "unconfirmed" as const,
+    reason: RELEASE_NOT_CONFIRMED,
+  };
   const releaseLane = laneAttestation(
     store,
     RELEASE_LANE,
@@ -1042,7 +1048,7 @@ export function buildRepoView(
       : {
           ...releaseLane,
           attested: false,
-          cell: { state: releaseReading.state },
+          cell: releaseReading,
           verdict: null,
           tagDate: null,
           tagAge: null,

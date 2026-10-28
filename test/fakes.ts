@@ -5,9 +5,6 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-// The one measured sentence, from the one place that owns it: a copy here
-// would be a body string the adapter could stop matching without any test
-// noticing.
 import type { FixedAlertRef } from "../src/core/release-worthy.js";
 import {
   type Bump,
@@ -26,6 +23,9 @@ import type {
   KevCatalogue,
   KevFetchOutcome,
 } from "../src/enrich/port.js";
+// The one measured sentence, from the one place that owns it: a copy here
+// would be a body string the adapter could stop matching without any test
+// noticing.
 import { DEPENDABOT_ALERTS_DISABLED_BODY } from "../src/github/octokit-adapter.js";
 import type {
   CodeScanningAlertPage,
