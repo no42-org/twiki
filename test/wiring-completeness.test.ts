@@ -14,6 +14,7 @@ import type { BoardDeps } from "../src/tricorder/attention/board.js";
 import type { QueueDeps } from "../src/tricorder/attention/queue.js";
 import { LANE as COVERAGE_LANE } from "../src/tricorder/collect/coverage.js";
 import { LANE as KEV_LANE } from "../src/tricorder/collect/kev.js";
+import type { ReleaseReadinessDeps } from "../src/tricorder/collect/release-readiness.js";
 import {
   LANE as ACTIONS_LANE,
   type ActionsDeps,
@@ -250,6 +251,36 @@ describe("Required<ActionsDeps>", () => {
     expect(wireLater({ ...laneDeps, addedLater: 1 })).toMatchObject({
       addedLater: 1,
     });
+  });
+});
+
+/** Everything the release-readiness lane's literal supplies. */
+const releaseDeps = {
+  github,
+  store,
+  watchedIn: () => [] as readonly RepoRef[],
+  releaseTracked: () => true,
+  defaultBranchOf: () => "main",
+  now: () => "2026-10-28T00:00:00.000Z",
+  log: () => {},
+};
+const wireRelease = (
+  deps: Required<ReleaseReadinessDeps>,
+): Required<ReleaseReadinessDeps> => deps;
+
+describe("Required<ReleaseReadinessDeps>", () => {
+  it("rejects a literal missing either config binding", () => {
+    // Both come from repos.yaml. Dropped, the lane would either sweep a
+    // repository the operator opted out of or read the wrong branch.
+    const { releaseTracked: _tracked, ...noReleaseTracked } = releaseDeps;
+    // @ts-expect-error the opt-out cannot be dropped from the wiring
+    wireRelease(noReleaseTracked);
+
+    const { defaultBranchOf: _branch, ...noDefaultBranch } = releaseDeps;
+    // @ts-expect-error the default-branch resolver cannot be dropped
+    wireRelease(noDefaultBranch);
+
+    expect(wireRelease(releaseDeps)).toBe(releaseDeps);
   });
 });
 

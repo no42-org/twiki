@@ -47,7 +47,7 @@ describe("lane-topics (AD-32)", () => {
   it("maps every LANE exported under collect/, and nothing else", async () => {
     const lanes = await exportedLanes();
 
-    // Eleven today. A count pins the walk itself: a directory read that
+    // Twelve today. A count pins the walk itself: a directory read that
     // found nothing would otherwise pass the exhaustiveness check vacuously.
     expect([...lanes.values()].sort()).toEqual(
       [
@@ -62,6 +62,7 @@ describe("lane-topics (AD-32)", () => {
         "rest-org-code-scanning",
         "rest-org-dependabot",
         "rest-org-secret-scanning",
+        "rest-release-readiness",
       ].sort(),
     );
     for (const [file, lane] of lanes) {
@@ -115,7 +116,21 @@ describe("lane-topics (AD-32)", () => {
         "kev",
         { topic: "security", word: "KEV catalogue", installation: "cisa" },
       ],
+      [
+        "rest-release-readiness",
+        { topic: null, word: "release readiness", installation: null },
+      ],
     ]);
     expect(laneTopic("no-such-lane")).toBeUndefined();
+  });
+
+  it("gives the release-readiness lane no tile", () => {
+    // Release is not a Topic: its lane is listed in Collection health and
+    // warns on no tile.
+    expect(laneTopic("rest-release-readiness")).toEqual({
+      topic: null,
+      word: "release readiness",
+      installation: null,
+    });
   });
 });

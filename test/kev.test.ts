@@ -31,6 +31,7 @@ import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import {
   ACTIONS_CADENCE_MS,
   ACTIONS_SWEEP_BOUND_MS,
+  ALERT_CADENCE_MS,
   actionsDeadline,
   actionsInstallationsFor,
   buildSchedules,
@@ -565,6 +566,7 @@ describe("the real schedule table", () => {
     pullRequests: noop,
     issues: noop,
     updateStatuses: noop,
+    releaseReadiness: noop,
     actionsRuns: { installations: ["no42-org", "other-org"], run: noop },
     reviewRequests: noop,
   });
@@ -584,6 +586,7 @@ describe("the real schedule table", () => {
       "rest-org-code-scanning",
       "rest-org-dependabot",
       "rest-org-secret-scanning",
+      "rest-release-readiness",
     ]);
   });
 
@@ -602,6 +605,7 @@ describe("the real schedule table", () => {
       pullRequests: noop,
       issues: noop,
       updateStatuses: noop,
+      releaseReadiness: noop,
       actionsRuns: null,
       reviewRequests: null,
     });
@@ -621,6 +625,16 @@ describe("the real schedule table", () => {
     // "no pull requests are collected at all", which is the invisible
     // contributor the story exists to fix.
     expect(without.map((s) => s.lane)).toContain("graphql-pull-requests");
+  });
+
+  it("runs release readiness on the alert cadence, full scope, per installation", () => {
+    expect(lane("rest-release-readiness")).toEqual({
+      lane: "rest-release-readiness",
+      scope: "full",
+      cadenceMs: ALERT_CADENCE_MS,
+      installations: ["no42-org", "other-org"],
+      run: noop,
+    });
   });
 
   it("runs KEV only on its own pseudo-installation", () => {

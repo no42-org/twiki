@@ -86,6 +86,10 @@ export const SUBJECT_TYPES = [
   // into a watched-estate subject would put rows with no coverage behind
   // them into views that promise it.
   "review_request",
+  // What a repository has shipped since its latest tag (#196): the tag, the
+  // default-branch commits after it, and the Dependabot alerts fixed. One
+  // row per repository, judged at read time by core/release-worthy.ts.
+  "release_readiness",
 ] as const;
 
 export type SubjectType = (typeof SUBJECT_TYPES)[number];
@@ -111,6 +115,11 @@ function subjectSlug(repo: RepoRef): string {
 
 export function repositorySubject(repo: RepoRef): Subject {
   return { type: "repository", key: subjectSlug(repo) };
+}
+
+/** Release evidence for one repository. Same key space as repositorySubject. */
+export function releaseSubject(repo: RepoRef): Subject {
+  return { type: "release_readiness", key: subjectSlug(repo) };
 }
 
 /**

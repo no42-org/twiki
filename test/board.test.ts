@@ -2306,6 +2306,27 @@ describe("buildBoard (AD-32, AD-35)", () => {
       } satisfies Board);
     });
 
+    it("lists a failed lane with no topic in the table and warns on no tile", () => {
+      // Release readiness is not a Topic: there is no tile for its failure
+      // to warn on, but the health table must still say it failed.
+      sweep([{ repo: REPO, alerts: [] }]);
+      seed("rest-release-readiness", "no42-org", [], AT, "failed");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 1, unconfirmed: 0 },
+        tiles: securityTiles(tile("security", 0)),
+        rows: [],
+        quiet: ["no42-org/twiki"],
+        unconfirmed: [],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("rest-org-dependabot", "no42-org"),
+          ran("rest-release-readiness", "no42-org", "failed"),
+        ],
+      } satisfies Board);
+    });
+
     it("stays collected when every lane fails after a good sweep, and keeps the confirmed rows", () => {
       // The health table holds only the latest run per lane, so a bad tick
       // after a good one would otherwise read as an estate never swept.

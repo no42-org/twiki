@@ -10,6 +10,7 @@ import { LANE as ALERTS_LANE } from "../collect/dependabot-alerts.js";
 import { LANE as ISSUES_LANE } from "../collect/issues.js";
 import { KEV_INSTALLATION, LANE as KEV_LANE } from "../collect/kev.js";
 import { LANE as PULL_REQUESTS_LANE } from "../collect/pull-requests.js";
+import { LANE as RELEASE_READINESS_LANE } from "../collect/release-readiness.js";
 import {
   REVIEWS_INSTALLATION,
   LANE as REVIEWS_LANE,
@@ -29,7 +30,11 @@ import { LANE as WORKFLOW_RUNS_LANE } from "../collect/workflow-runs.js";
 // would fail.
 
 export interface LaneTopic {
-  topic: Topic;
+  /**
+   * Null for a lane with no tile: its failure is listed in the Collection
+   * health table and warns nowhere else.
+   */
+  topic: Topic | null;
   /** The lane in plain words, for the tile's warning line. */
   word: string;
   /**
@@ -45,8 +50,9 @@ export interface LaneTopic {
  *
  * Coverage and the KEV catalogue both feed the Security tile: a coverage
  * probe that failed may have lost a `not covered`, and a stale catalogue
- * turns every KEV verdict unknown. A test walks every `LANE` export under
- * collect/ against this map, so a new lane cannot ship without a tile.
+ * turns every KEV verdict unknown. Release readiness has no tile, because
+ * Release is not a Topic. A test walks every `LANE` export under
+ * collect/ against this map, so a new lane cannot ship without an entry.
  */
 export const LANE_TOPIC: ReadonlyMap<string, LaneTopic> = new Map<
   string,
@@ -94,6 +100,10 @@ export const LANE_TOPIC: ReadonlyMap<string, LaneTopic> = new Map<
       word: "KEV catalogue",
       installation: KEV_INSTALLATION,
     },
+  ],
+  [
+    RELEASE_READINESS_LANE,
+    { topic: null, word: "release readiness", installation: null },
   ],
 ]);
 

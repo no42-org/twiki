@@ -420,6 +420,8 @@ export function buildBoard(
     // the health table still lists the row.
     const lane = laneTopic(h.lane);
     if (lane === undefined) continue;
+    // A lane with no tile, release readiness: the health table lists it.
+    if (lane.topic === null) continue;
     // A per-installation lane failing on an owner nobody watches any more
     // would otherwise warn on every render until the row is purged.
     if (lane.installation === null && !owners.has(h.installation.toLowerCase()))
