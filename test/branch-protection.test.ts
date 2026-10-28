@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { ProtectionFact, RepoPolicy } from "../src/core/types.js";
 import { DEFAULT_POLICY } from "../src/core/types.js";
 import { createGitHubFromEnv } from "../src/github/octokit-adapter.js";
-import { canRebase, isSettled, mergeBlock } from "../src/twiki/gates.js";
+import { canRebase, mergeBlock } from "../src/twiki/gates.js";
 import { buildDigest, hasActionableActivity } from "../src/twiki/report.js";
 import type { RepoResult, RunResult } from "../src/twiki/result.js";
 
@@ -262,7 +262,6 @@ describe("protection is reported, never gated on", () => {
   for (const state of ["protected", "undefended", "unknown"] as const) {
     it(`${state}: decides exactly as every other state does`, () => {
       const f = facts(state);
-      expect(isSettled(f, policy)).toBe(true);
       expect(mergeBlock(pr(f), policy)).toBeNull();
       expect(canRebase(pr(f), policy)).toBe(true);
     });
@@ -348,7 +347,6 @@ describe("the operator actually gets told", () => {
     repo: "no42-org/blitsbom",
     mainRed: false,
     prs: [],
-    release: { status: "waiting", detail: "nothing to release" },
     ...(protection ? { protection } : {}),
   });
   const run = (repo: RepoResult): RunResult => ({

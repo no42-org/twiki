@@ -324,7 +324,6 @@ export const mergeEverythingAdvisor = new StubAdvisor((input) => ({
       reason: "stub: merge",
       risk: "low" as const,
     })),
-    release: { action: "release" as const, reason: "stub: release" },
   })),
 }));
 

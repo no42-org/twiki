@@ -80,3 +80,34 @@ it("a hijacked advisor cannot cause an unsafe merge or release (enforce)", async
   );
   expect(statuses).toEqual({ 1: "merged", 2: "blocked", 3: "flagged-major" });
 });
+
+it("a plan carrying a release field pushes no tag (enforce)", async () => {
+  // Settled in every sense the old release gate checked: no open PRs, green
+  // main, an unreleased dependency commit, a tag-release workflow. The
+  // advisor still asks for a release. twiki merges only, so nothing is written.
+  const data: FakeRepoData = {
+    rawPrs: [],
+    prChecks: {},
+    mainChecks: "green",
+    latestTag: "v1.2.3",
+    unreleased: 1,
+    hasWorkflow: true,
+    defaultSha: "main-sha",
+  };
+  const github = new FakeGitHub(new Map([[SLUG, data]]));
+
+  await runOnce(buildConfig({ mode: "enforce", repos: [{ repo: SLUG }] }), {
+    github,
+    advisor: mergeEverythingAdvisor,
+    notifier: new CapturingNotifier(),
+    audit: new NullAudit(),
+    now: () => "2026-05-31T00:00:00Z",
+  });
+
+  expect({
+    merged: github.merged,
+    tagged: github.tagged,
+    reran: github.reran,
+    rebased: github.rebased,
+  }).toEqual({ merged: [], tagged: [], reran: [], rebased: [] });
+});

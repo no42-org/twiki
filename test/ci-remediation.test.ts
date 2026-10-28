@@ -194,7 +194,6 @@ describe("ci-remediation — disabled", () => {
           prDecisions: [
             { number: 7, action: "merge", reason: "ok", risk: "low" },
           ],
-          release: { action: "wait", reason: "n/a" },
         },
       ],
     };
@@ -292,7 +291,6 @@ describe("ci-remediation — resilience", () => {
           prDecisions: [
             { number: 7, action: "merge", reason: "ok", risk: "low" },
           ],
-          release: { action: "wait", reason: "n/a" },
         },
       ],
     };

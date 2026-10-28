@@ -202,7 +202,6 @@ function holdEverything(repo: string): Plan {
       {
         repo,
         prDecisions: [],
-        release: { action: "wait", reason: "spike default: no writes" },
       },
     ],
   };
@@ -241,9 +240,6 @@ async function main(): Promise<void> {
     for (const d of r.prDecisions) {
       console.error(`[spike]   PR #${d.number}: ${d.action} — ${d.reason}`);
     }
-    console.error(
-      `[spike]   release: ${r.release.action} — ${r.release.reason}`,
-    );
   }
 
   if (!armed) {

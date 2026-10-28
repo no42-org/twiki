@@ -42,7 +42,6 @@ function mergePlan(number: number): Plan {
       {
         repo: SLUG,
         prDecisions: [{ number, action: "merge", reason: "ok", risk: "low" }],
-        release: { action: "wait", reason: "n/a" },
       },
     ],
   };
@@ -89,7 +88,6 @@ describe("executor — merge decisions", () => {
               risk: "high",
             },
           ],
-          release: { action: "wait", reason: "n/a" },
         },
       ],
     };
@@ -152,75 +150,5 @@ describe("executor — gates cannot be widened by the plan (safety)", () => {
     });
     const res = await applyPlan([facts], mergePlan(7), config("enforce"), gh());
     expect(res.repos[0]?.prs[0]?.detail).toContain("URGENT");
-  });
-});
-
-describe("executor — release decisions", () => {
-  const settled = () => makeFacts({ prs: [] });
-
-  it("enforce mode cuts the next patch tag when settled", async () => {
-    const github = gh();
-    const res = await applyPlan(
-      [settled()],
-      { repos: [] },
-      config("enforce"),
-      github,
-    );
-    expect(res.repos[0]?.release).toMatchObject({
-      status: "released",
-      version: "v1.2.4",
-    });
-    expect(github.tagged).toEqual([
-      { repo: SLUG, tag: "v1.2.4", sha: "main-sha" },
-    ]);
-  });
-
-  it("shadow mode reports would-release and pushes no tag", async () => {
-    const github = gh();
-    const res = await applyPlan(
-      [settled()],
-      { repos: [] },
-      config("shadow"),
-      github,
-    );
-    expect(res.repos[0]?.release).toMatchObject({
-      status: "would-release",
-      version: "v1.2.4",
-    });
-    expect(github.tagged).toEqual([]);
-  });
-
-  it("reports a missing release workflow when settled", async () => {
-    const github = gh();
-    const facts = makeFacts({ prs: [], hasTagReleaseWorkflow: false });
-    const res = await applyPlan(
-      [facts],
-      { repos: [] },
-      config("enforce"),
-      github,
-    );
-    expect(res.repos[0]?.release.status).toBe("no-release-workflow");
-    expect(github.tagged).toEqual([]);
-  });
-
-  it("skips release for a merge-only repo", async () => {
-    const res = await applyPlan(
-      [settled()],
-      { repos: [] },
-      config("enforce", true),
-      gh(),
-    );
-    expect(res.repos[0]?.release.status).toBe("skipped-merge-only");
-  });
-
-  it("waits when not settled", async () => {
-    const facts = makeFacts({ prs: [], unreleasedDependencyCommits: 0 });
-    const res = await applyPlan(
-      [facts],
-      { repos: [] },
-      config("enforce"),
-      gh(),
-    );
-    expect(res.repos[0]?.release.status).toBe("waiting");
   });
 });
