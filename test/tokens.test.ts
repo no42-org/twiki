@@ -202,6 +202,12 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
     );
     // Italics belong to attestation notes and `unconfirmed` only.
     expect(rule(".chip.uncovered")).not.toContain("font-style: italic");
+    // `not tracked` is an opt-out, not a confirmed zero: it must not look
+    // like `.chip.zero` (#196).
+    expect(rule(".chip.untracked")).toContain("color: var(--muted)");
+    expect(rule(".chip.untracked")).toContain(
+      "border: 1px dashed var(--muted)",
+    );
   });
 
   it("paints the tier as a left rule on board rows and the now marker in critical", () => {

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import type { CommitRef, FixedAlertRef } from "../core/release-worthy.js";
 import type {
   CheckStatus,
   FailingCheck,
@@ -15,6 +16,20 @@ import type {
 // Decision logic depends only on these interfaces, so tests can substitute a
 // fake. Every mutating method lives on GitHubWritePort, and only the executor
 // ever calls one; a consumer typed to GitHubReadPort has none to call.
+
+export interface RawUnreleasedCommits {
+  /** Committer date of the tag's commit; null when there is no tag. */
+  tagDate: string | null;
+  /**
+   * Newest first. `subject` is the first line of the message. When
+   * `truncated`, this is a subset: with no tag it is the newest page of the
+   * branch; with a tag GitHub documents only that the newest commit of the
+   * comparison is in it, not which others are.
+   */
+  commits: CommitRef[];
+  /** GitHub reported more commits than it returned. */
+  truncated: boolean;
+}
 
 export interface RawPullRequest {
   number: number;
@@ -452,6 +467,21 @@ export interface GitHubRepoReadPort {
    * maximum could re-derive a tag that already exists.
    */
   latestTag(repo: RepoRef): Promise<string | null>;
+  /**
+   * Commits on `branch` since `tag` (page one, 100, when tag is null).
+   * Throws on 404 or any non-2xx, naming the repository and the tag.
+   */
+  unreleasedCommits(
+    repo: RepoRef,
+    tag: string | null,
+    branch: string,
+  ): Promise<RawUnreleasedCommits>;
+  /**
+   * Every Dependabot alert in state `fixed`, with `fixed_at`. `[]` when GitHub
+   * answers that Dependabot alerts are disabled. Throws when the listing is
+   * truncated, because a partial list would read as "nothing else was fixed".
+   */
+  listFixedDependabotAlerts(repo: RepoRef): Promise<FixedAlertRef[]>;
   /** Count of Dependabot-attributable commits since `tag` (or all, if null). */
   dependabotCommitsSince(repo: RepoRef, tag: string | null): Promise<number>;
   hasTagReleaseWorkflow(repo: RepoRef): Promise<boolean>;

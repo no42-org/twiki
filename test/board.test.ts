@@ -12,11 +12,13 @@ import {
   epssRank,
   NOT_APPLICABLE,
 } from "../src/core/rank.js";
+import type { ReleaseEvidence } from "../src/core/release-worthy.js";
 import { watchKey } from "../src/core/slug.js";
 import {
   alertSubject,
   codeScanningSubject,
   coverageSubject,
+  releaseSubject,
   secretScanningSubject,
 } from "../src/core/subject.js";
 import { DEFAULT_NOW_EPSS } from "../src/core/tier.js";
@@ -27,6 +29,7 @@ import {
   type BoardRow,
   buildBoard,
   type Chip,
+  type ReleaseCell,
   type Tile,
 } from "../src/tricorder/attention/board.js";
 import type {
@@ -49,6 +52,7 @@ import {
 } from "../src/tricorder/collect/secret-scanning.js";
 import { normalisePr } from "../src/tricorder/collect/update-prs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
+import { createApp } from "../src/tricorder/web/app.js";
 import {
   makeAlert,
   makeCodeScanningAlert,
@@ -63,6 +67,11 @@ import {
 
 const NOW = new Date("2026-08-16T12:00:00.000Z");
 const AT = "2026-08-16T11:55:00.000Z";
+/** The Release cell of a repository the release lane has not confirmed. */
+const RELEASE_UNSWEPT: ReleaseCell = {
+  state: "unconfirmed",
+  reason: "not confirmed by a current release-readiness run",
+};
 const POLICY = { cadenceMs: 15 * 60_000 };
 const HOURLY = { cadenceMs: 60 * 60_000 };
 const DEPS = {
@@ -612,6 +621,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           zero: ["security"],
           unconfirmed: ["ci", "dependencies", "pulls", "issues"],
         },
+        release: RELEASE_UNSWEPT,
         freshness: "fresh",
         age: "5m ago",
       },
@@ -692,6 +702,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["dependencies", "pulls", "issues", "reviews"],
           },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -887,6 +898,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: [],
             unconfirmed: ["ci", "dependencies", "pulls", "issues"],
           },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -935,6 +947,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           chips: alertsOnly(linked(1, SECURITY, "high", SCANNERS_UNSWEPT)),
           signals: [{ topic: "security", text: "Security 1 high" }],
           signalsRest: { zero: [], unconfirmed: REST_TOPICS },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1001,6 +1014,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: [],
             unconfirmed: ["security", "ci", "dependencies", "pulls", "issues"],
           },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1025,6 +1039,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["ci", "dependencies", "pulls", "issues"],
           },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1043,6 +1058,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           chips: alertsOnly(unswept(linked(2, SECURITY, "high"))),
           signals: [{ topic: "security", text: "Security 2 high" }],
           signalsRest: { zero: [], unconfirmed: REST_TOPICS },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1279,6 +1295,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           ),
           signals: [{ topic: "security", text: "Security 1 high" }],
           signalsRest: { zero: [], unconfirmed: REST_TOPICS },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1750,6 +1767,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["ci", "pulls", "issues"],
           },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -1935,6 +1953,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["ci", "dependencies", "pulls"],
           },
+          release: RELEASE_UNSWEPT,
           // The issue sweep, three minutes newer than the alert sweep.
           freshness: "fresh",
           age: "2m ago",
@@ -1971,6 +1990,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: [],
             unconfirmed: ["security", "ci", "dependencies", "pulls", "reviews"],
           },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -2002,6 +2022,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             zero: ["security"],
             unconfirmed: ["ci", "dependencies", "pulls", "issues"],
           },
+          release: RELEASE_UNSWEPT,
           freshness: "fresh",
           age: "5m ago",
         },
@@ -2111,6 +2132,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             chips: alertsOnly(unswept(linked(1, SECURITY, "high"))),
             signals: [{ topic: "security", text: "Security 1 high" }],
             signalsRest: { zero: [], unconfirmed: REST_TOPICS },
+            release: RELEASE_UNSWEPT,
             freshness: "fresh",
             age: "5m ago",
           },
@@ -2306,6 +2328,27 @@ describe("buildBoard (AD-32, AD-35)", () => {
       } satisfies Board);
     });
 
+    it("lists a failed lane with no topic in the table and warns on no tile", () => {
+      // Release readiness is not a Topic: there is no tile for its failure
+      // to warn on, but the health table must still say it failed.
+      sweep([{ repo: REPO, alerts: [] }]);
+      seed("rest-release-readiness", "no42-org", [], AT, "failed");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 1, unconfirmed: 0 },
+        tiles: securityTiles(tile("security", 0)),
+        rows: [],
+        quiet: ["no42-org/twiki"],
+        unconfirmed: [],
+        unreadable: 0,
+        collected: true,
+        health: [
+          ran("rest-org-dependabot", "no42-org"),
+          ran("rest-release-readiness", "no42-org", "failed"),
+        ],
+      } satisfies Board);
+    });
+
     it("stays collected when every lane fails after a good sweep, and keeps the confirmed rows", () => {
       // The health table holds only the latest run per lane, so a bad tick
       // after a good one would otherwise read as an estate never swept.
@@ -2351,6 +2394,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             chips: alertsOnly(unswept(linked(1, SECURITY, "high"))),
             signals: [{ topic: "security", text: "Security 1 high" }],
             signalsRest: { zero: [], unconfirmed: REST_TOPICS },
+            release: RELEASE_UNSWEPT,
             freshness: "stale",
             age: "3h ago",
           },
@@ -2444,6 +2488,23 @@ describe("buildBoard (AD-32, AD-35)", () => {
       } satisfies Board);
     });
 
+    it("is not collected when only the release lane has run", () => {
+      // The release lane has no tile; its run alone collected nothing the
+      // tiles count, so the board still reads never collected.
+      seed("rest-release-readiness", "no42-org", [], AT, "ok");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 0, unconfirmed: 1 },
+        tiles: TOPICS_ORDER.map((topic) => never(topic)),
+        rows: [],
+        quiet: [],
+        unconfirmed: ["no42-org/twiki"],
+        unreadable: 0,
+        collected: false,
+        health: [ran("rest-release-readiness", "no42-org", "ok")],
+      } satisfies Board);
+    });
+
     it("does not count a failed sweep's rows as collected", () => {
       // The failed run wrote an alert and a row nothing can read before it
       // died, and confirmed no repository. Neither row is a finding: the
@@ -2475,6 +2536,448 @@ describe("buildBoard (AD-32, AD-35)", () => {
         collected: false,
         health: [ran("rest-org-dependabot", "no42-org", "failed", STALE_3H)],
       } satisfies Board);
+    });
+  });
+
+  describe("the Release column (#196)", () => {
+    const RELEASE_LANE = "rest-release-readiness";
+    const THIRD = { owner: "no42-org", name: "third" };
+    const FOURTH = { owner: "no42-org", name: "fourth" };
+    const commit = (sha: string, subject: string) => ({
+      sha,
+      subject,
+      url: `https://github.com/no42-org/twiki/commit/${sha}`,
+    });
+    /** Evidence worth a release: one feature and one perf since v1.2.0. */
+    const READY: ReleaseEvidence = {
+      tag: "v1.2.0",
+      tagDate: daysAgo(10),
+      commits: [
+        commit("a1", "feat(web): a new page"),
+        commit("b2", "perf: faster render"),
+        commit("c3", "chore: tidy"),
+      ],
+      truncated: false,
+      fixedAlerts: [],
+    };
+    /** Evidence with nothing worth a release in it. */
+    const NOTHING: ReleaseEvidence = {
+      ...READY,
+      commits: [commit("c3", "chore: tidy"), commit("d4", "docs: words")],
+    };
+    const release = (
+      rows: { repo: RepoRef; evidence: unknown }[],
+      at = AT,
+      outcome: "ok" | "partial" | "failed" = "ok",
+    ) =>
+      seed(
+        RELEASE_LANE,
+        "no42-org",
+        rows.map(({ repo, evidence }) => ({
+          subject: releaseSubject(repo),
+          payload: evidence,
+        })),
+        at,
+        outcome,
+      );
+    const READY_CELL: ReleaseCell = {
+      state: "ready",
+      summary: "1 feature, 1 perf since v1.2.0",
+      href: "/repo/no42-org/twiki#release",
+    };
+    /** The whole row of REPO carrying one soon alert, with this release cell. */
+    const soonRow = (cell: ReleaseCell): BoardRow => ({
+      slug: "no42-org/twiki",
+      tier: "soon",
+      reason:
+        "alert #1 left-pad: KEV status unknown, EPSS 2.0%, severity high, not an update, stuck state unknown",
+      chips: alertsOnly(unswept(linked(1, SECURITY, "high"))),
+      signals: [{ topic: "security", text: "Security 1 high" }],
+      signalsRest: { zero: [], unconfirmed: REST_TOPICS },
+      release: cell,
+      freshness: "fresh",
+      age: "5m ago",
+    });
+
+    it("shows a ready repository's summary and links it to the release section", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: READY }]);
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow(READY_CELL),
+      ]);
+    });
+
+    it("says none for a confirmed repository with nothing worth releasing", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: NOTHING }]);
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow({ state: "none" }),
+      ]);
+    });
+
+    it("brings a quiet repository that is ready onto the board, after every soon row", () => {
+      sweep([
+        { repo: REPO, alerts: [soonAlert(REPO, 1)] },
+        { repo: OTHER, alerts: [] },
+        { repo: THIRD, alerts: [soonAlert(THIRD, 2)] },
+      ]);
+      release([
+        { repo: REPO, evidence: NOTHING },
+        { repo: OTHER, evidence: READY },
+        { repo: THIRD, evidence: NOTHING },
+      ]);
+
+      const board = buildBoard(store, [OTHER, REPO, THIRD], NOW, DEPS);
+
+      // The two soon alerts tie on every term, so the slug breaks the tie.
+      expect(board.rows.map((r) => [r.slug, r.tier])).toEqual([
+        ["no42-org/third", "soon"],
+        ["no42-org/twiki", "soon"],
+        ["no42-org/quiet", "quiet"],
+      ]);
+      expect(board.rows[2]).toEqual({
+        slug: "no42-org/quiet",
+        tier: "quiet",
+        reason: "no open items",
+        chips: alertsOnly(unswept(ZERO)),
+        signals: [],
+        signalsRest: { zero: ["security"], unconfirmed: REST_TOPICS },
+        release: { ...READY_CELL, href: "/repo/no42-org/quiet#release" },
+        freshness: "fresh",
+        age: "5m ago",
+      } satisfies BoardRow);
+      expect(board.quiet).toEqual([]);
+      // Every watched repository counted once: the ready one is quiet in
+      // tier, though it is shown as a row rather than in the quiet block.
+      expect(board.summary).toEqual({
+        watched: 3,
+        now: 0,
+        soon: 2,
+        quiet: 1,
+        unconfirmed: 0,
+      });
+    });
+
+    it("leaves a quiet repository that is not ready in the quiet block", () => {
+      sweep([{ repo: OTHER, alerts: [] }]);
+      release([{ repo: OTHER, evidence: NOTHING }]);
+
+      const board = buildBoard(store, [OTHER], NOW, DEPS);
+
+      expect(board.rows).toEqual([]);
+      expect(board.quiet).toEqual(["no42-org/quiet"]);
+    });
+
+    it("says not tracked for a repository repos.yaml opted out", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: READY }]);
+
+      expect(
+        buildBoard(store, [REPO], NOW, {
+          ...DEPS,
+          releaseTracked: () => false,
+        }).rows,
+      ).toEqual([soonRow({ state: "not-tracked" })]);
+    });
+
+    it("says unconfirmed, never none, when no release row was ever written", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow(RELEASE_UNSWEPT),
+      ]);
+    });
+
+    it("says unconfirmed when the lane's last run failed, though an older row is present", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: READY }], "2026-08-16T11:50:00.000Z");
+      release([], AT, "failed");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow(RELEASE_UNSWEPT),
+      ]);
+    });
+
+    it("reads each repository on its own after a partial run, naming the one that failed", () => {
+      // One repository's read threw; the lane stored why. Its sibling's
+      // reading stands, and the failed one says what went wrong.
+      sweep([
+        { repo: REPO, alerts: [soonAlert(REPO, 1)] },
+        { repo: THIRD, alerts: [soonAlert(THIRD, 2)] },
+      ]);
+      release(
+        [
+          { repo: REPO, evidence: READY },
+          {
+            repo: THIRD,
+            evidence: {
+              readFailed:
+                "comparison v1.2.0...main for no42-org/third: tag v1.2.0 is not reachable from main (the comparison diverged)",
+            },
+          },
+        ],
+        AT,
+        "partial",
+      );
+
+      const rows = buildBoard(store, [REPO, THIRD], NOW, DEPS).rows;
+
+      expect(rows.map((r) => [r.slug, r.release])).toEqual([
+        [
+          "no42-org/third",
+          {
+            state: "unconfirmed",
+            reason:
+              "comparison v1.2.0...main for no42-org/third: tag v1.2.0 is not reachable from main (the comparison diverged)",
+          },
+        ],
+        ["no42-org/twiki", READY_CELL],
+      ]);
+      expect(rows[1]).toEqual(soonRow(READY_CELL));
+    });
+
+    it("says unconfirmed once the row has aged past the lane's cadence", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: READY }], hoursAgo(2));
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow(RELEASE_UNSWEPT),
+      ]);
+    });
+
+    it("says unconfirmed for a row it cannot read", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: { ...READY, commits: "lots" } }]);
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow({
+          state: "unconfirmed",
+          reason: "the stored release reading could not be read",
+        }),
+      ]);
+    });
+
+    it("says unconfirmed, never none, when the read was truncated and nothing read counts", () => {
+      // The commits past the ones read may hold a feature: `none` would
+      // claim a whole history nobody read.
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: { ...NOTHING, truncated: true } }]);
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow({
+          state: "unconfirmed",
+          reason:
+            "more commits exist than were read, and none of those read count toward a release",
+        }),
+      ]);
+    });
+
+    it("stays ready when the read was truncated and something read counts, as a lower bound", () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: { ...READY, truncated: true } }]);
+
+      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
+        soonRow({
+          ...READY_CELL,
+          summary: "1+ features, 1+ perf since v1.2.0",
+        }),
+      ]);
+    });
+
+    describe("a runtime fix nobody renewed lifts nothing", () => {
+      /** Evidence holding one runtime fix after the tag. */
+      const FIXED: ReleaseEvidence = {
+        ...NOTHING,
+        fixedAlerts: [
+          {
+            number: 3,
+            severity: "high",
+            ghsaId: "GHSA-aaaa-bbbb-cccc",
+            cveId: null,
+            packageName: "lodash",
+            scope: "runtime",
+            htmlUrl: "https://github.com/no42-org/quiet/security/dependabot/3",
+            fixedAt: daysAgo(1),
+          },
+        ],
+      };
+      /** OTHER, quiet, as the board files it when nothing lifted it. */
+      const expectQuiet = (board: Board) => {
+        expect(board.rows).toEqual([]);
+        expect(board.quiet).toEqual(["no42-org/quiet"]);
+        expect(board.summary).toEqual({
+          watched: 1,
+          now: 0,
+          soon: 0,
+          quiet: 1,
+          unconfirmed: 0,
+        });
+      };
+
+      it("lifts a quiet repository when the reading is current, so the cases below can fail", () => {
+        sweep([{ repo: OTHER, alerts: [] }]);
+        release([{ repo: OTHER, evidence: FIXED }]);
+
+        expect(buildBoard(store, [OTHER], NOW, DEPS).rows).toEqual([
+          {
+            slug: "no42-org/quiet",
+            tier: "soon",
+            reason: "unreleased security fix since v1.2.0",
+            chips: alertsOnly(unswept(ZERO)),
+            signals: [],
+            signalsRest: { zero: ["security"], unconfirmed: REST_TOPICS },
+            release: {
+              state: "ready",
+              summary: "1 security fix (high, lodash) since v1.2.0",
+              href: "/repo/no42-org/quiet#release",
+            },
+            freshness: "fresh",
+            age: "5m ago",
+          } satisfies BoardRow,
+        ]);
+      });
+
+      it("after a failed run, though an older row is present", () => {
+        sweep([{ repo: OTHER, alerts: [] }]);
+        release([{ repo: OTHER, evidence: FIXED }], "2026-08-16T11:50:00.000Z");
+        release([], AT, "failed");
+
+        expectQuiet(buildBoard(store, [OTHER], NOW, DEPS));
+      });
+
+      it("from a row aged past the lane's cadence", () => {
+        sweep([{ repo: OTHER, alerts: [] }]);
+        release([{ repo: OTHER, evidence: FIXED }], hoursAgo(2));
+
+        expectQuiet(buildBoard(store, [OTHER], NOW, DEPS));
+      });
+
+      it("for a repository repos.yaml opted out", () => {
+        sweep([{ repo: OTHER, alerts: [] }]);
+        release([{ repo: OTHER, evidence: FIXED }]);
+
+        expectQuiet(
+          buildBoard(store, [OTHER], NOW, {
+            ...DEPS,
+            releaseTracked: () => false,
+          }),
+        );
+      });
+    });
+
+    it("adds no tile and no queue filter", async () => {
+      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
+      release([{ repo: REPO, evidence: READY }]);
+
+      expect(
+        buildBoard(store, [REPO], NOW, DEPS).tiles.map((t) => t.topic),
+      ).toEqual(TOPICS_ORDER);
+      const queue = await (
+        await createApp({
+          defaultBranchOf: () => "main",
+          store,
+          watched: [REPO],
+          policy: POLICY,
+          now: () => NOW,
+        }).request("/queue")
+      ).text();
+      const nav = queue.slice(
+        queue.indexOf('<nav class="filters"'),
+        queue.indexOf("</nav>", queue.indexOf('<nav class="filters"')),
+      );
+      expect(nav).toContain("topic=security");
+      expect(nav.toLowerCase()).not.toContain("release");
+    });
+
+    describe("the rendered column", () => {
+      const render = async (releaseTracked: (repo: RepoRef) => boolean) =>
+        (
+          await createApp({
+            defaultBranchOf: () => "main",
+            releaseTracked,
+            store,
+            watched: [REPO, OTHER, THIRD, FOURTH],
+            policy: POLICY,
+            now: () => NOW,
+          }).request("/")
+        ).text();
+      const cell = (chip: string) =>
+        `<td role="cell"><span class="lbl">Release</span>${chip}</td>`;
+
+      beforeEach(() => {
+        sweep([
+          { repo: REPO, alerts: [soonAlert(REPO, 1)] },
+          { repo: OTHER, alerts: [soonAlert(OTHER, 2)] },
+          { repo: THIRD, alerts: [soonAlert(THIRD, 3)] },
+          { repo: FOURTH, alerts: [soonAlert(FOURTH, 4)] },
+        ]);
+        release([
+          { repo: REPO, evidence: READY },
+          { repo: OTHER, evidence: READY },
+          { repo: THIRD, evidence: NOTHING },
+        ]);
+      });
+
+      it("puts a Release header after the topic headers", async () => {
+        const html = await render(() => true);
+
+        expect(html).toContain(
+          '<th class="c" scope="col" role="columnheader">Reviews</th>' +
+            '<th scope="col" role="columnheader">Release</th>' +
+            '<th scope="col" role="columnheader">Last confirmed</th>',
+        );
+      });
+
+      it("reads ready, none, not tracked or unconfirmed, and puts the summary on the why-line", async () => {
+        const html = await render((repo) => repo.name !== OTHER.name);
+
+        expect(html).toContain(
+          cell(
+            '<a class="chip" href="/repo/no42-org/twiki#release" title="1 feature, 1 perf since v1.2.0">ready</a>',
+          ),
+        );
+        expect(html).toContain(cell('<span class="chip zero">none</span>'));
+        // Not tracked is a choice in repos.yaml, not a confirmed nothing:
+        // it must not wear `none`'s class.
+        expect(html).toContain(
+          cell('<span class="chip untracked">not tracked</span>'),
+        );
+        expect(html).toContain(
+          `stuck state unknown · ${SCANNERS_UNSWEPT} · ready to release: 1 feature, 1 perf since v1.2.0`,
+        );
+
+        // FOURTH has no release row: the marker CountChip uses for a topic
+        // no sweep confirmed.
+        expect(html).toContain(
+          cell(
+            '<span class="chip unconfirmed" title="not confirmed by a current release-readiness run">unconfirmed</span>',
+          ),
+        );
+      });
+
+      it("spans the why-line across every column the header shows on desktop", async () => {
+        const html = await render(() => true);
+
+        const head = html.slice(
+          html.indexOf('<table class="board cards"'),
+          html.indexOf("</thead>"),
+        );
+        // Every header but the tablet's signals cell, which desktop hides.
+        const columns = [
+          ...head.matchAll(
+            /<th(?=[ >])(?: class="([^"]*)")?(?: colspan="(\d+)")?/g,
+          ),
+        ]
+          .filter((m) => m[1] !== "signals")
+          .reduce((sum, m) => sum + Number(m[2] ?? 1), 0);
+        expect(columns).toBe(11);
+        // The row header takes the first column; the sentence the rest.
+        expect(html).toContain(
+          `<span class="sr-only">why</span></th><td colspan="${columns - 1}" role="cell">`,
+        );
+      });
     });
   });
 

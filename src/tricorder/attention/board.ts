@@ -16,6 +16,7 @@ import {
   unconfirmedNotes,
 } from "../../core/coverage.js";
 import { compareRankings } from "../../core/rank.js";
+import { releaseSummary } from "../../core/release-worthy.js";
 import type { SeverityReading } from "../../core/severity.js";
 import { watchKey } from "../../core/slug.js";
 import { type Tier, tier } from "../../core/tier.js";
@@ -48,8 +49,9 @@ import {
 } from "./freshness.js";
 import { buildCollectionHealth, type CollectionHealth } from "./health.js";
 import { laneTopic } from "./lane-topics.js";
-import { topicPath } from "./links.js";
+import { repoPath, topicPath } from "./links.js";
 import type { QueueItem } from "./queue.js";
+import { RELEASE_NOT_CONFIRMED } from "./release.js";
 import {
   type AttentionDeps,
   attentionByRepo,
@@ -70,6 +72,18 @@ export interface BoardDeps extends AttentionDeps {
   /** Per-lane cadences for the attesting lanes. A lane absent here is judged on `policy`. */
   lanePolicies?: Readonly<Record<string, FreshnessPolicy>>;
 }
+
+/**
+ * The Release cell (#196). Not a topic: it has no tile, no queue filter and
+ * no count. `unconfirmed` is every case where the lane has not vouched for a
+ * current reading, so an uncollected value never reads as `none` (AD-28).
+ */
+export type ReleaseCell =
+  | { state: "ready"; summary: string; href: string }
+  | { state: "none" }
+  | { state: "not-tracked" }
+  /** `reason` says which absence it is, as a CountChip's does. */
+  | { state: "unconfirmed"; reason: string };
 
 /**
  * One count chip.
@@ -154,6 +168,7 @@ export interface BoardRow {
    */
   signals: Signal[];
   signalsRest: { zero: Topic[]; unconfirmed: Topic[] };
+  release: ReleaseCell;
   /**
    * The newest confirmation behind any of this row's confirmed chips: the
    * alert lane's repository confirmation or an attesting lane's run.
@@ -172,9 +187,18 @@ export interface Board {
     unconfirmed: number;
   };
   tiles: Tile[];
-  /** `now` rows first, then `soon`, each in chain order. */
+  /**
+   * `now` rows first, then `soon`, then quiet repositories that are ready to
+   * release. Within each, by the chain order of the item that gave the
+   * repository its tier; rows with no such item (lifted by a review or a
+   * release alone, or quiet with no open item) after those that have one;
+   * then by slug.
+   */
   rows: BoardRow[];
-  /** Quiet repositories that at least one sweep confirmed, in allowlist order. */
+  /**
+   * Quiet repositories that at least one sweep confirmed and that are not
+   * ready to release, in allowlist order.
+   */
   quiet: string[];
   /**
    * Repositories nothing has confirmed: quiet only in the sense that nobody
@@ -402,9 +426,14 @@ export function buildBoard(
     // table and the chip must judge one lane on one budget.
     [ACTIONS_LANE]: deps.actionsPolicy,
   });
+  // A lane with no tile, release readiness, collected nothing a tile counts,
+  // so its run alone does not end "never collected".
   const collected =
-    health.some((h) => h.outcome === "ok" || h.outcome === "partial") ||
-    confirmations.size > 0;
+    health.some(
+      (h) =>
+        (h.outcome === "ok" || h.outcome === "partial") &&
+        laneTopic(h.lane)?.topic !== null,
+    ) || confirmations.size > 0;
   const owners = new Set(
     [...repos.values()].map((repo) => repo.owner.toLowerCase()),
   );
@@ -420,6 +449,8 @@ export function buildBoard(
     // the health table still lists the row.
     const lane = laneTopic(h.lane);
     if (lane === undefined) continue;
+    // A lane with no tile, release readiness: the health table lists it.
+    if (lane.topic === null) continue;
     // A per-installation lane failing on an owner nobody watches any more
     // would otherwise warn on every render until the row is purged.
     if (lane.installation === null && !owners.has(h.installation.toLowerCase()))
@@ -484,7 +515,13 @@ export function buildBoard(
   // site: they were three trailing `ReadonlySet<string>` arguments the
   // compiler could not tell apart, and swapping two of them would have
   // withdrawn the wrong feature's rows with the suite green.
-  const { byRepo, queue } = attentionByRepo(store, watched, now, deps, off);
+  const { byRepo, queue, release } = attentionByRepo(
+    store,
+    watched,
+    now,
+    deps,
+    off,
+  );
 
   // Nothing has ever been collected. No count on this page would be a
   // finding, so none is offered (AD-28): every tile reads `never collected`,
@@ -557,6 +594,40 @@ export function buildBoard(
     return result;
   };
   const reviews = standing(REVIEWS_LANE, REVIEWS_INSTALLATION);
+
+  /**
+   * One repository's Release cell, and the confirmation behind it when there
+   * is one. Read from the same reading the tier lift used (`releaseReadings`),
+   * so a repository is never lifted by a row its own cell calls unconfirmed.
+   */
+  const releaseFor = (
+    slug: string,
+  ): { cell: ReleaseCell; source: Source | null } => {
+    const reading = release.get(slug);
+    if (reading === undefined) {
+      return {
+        cell: { state: "unconfirmed", reason: RELEASE_NOT_CONFIRMED },
+        source: null,
+      };
+    }
+    if (reading.state === "unconfirmed") {
+      return { cell: reading, source: null };
+    }
+    if (reading.state === "not-tracked") {
+      return { cell: { state: "not-tracked" }, source: null };
+    }
+    const source = { verifiedAt: reading.verifiedAt, policy: deps.policy };
+    return reading.verdict.ready
+      ? {
+          cell: {
+            state: "ready",
+            summary: releaseSummary(reading.verdict),
+            href: `${repoPath(slug)}#release`,
+          },
+          source,
+        }
+      : { cell: { state: "none" }, source };
+  };
 
   /** The chips of one repository, and the confirmations that produced them. */
   const chipsFor = (
@@ -774,7 +845,11 @@ export function buildBoard(
     if (attention === undefined) continue;
     const { chips, sources } = chipsFor(repo, slug, attention);
     chipsBySlug.set(slug, chips);
-    if (attention.tier === "quiet") {
+    const releaseCell = releaseFor(slug);
+    if (releaseCell.source !== null) sources.push(releaseCell.source);
+    // A quiet repository that is ready to release is shown as a row, still
+    // tiered quiet: the cell is the reason to look at it.
+    if (attention.tier === "quiet" && releaseCell.cell.state !== "ready") {
       // Quiet is a finding. A repository nothing has confirmed has no
       // finding, and filing it under quiet would say "nothing pressing"
       // about something nobody has looked at (AD-28).
@@ -801,6 +876,7 @@ export function buildBoard(
         reason: attention.reason,
         chips,
         ...signalsOf(chips),
+        release: releaseCell.cell,
         freshness:
           newest === null
             ? "unknown"
@@ -810,9 +886,11 @@ export function buildBoard(
     });
   }
 
-  // `now` before `soon`; within a tier, the chain order of the item that
-  // gave the repository its tier, with rows lifted by a review alone after
-  // every item-bearing row; then the slug, so ties never reshuffle.
+  // `now` before `soon` before quiet-but-ready; within a tier, the chain
+  // order of the item that gave the repository its tier, with rows that have
+  // no such item (lifted by a review or a release alone, or quiet with no
+  // open item) after every item-bearing row; then the slug, so ties never
+  // reshuffle.
   const TIER_INDEX: Record<Tier, number> = { now: 0, soon: 1, quiet: 2 };
   judged.sort((a, b) => {
     const byTier = TIER_INDEX[a.row.tier] - TIER_INDEX[b.row.tier];
@@ -878,7 +956,9 @@ export function buildBoard(
       watched: repos.size,
       now: rows.filter((r) => r.tier === "now").length,
       soon: rows.filter((r) => r.tier === "soon").length,
-      quiet: quiet.length,
+      // The quiet block plus the quiet repositories shown as rows because
+      // they are ready to release, so the four counts sum to `watched`.
+      quiet: quiet.length + rows.filter((r) => r.tier === "quiet").length,
       unconfirmed: unconfirmed.length,
     },
     tiles,

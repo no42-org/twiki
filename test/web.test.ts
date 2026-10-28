@@ -531,10 +531,15 @@ describe("issues found in review (round 2)", () => {
     /** The rationale row; `rest` is what the signals cell left out. */
     const why = (reason: string, rest = "") =>
       '<tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th>' +
-      `<td colspan="9" role="cell"><span class="lbl hid">why</span><span class="why">${reason}` +
+      `<td colspan="10" role="cell"><span class="lbl hid">why</span><span class="why">${reason}` +
       (rest === "" ? "" : `<span class="signals-rest"> · ${rest}</span>`) +
       "</span></td></tr>";
+    /**
+     * The row's last two cells: Release, which no case here collects so it
+     * reads the unconfirmed marker (#196), then the freshness badge.
+     */
     const badge = (b: string) =>
+      '<td role="cell"><span class="lbl">Release</span><span class="chip unconfirmed" title="not confirmed by a current release-readiness run">unconfirmed</span></td>' +
       `<td class="fresh-cell" role="cell"><span class="lbl hid">Last confirmed</span>${b}</td>`;
     const FRESH = badge(
       '<span class="badge fresh" title="5m ago">fresh · 5m ago</span>',
@@ -653,9 +658,9 @@ describe("issues found in review (round 2)", () => {
       for (const [tag] of html.matchAll(/<th\b[^>]*>/g)) {
         expect(tag).toMatch(/ scope="(col|row)"/);
       }
-      // Ten on the repo row, the rationale cell, five on the health row.
+      // Eleven on the repo row, the rationale cell, five on the health row.
       const cells = [...html.matchAll(/<td\b[^>]*>(?:<[^>]*>)?/g)];
-      expect(cells.length).toBe(16);
+      expect(cells.length).toBe(17);
       for (const [cell] of cells) {
         expect(cell).toMatch(/<span class="lbl(?: hid)?">$/);
       }
@@ -1487,7 +1492,7 @@ describe("issues found in review (round 2)", () => {
         '<td class="signals" role="cell"><span class="lbl hid">Signals</span><span class="chip uncovered" title="the repository is archived, so nothing is updating it">Security not covered</span></td>',
       );
       expect(html).toContain(
-        '<tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="9" role="cell"><span class="lbl hid">why</span><span class="why">' +
+        '<tr class="why" role="row"><th scope="row" role="rowheader"><span class="sr-only">why</span></th><td colspan="10" role="cell"><span class="lbl hid">why</span><span class="why">' +
           "pull request #4 open 9d, past the 3d review budget · security not covered: the repository is archived, so nothing is updating it" +
           '<span class="signals-rest"> · unconfirmed: CI, Dependencies, Pull requests, Issues, Reviews</span>' +
           "</span></td></tr>",

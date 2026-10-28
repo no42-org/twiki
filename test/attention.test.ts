@@ -8,7 +8,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
-import { KEV_SUBJECT } from "../src/core/subject.js";
+import type {
+  FixedAlertRef,
+  ReleaseEvidence,
+} from "../src/core/release-worthy.js";
+import { KEV_SUBJECT, releaseSubject } from "../src/core/subject.js";
 import { DEFAULT_NOW_EPSS } from "../src/core/tier.js";
 import {
   attentionByRepo,
@@ -442,6 +446,182 @@ describe("repoAttention (AD-29, AD-34)", () => {
     expect(attention.worstSeverity).toBe("critical");
     expect(attention.items).toHaveLength(3);
   });
+
+  describe("the unreleased security fix lift (#196)", () => {
+    const fixedAlert = (over: Partial<FixedAlertRef> = {}): FixedAlertRef => ({
+      number: 3,
+      severity: "high",
+      ghsaId: "GHSA-aaaa-bbbb-cccc",
+      cveId: null,
+      packageName: "lodash",
+      scope: "runtime",
+      htmlUrl: "https://github.com/no42-org/twiki/security/dependabot/3",
+      fixedAt: daysAgo(1),
+      ...over,
+    });
+    const evidence = (
+      over: Partial<ReleaseEvidence> = {},
+    ): ReleaseEvidence => ({
+      tag: "v1.0.0",
+      tagDate: daysAgo(10),
+      commits: [],
+      truncated: false,
+      fixedAlerts: [],
+      ...over,
+    });
+    const release = (payload: ReleaseEvidence) =>
+      seed("rest-release-readiness", [
+        { subject: releaseSubject(REPO), payload },
+      ]);
+    const QUIET = {
+      tier: "quiet",
+      reason: "no open items",
+      first: null,
+      overdueReview: null,
+      openReviews: 0,
+      openAlerts: 0,
+      worstSeverity: null,
+      items: [],
+    };
+
+    it("lifts a quiet repository to soon on a runtime fix shipped after the tag", () => {
+      release(evidence({ fixedAlerts: [fixedAlert()] }));
+
+      expect(repoAttention(store, REPO, NOW, DEPS)).toEqual({
+        ...QUIET,
+        tier: "soon",
+        reason: "unreleased security fix since v1.0.0",
+      });
+    });
+
+    it("says since the first commit when the repository has no tag", () => {
+      release(
+        evidence({ tag: null, tagDate: null, fixedAlerts: [fixedAlert()] }),
+      );
+
+      expect(repoAttention(store, REPO, NOW, DEPS)).toEqual({
+        ...QUIET,
+        tier: "soon",
+        reason: "unreleased security fix since the first commit",
+      });
+    });
+
+    it("never lifts past soon: a now repository keeps its tier and its own reason", () => {
+      seedKev(["CVE-2021-44228"]);
+      seed("rest-org-dependabot", [
+        normalise(
+          makeAlert({ number: 7, cveId: "CVE-2021-44228", severity: "high" }),
+        ),
+      ]);
+      release(evidence({ fixedAlerts: [fixedAlert()] }));
+
+      const attention = repoAttention(store, REPO, NOW, DEPS);
+
+      expect(attention.tier).toBe("now");
+      expect(attention.reason).toBe(
+        "alert #7 left-pad: listed in CISA KEV, EPSS 42.0%, severity high, not an update, stuck state unknown",
+      );
+      expect(attention.first?.number).toBe(7);
+    });
+
+    it("keeps the overdue review's reason when the review already lifted the repository", () => {
+      seed("graphql-review-requests", [
+        normaliseReviewRequest(
+          makeReviewRequest({ repo: REPO, number: 12, createdAt: daysAgo(4) }),
+        ),
+      ]);
+      release(evidence({ fixedAlerts: [fixedAlert()] }));
+
+      const attention = repoAttention(store, REPO, NOW, DEPS);
+
+      expect(attention.tier).toBe("soon");
+      expect(attention.reason).toBe(
+        "pull request #12 open 4d, past the 3d review budget",
+      );
+    });
+
+    it("leaves a repository with only feature commits quiet", () => {
+      release(
+        evidence({
+          commits: [
+            {
+              sha: "a1",
+              subject: "feat: a thing",
+              url: "https://github.com/no42-org/twiki/commit/a1",
+            },
+          ],
+        }),
+      );
+
+      expect(repoAttention(store, REPO, NOW, DEPS)).toEqual(QUIET);
+    });
+
+    /** One release-readiness run at `at`, with these rows, ending `outcome`. */
+    const releaseRun = (
+      at: string,
+      outcome: "ok" | "failed",
+      payloads: ReleaseEvidence[],
+    ) => {
+      const r = store.beginRun({
+        lane: "rest-release-readiness",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: at,
+      });
+      store.recordObservations(
+        r,
+        at,
+        payloads.map((payload) => ({
+          subject: releaseSubject(REPO),
+          payload,
+        })) as never[],
+      );
+      store.finishRun(r, outcome, at);
+    };
+
+    it("lifts nothing when the lane's latest run failed, though an older row is present", () => {
+      releaseRun("2026-08-20T11:50:00.000Z", "ok", [
+        evidence({ fixedAlerts: [fixedAlert()] }),
+      ]);
+      releaseRun("2026-08-20T11:55:00.000Z", "failed", []);
+
+      expect(repoAttention(store, REPO, NOW, DEPS)).toEqual(QUIET);
+    });
+
+    it("lifts nothing from a row aged past the lane's cadence", () => {
+      releaseRun("2026-08-20T10:00:00.000Z", "ok", [
+        evidence({ fixedAlerts: [fixedAlert()] }),
+      ]);
+
+      expect(repoAttention(store, REPO, NOW, DEPS)).toEqual(QUIET);
+    });
+
+    it("lifts nothing for a repository repos.yaml opted out", () => {
+      release(evidence({ fixedAlerts: [fixedAlert()] }));
+
+      expect(
+        repoAttention(store, REPO, NOW, {
+          ...DEPS,
+          releaseTracked: () => false,
+        }),
+      ).toEqual(QUIET);
+    });
+
+    it("lifts nothing from a tombstoned row", () => {
+      release(evidence({ fixedAlerts: [fixedAlert()] }));
+      const at = "2026-08-20T11:58:00.000Z";
+      const r = store.beginRun({
+        lane: "rest-release-readiness",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: at,
+      });
+      store.recordTombstones(r, at, [releaseSubject(REPO)]);
+      store.finishRun(r, "ok", at);
+
+      expect(repoAttention(store, REPO, NOW, DEPS)).toEqual(QUIET);
+    });
+  });
 });
 
 describe("attentionByRepo (AD-32)", () => {
@@ -513,6 +693,7 @@ describe("attentionByRepo (AD-32)", () => {
 
     expect(reads.get("dependabot_alert")).toBe(1);
     expect(reads.get("review_request")).toBe(1);
+    expect(reads.get("release_readiness")).toBe(1);
   });
 
   it("groups the one queue by folded slug and reports the same verdict as repoAttention", () => {

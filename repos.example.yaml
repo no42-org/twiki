@@ -32,6 +32,11 @@ repos:
   - repo: no42-org/venerable-thing
     defaultBranch: master
 
+  # Opt out of gitricorder's release signal. Absent means tracked. Use it for
+  # tools or scripts with no Dependabot, Renovate or release process.
+  - repo: no42-org/scripts
+    release: false
+
   # Where this repository's tree carries its version.
   #
   # Absent means nowhere, and that is a real answer rather than a way to opt

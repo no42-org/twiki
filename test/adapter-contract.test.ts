@@ -1621,3 +1621,267 @@ describe("reading a file at a ref", () => {
     ).resolves.toEqual({ kind: "not-a-file", type: "dir" });
   });
 });
+
+describe("unreleased commits", () => {
+  const REPO = { owner: "o", name: "r" };
+  const commit = (sha: string, message: string) => ({
+    sha,
+    html_url: `https://github.com/o/r/commit/${sha}`,
+    commit: { message },
+  });
+
+  /** Records the compare params and the REST requests. */
+  const stub = (opts: {
+    compare?: unknown;
+    list?: unknown;
+    headers?: Record<string, string>;
+    fail?: unknown;
+  }) => {
+    const compared: Record<string, unknown>[] = [];
+    const requested: { route: string; params: unknown }[] = [];
+    const gh = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async (route: string, params: unknown) => {
+        requested.push({ route, params });
+        return { data: opts.list, headers: opts.headers ?? {} };
+      },
+      repos: {
+        compareCommitsWithBasehead: async (p: Record<string, unknown>) => {
+          compared.push(p);
+          if (opts.fail) throw opts.fail;
+          return { data: opts.compare };
+        },
+      },
+    } as unknown as Octokit;
+    return { gh, compared, requested };
+  };
+
+  it("compares from the tag to the branch and maps the result", async () => {
+    const { gh, compared } = stub({
+      compare: {
+        total_commits: 2,
+        base_commit: {
+          commit: { committer: { date: "2026-10-01T00:00:00Z" } },
+        },
+        // The comparison is oldest first.
+        commits: [
+          commit("a1", "fix: first\n\nbody"),
+          commit("b2", "feat: second"),
+        ],
+      },
+    });
+    const got = await adapterFor(gh, "organization").unreleasedCommits(
+      REPO,
+      "v1.0.0",
+      "main",
+    );
+    // No per_page or page: GitHub's docs say the list then holds up to 250
+    // commits and ends at the newest; a paged first page holds at most 100.
+    expect(compared).toEqual([
+      { owner: "o", repo: "r", basehead: "v1.0.0...main" },
+    ]);
+    expect(got).toEqual({
+      tagDate: "2026-10-01T00:00:00Z",
+      commits: [
+        {
+          sha: "b2",
+          subject: "feat: second",
+          url: "https://github.com/o/r/commit/b2",
+        },
+        {
+          sha: "a1",
+          subject: "fix: first",
+          url: "https://github.com/o/r/commit/a1",
+        },
+      ],
+      truncated: false,
+    });
+  });
+
+  it("reports truncation when GitHub returned fewer commits than exist", async () => {
+    const { gh } = stub({
+      compare: {
+        total_commits: 300,
+        base_commit: {
+          commit: { committer: { date: "2026-10-01T00:00:00Z" } },
+        },
+        commits: Array.from({ length: 250 }, (_, i) => commit(`s${i}`, "x")),
+      },
+    });
+    const got = await adapterFor(gh, "organization").unreleasedCommits(
+      REPO,
+      "v1.0.0",
+      "main",
+    );
+    expect(got.truncated).toBe(true);
+    expect(got.commits).toHaveLength(250);
+  });
+
+  it("lists the branch when there is no tag", async () => {
+    const { gh, requested } = stub({ list: [commit("c3", "chore: x")] });
+    const got = await adapterFor(gh, "organization").unreleasedCommits(
+      REPO,
+      null,
+      "main",
+    );
+    expect(requested).toEqual([
+      {
+        route: "GET /repos/{owner}/{repo}/commits",
+        params: { owner: "o", repo: "r", sha: "main", per_page: 100 },
+      },
+    ]);
+    expect(got).toEqual({
+      tagDate: null,
+      commits: [
+        {
+          sha: "c3",
+          subject: "chore: x",
+          url: "https://github.com/o/r/commit/c3",
+        },
+      ],
+      truncated: false,
+    });
+  });
+
+  it("marks the untagged listing truncated only when a next link exists", async () => {
+    const { gh } = stub({
+      list: [commit("c3", "chore: x")],
+      headers: {
+        link: '<https://api.github.com/repositories/1/commits?page=2>; rel="next"',
+      },
+    });
+    const got = await adapterFor(gh, "organization").unreleasedCommits(
+      REPO,
+      null,
+      "main",
+    );
+    expect(got.truncated).toBe(true);
+  });
+
+  it("throws naming the repository and the tag when the tag is not on the branch", async () => {
+    // A three-dot compare against a tag off the default branch answers 200
+    // with status "diverged"; its commit list is not "since the tag".
+    const { gh } = stub({
+      compare: {
+        status: "diverged",
+        total_commits: 1,
+        base_commit: {
+          commit: { committer: { date: "2026-10-01T00:00:00Z" } },
+        },
+        commits: [commit("a1", "feat: on main only")],
+      },
+    });
+    await expect(
+      adapterFor(gh, "organization").unreleasedCommits(REPO, "v1.0.0", "main"),
+    ).rejects.toThrow(
+      "comparison v1.0.0...main for o/r: tag v1.0.0 is not reachable from main (the comparison diverged)",
+    );
+  });
+
+  it("reads a branch that is behind its tag as nothing since the tag", async () => {
+    const { gh } = stub({
+      compare: {
+        status: "behind",
+        total_commits: 0,
+        base_commit: {
+          commit: { committer: { date: "2026-10-01T00:00:00Z" } },
+        },
+        commits: [],
+      },
+    });
+    expect(
+      await adapterFor(gh, "organization").unreleasedCommits(
+        REPO,
+        "v1.0.0",
+        "main",
+      ),
+    ).toEqual({
+      tagDate: "2026-10-01T00:00:00Z",
+      commits: [],
+      truncated: false,
+    });
+  });
+
+  it("throws naming the repository and the tag when the comparison 404s", async () => {
+    const { gh } = stub({
+      fail: Object.assign(new Error("Not Found"), { status: 404 }),
+    });
+    await expect(
+      adapterFor(gh, "organization").unreleasedCommits(REPO, "v9.9.9", "main"),
+    ).rejects.toThrow(/v9\.9\.9\.\.\.main for o\/r failed: Not Found/);
+  });
+});
+
+describe("fixed dependabot alerts", () => {
+  const REPO = { owner: "o", name: "r" };
+  const alert = (n: number, extra: Record<string, unknown> = {}) => ({
+    number: n,
+    state: "fixed",
+    html_url: `https://github.com/o/r/security/dependabot/${n}`,
+    dependency: { package: { name: "lodash" }, scope: "runtime" },
+    security_advisory: { ghsa_id: "GHSA-x", cve_id: "CVE-1", severity: "high" },
+    ...extra,
+  });
+  const stub = (data: unknown, fail?: unknown) => {
+    const requested: { route: string; params: unknown }[] = [];
+    const gh = {
+      auth: async () => ({ token: "x", expiresAt: "2026-08-21T12:00:00Z" }),
+      request: async (route: string, params: unknown) => {
+        requested.push({ route, params });
+        if (fail) throw fail;
+        return { data, headers: {} };
+      },
+    } as unknown as Octokit;
+    return { gh, requested };
+  };
+
+  it("asks for state=fixed and maps fixed_at, dropping alerts without it", async () => {
+    const { gh, requested } = stub([
+      alert(1, { fixed_at: "2026-10-05T00:00:00Z" }),
+      alert(2),
+    ]);
+    const got = await adapterFor(gh, "organization").listFixedDependabotAlerts(
+      REPO,
+    );
+    expect(requested).toEqual([
+      {
+        route: "GET /repos/{owner}/{repo}/dependabot/alerts",
+        params: { owner: "o", repo: "r", state: "fixed", per_page: 100 },
+      },
+    ]);
+    expect(got).toEqual([
+      {
+        number: 1,
+        severity: "high",
+        ghsaId: "GHSA-x",
+        cveId: "CVE-1",
+        packageName: "lodash",
+        scope: "runtime",
+        htmlUrl: "https://github.com/o/r/security/dependabot/1",
+        fixedAt: "2026-10-05T00:00:00Z",
+      },
+    ]);
+  });
+
+  it("answers [] when Dependabot alerts are disabled", async () => {
+    const { gh } = stub(
+      null,
+      Object.assign(new Error(DEPENDABOT_ALERTS_DISABLED_BODY), {
+        status: 403,
+      }),
+    );
+    expect(
+      await adapterFor(gh, "organization").listFixedDependabotAlerts(REPO),
+    ).toEqual([]);
+  });
+
+  it("throws on a 500, naming the repository", async () => {
+    const { gh } = stub(
+      null,
+      Object.assign(new Error("boom"), { status: 500 }),
+    );
+    await expect(
+      adapterFor(gh, "organization").listFixedDependabotAlerts(REPO),
+    ).rejects.toThrow(/fixed alert listing for o\/r failed: boom/);
+  });
+});

@@ -11,9 +11,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isDefaultBranchRun } from "../src/core/branch.js";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import { redact } from "../src/core/redact.js";
+import type { ReleaseEvidence } from "../src/core/release-worthy.js";
 import {
   codeScanningSubject,
   KEV_SUBJECT,
+  releaseSubject,
   secretScanningSubject,
 } from "../src/core/subject.js";
 import { OctokitGitHub } from "../src/github/octokit-adapter.js";
@@ -1325,6 +1327,278 @@ describe("the per-repository view (CAP-7)", () => {
     expect(view.notCovered).toBe(true);
     expect(view.summary.openAlerts).toBeNull();
   });
+
+  describe("the Release section (#196)", () => {
+    const RELEASE_LANE = "rest-release-readiness";
+    const commit = (sha: string, subject: string) => ({
+      sha,
+      subject,
+      url: `https://github.com/no42-org/twiki/commit/${sha}`,
+    });
+    const EVIDENCE: ReleaseEvidence = {
+      tag: "v1.2.0",
+      tagDate: "2026-08-10T12:00:00.000Z",
+      commits: [
+        commit("a1b2c3d4e5f6", "feat(web): a new page"),
+        commit("b2c3d4e5f6a1", "perf: faster render"),
+        commit("c3d4e5f6a1b2", "chore: tidy"),
+      ],
+      truncated: false,
+      fixedAlerts: [
+        {
+          number: 4,
+          severity: "high",
+          ghsaId: "GHSA-aaaa-bbbb-cccc",
+          cveId: "CVE-2026-0001",
+          packageName: "lodash",
+          scope: "runtime",
+          htmlUrl: "https://github.com/no42-org/twiki/security/dependabot/4",
+          fixedAt: "2026-08-15T12:00:00.000Z",
+        },
+      ],
+    };
+    const seedRelease = (evidence: unknown) =>
+      seed(RELEASE_LANE, [
+        { subject: releaseSubject(REPO), payload: evidence },
+      ] as never);
+    const releasePage = async (releaseTracked?: () => boolean) => {
+      const app = createApp({
+        defaultBranchOf: () => "main",
+        store,
+        watched: [REPO],
+        policy: SWEEP,
+        rankPolicy: DEFAULT_RANK_POLICY,
+        now: () => NOW,
+        ...(releaseTracked ? { releaseTracked } : {}),
+      });
+      const html = await (await app.request("/repo/no42-org/twiki")).text();
+      const start = html.indexOf('<h2 id="release">');
+      expect(start).toBeGreaterThan(-1);
+      return html.slice(start, html.indexOf("</section>", start));
+    };
+
+    it("lists the tag, each security fix and each improvement", async () => {
+      seedRelease(EVIDENCE);
+
+      const section = await releasePage();
+
+      expect(section).toContain('<h2 id="release">Release ');
+      expect(section).toContain("latest tag v1.2.0 (10d ago)");
+      const ext = (href: string, text: string) =>
+        `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}`;
+      expect(section).toContain(
+        ext(
+          "https://github.com/no42-org/twiki/security/dependabot/4",
+          "GHSA-aaaa-bbbb-cccc",
+        ),
+      );
+      expect(section).toContain("lodash");
+      expect(section).toContain("high");
+      expect(section).toContain("2026-08-15");
+      expect(section).toContain(
+        ext("https://github.com/no42-org/twiki/commit/a1b2c3d4e5f6", "a1b2c3d"),
+      );
+      const kind = (k: string) =>
+        `<td role="cell"><span class="lbl">Kind</span>${k}</td>`;
+      expect(section).toContain(kind("feat"));
+      expect(section).toContain(kind("perf"));
+      expect(section).toContain("feat(web): a new page");
+      expect(section).toContain(
+        ext("https://github.com/no42-org/twiki/commit/b2c3d4e5f6a1", "b2c3d4e"),
+      );
+      expect(section).toContain("perf: faster render");
+      expect(section).not.toContain("chore: tidy");
+      expect(section).not.toContain("Nothing worth releasing");
+    });
+
+    it("names the CVE when the alert has no GHSA", async () => {
+      seedRelease({
+        ...EVIDENCE,
+        fixedAlerts: [{ ...EVIDENCE.fixedAlerts[0], ghsaId: null }],
+      });
+
+      expect(await releasePage()).toContain("CVE-2026-0001");
+    });
+
+    it("says no tag yet when the repository has none", async () => {
+      seedRelease({ ...EVIDENCE, tag: null, tagDate: null });
+
+      const section = await releasePage();
+
+      expect(section).toContain("no tag yet");
+      expect(section).not.toContain("latest tag");
+    });
+
+    it("says nothing is worth releasing only when the lane confirmed it", async () => {
+      seedRelease({ ...EVIDENCE, fixedAlerts: [], commits: [] });
+
+      const section = await releasePage();
+
+      expect(section).toContain("Nothing worth releasing since v1.2.0.");
+    });
+
+    it("says it was not tracked when repos.yaml opted out", async () => {
+      seedRelease(EVIDENCE);
+
+      const section = await releasePage(() => false);
+
+      expect(section).toContain("Not tracked: release: false in repos.yaml.");
+      expect(section).not.toContain("GHSA-aaaa-bbbb-cccc");
+    });
+
+    const UNSWEPT =
+      '<p class="attest">Release readiness has no current, complete reading for this repository (not confirmed by a current release-readiness run), so whether anything is worth releasing is unknown.</p>';
+
+    it("says unconfirmed, never nothing to release, when the lane never ran", async () => {
+      const section = await releasePage();
+
+      expect(section).toContain(UNSWEPT);
+      expect(section).not.toContain("Nothing worth releasing");
+    });
+
+    it("says unconfirmed when the lane's latest run failed", async () => {
+      // A row was collected once; "has not been collected" would be false.
+      seedRelease({ ...EVIDENCE, fixedAlerts: [], commits: [] });
+      run(RELEASE_LANE, "failed", "2026-08-20T11:58:00.000Z");
+
+      const section = await releasePage();
+
+      expect(section).toContain(UNSWEPT);
+      expect(section).not.toContain("Nothing worth releasing");
+    });
+
+    describe("after a partial run, each repository reads on its own", () => {
+      const OTHER = { owner: "no42-org", name: "other" };
+      const DIVERGED =
+        "comparison v1.2.0...main for no42-org/twiki: tag v1.2.0 is not reachable from main (the comparison diverged)";
+      const seedPartial = (rows: { repo: typeof REPO; payload: unknown }[]) => {
+        const r = store.beginRun({
+          lane: RELEASE_LANE,
+          installation: "no42-org",
+          scope: "full",
+          startedAt: "2026-08-20T11:55:00.000Z",
+        });
+        store.recordObservations(
+          r,
+          "2026-08-20T11:55:00.000Z",
+          rows.map(({ repo, payload }) => ({
+            subject: releaseSubject(repo),
+            payload,
+          })) as never[],
+        );
+        store.finishRun(
+          r,
+          "partial",
+          "2026-08-20T11:55:00.000Z",
+          "1 repositories failed",
+        );
+      };
+
+      it("confirms this repository when only a sibling failed", () => {
+        seedPartial([
+          { repo: REPO, payload: EVIDENCE },
+          { repo: OTHER, payload: { readFailed: "boom" } },
+        ]);
+
+        expect(buildRepoView(store, REPO, NOW, DEPS).releaseSection).toEqual({
+          attested: true,
+          freshness: "fresh",
+          age: "5m ago",
+          cell: {
+            state: "ready",
+            summary:
+              "1 security fix (high, lodash) · 1 feature, 1 perf since v1.2.0",
+            href: "#release",
+          },
+          verdict: {
+            ready: true,
+            tag: "v1.2.0",
+            securityFixes: EVIDENCE.fixedAlerts,
+            improvements: [
+              { ...EVIDENCE.commits[0], kind: "feat" },
+              { ...EVIDENCE.commits[1], kind: "perf" },
+            ],
+            truncated: false,
+          },
+          tagDate: "2026-08-10T12:00:00.000Z",
+          tagAge: "10d ago",
+        });
+      });
+
+      it("says unconfirmed and names the failure when this repository's read failed", () => {
+        seedPartial([
+          { repo: REPO, payload: { readFailed: DIVERGED } },
+          { repo: OTHER, payload: EVIDENCE },
+        ]);
+
+        expect(buildRepoView(store, REPO, NOW, DEPS).releaseSection).toEqual({
+          attested: false,
+          freshness: "fresh",
+          age: "5m ago",
+          cell: { state: "unconfirmed", reason: DIVERGED },
+          verdict: null,
+          tagDate: null,
+          tagAge: null,
+        });
+      });
+    });
+
+    it("reads the release rows once for the whole page", () => {
+      // The header's tier and the Release section read one reading, so
+      // they cannot disagree and the store is not read twice for it.
+      seedRelease(EVIDENCE);
+      const reads = new Map<string, number>();
+      const counted = new Proxy(store, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver);
+          if (prop !== "currentByType") return value;
+          return (type: string) => {
+            reads.set(type, (reads.get(type) ?? 0) + 1);
+            return target.currentByType(type as never);
+          };
+        },
+      });
+
+      buildRepoView(counted, REPO, NOW, DEPS);
+
+      expect(reads.get("release_readiness")).toBe(1);
+    });
+
+    it("says unconfirmed, never nothing to release, when the read was truncated and nothing read counts", async () => {
+      seedRelease({
+        ...EVIDENCE,
+        fixedAlerts: [],
+        commits: [EVIDENCE.commits[2]],
+        truncated: true,
+      });
+
+      const section = await releasePage();
+
+      expect(section).toContain(
+        '<p class="attest">Release readiness has no current, complete reading for this repository (more commits exist than were read, and none of those read count toward a release), so whether anything is worth releasing is unknown.</p>',
+      );
+      expect(section).not.toContain("Nothing worth releasing");
+      expect(section).not.toContain("latest tag");
+    });
+
+    it("warns that a truncated ready reading is a lower bound, and still lists it", async () => {
+      seedRelease({ ...EVIDENCE, truncated: true });
+
+      const section = await releasePage();
+
+      expect(section).toContain(
+        '<p class="attest warn">More commits exist than were read, so the improvements below are a lower bound.</p>',
+      );
+      expect(section).toContain("feat(web): a new page");
+      expect(section).toContain("GHSA-aaaa-bbbb-cccc");
+    });
+
+    it("gives no lower-bound warning on a complete reading", async () => {
+      seedRelease(EVIDENCE);
+
+      expect(await releasePage()).not.toContain("lower bound");
+    });
+  });
 });
 
 describe("the code scanning rows on the repository page (#156)", () => {
@@ -2445,6 +2719,8 @@ describe("the per-repository page", () => {
       unswept("pulls", "Pull requests"),
       unswept("issues", "Issues"),
       unswept("reviews", "Reviews"),
+      // Release is not a topic: it follows them, with no count.
+      '<h2 id="release">Release <span class="badge unknown" title="never collected">never collected</span></h2>',
     ]);
     for (const old of [
       "Security alerts",
@@ -2766,6 +3042,8 @@ describe("the per-repository page", () => {
     expect(html).toContain(
       '<h2 id="reviews">Reviews <span class="badge fresh" title="5m ago">fresh · 5m ago</span> <span class="shown">0 shown</span></h2>' +
         '<p class="attest">no review requests in this repository</p>' +
+        '<h2 id="release">Release <span class="badge unknown" title="never collected">never collected</span></h2>' +
+        '<p class="attest">Release readiness has no current, complete reading for this repository (not confirmed by a current release-readiness run), so whether anything is worth releasing is unknown.</p>' +
         "</section></main>",
     );
   });

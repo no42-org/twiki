@@ -22,6 +22,7 @@ import {
   type QueueDeps,
   type QueueItem,
 } from "./queue.js";
+import { type ReleaseReading, releaseReadings } from "./release.js";
 
 // One attention tier per repository (AD-29, AD-34).
 //
@@ -35,6 +36,12 @@ export interface AttentionDeps extends QueueDeps {
   cutRank: number;
   /** Days a review request may wait before the repository is at least soon. */
   reviewBudgetDays: number;
+  /**
+   * False for a repository repos.yaml opted out with `release: false`, which
+   * then gets no release lift (#196). Absent means every repository is
+   * tracked, as an absent key does; the web wiring always binds it.
+   */
+  releaseTracked?: (repo: RepoRef) => boolean;
 }
 
 export interface RepoAttention {
@@ -159,6 +166,7 @@ function overdueAmong(
 function judge(
   items: QueueItem[],
   reviews: readonly OpenReview[],
+  release: ReleaseReading | undefined,
   deps: AttentionDeps,
 ): RepoAttention {
   const tiers = items.map((item) => tier(item.ranking, deps.cutRank));
@@ -183,6 +191,20 @@ function judge(
     reason = nameItem(first);
   } else {
     reason = "no open items";
+  }
+
+  // An unreleased security fix lifts to soon and never to now (#196). The
+  // reason is rewritten only when the lift changed the tier, so a repository
+  // already soon or now keeps the item or review that put it there. Only a
+  // confirmed reading lifts: the same one the board's Release cell shows.
+  if (release?.state === "confirmed") {
+    const { verdict } = release;
+    const lifted = maxTier(repoTier, "soon");
+    if (verdict.securityFixes.length > 0 && lifted !== repoTier) {
+      repoTier = lifted;
+      first = null;
+      reason = `unreleased security fix since ${verdict.tag ?? "the first commit"}`;
+    }
   }
 
   const alerts = items.filter((item) => topicOf(item.kind) === "security");
@@ -255,11 +277,20 @@ export function attentionByRepo(
   now: Date,
   deps: AttentionDeps,
   suppressed: SuppressedByFeature = {},
-): { byRepo: Map<string, RepoAttention>; queue: Queue } {
+): {
+  byRepo: Map<string, RepoAttention>;
+  queue: Queue;
+  /** The release reading per watched slug, read once (#196). */
+  release: Map<string, ReleaseReading>;
+} {
   const queue = buildQueue(store, now, deps);
 
   const itemsBySlug = new Map<string, QueueItem[]>();
-  for (const repo of watched) itemsBySlug.set(watchKey(repo), []);
+  const repos = new Map<string, RepoRef>();
+  for (const repo of watched) {
+    itemsBySlug.set(watchKey(repo), []);
+    if (!repos.has(watchKey(repo))) repos.set(watchKey(repo), repo);
+  }
   // Derived from the map rather than written as one branch per feature, so
   // a fourth counted feature withdraws its own kind by appearing in
   // SUPPRESSES and not by anyone remembering to add a fourth `if`.
@@ -274,18 +305,30 @@ export function attentionByRepo(
     itemsBySlug.get(foldSlug(item.repo))?.push(item);
   }
 
-  const reviews = reviewsBySlug(store, new Set(itemsBySlug.keys()), now);
+  const slugs = new Set(itemsBySlug.keys());
+  const reviews = reviewsBySlug(store, slugs, now);
+  const release = releaseReadings(
+    store,
+    repos,
+    now,
+    deps.policy,
+    deps.releaseTracked ?? (() => true),
+  );
 
   const byRepo = new Map<string, RepoAttention>();
   for (const [slug, items] of itemsBySlug) {
-    byRepo.set(slug, judge(items, reviews.get(slug) ?? [], deps));
+    byRepo.set(
+      slug,
+      judge(items, reviews.get(slug) ?? [], release.get(slug), deps),
+    );
   }
-  return { byRepo, queue };
+  return { byRepo, queue, release };
 }
 
 /**
  * One repository's tier: the maximum over its open queue items, raised to at
- * least `soon` by a review request older than the budget.
+ * least `soon` by a review request older than the budget or by an
+ * unreleased security fix.
  *
  * A wrapper over the batch form, so a page about one repository and a page
  * about all of them read the same computation.
@@ -297,7 +340,27 @@ export function repoAttention(
   deps: AttentionDeps,
   suppressed: SuppressedByFeature = {},
 ): RepoAttention {
-  const { byRepo } = attentionByRepo(store, [repo], now, deps, suppressed);
+  return repoAttentionWithRelease(store, repo, now, deps, suppressed).attention;
+}
+
+/**
+ * `repoAttention`, and the release reading the tier lift was judged on, so
+ * the repository page shows that same reading rather than reading it again.
+ */
+export function repoAttentionWithRelease(
+  store: StorePort,
+  repo: RepoRef,
+  now: Date,
+  deps: AttentionDeps,
+  suppressed: SuppressedByFeature = {},
+): { attention: RepoAttention; release: ReleaseReading | undefined } {
+  const { byRepo, release } = attentionByRepo(
+    store,
+    [repo],
+    now,
+    deps,
+    suppressed,
+  );
   const attention = byRepo.get(watchKey(repo));
   if (attention === undefined) {
     // Unreachable: the batch form seeds a group for every repository it was
@@ -305,5 +368,5 @@ export function repoAttention(
     // read a missing verdict as quiet.
     throw new Error(`no attention computed for ${watchKey(repo)}`);
   }
-  return attention;
+  return { attention, release: release.get(watchKey(repo)) };
 }

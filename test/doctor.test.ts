@@ -26,6 +26,7 @@ const READ_ONLY: Record<string, string> = {
   actions: "read",
   pull_requests: "read",
   issues: "read",
+  contents: "read",
 };
 
 /**
@@ -123,6 +124,7 @@ describe("required read permissions", () => {
     // credential rather than through a lane.
     expect(missingReads({ metadata: "read" })).toEqual([
       "actions",
+      "contents",
       "issues",
       "pull_requests",
       "secret_scanning_alerts",
@@ -139,7 +141,7 @@ describe("required read permissions", () => {
     );
     expect(report.ok).toBe(false);
     const text = formatReport(report);
-    expect(text).toContain("Missing 6 required read permissions");
+    expect(text).toContain("Missing 7 required read permissions");
     expect(text).toContain("the only EPSS-bearing endpoint");
   });
 

@@ -19,6 +19,7 @@ import {
   type BoardRow,
   type Chip,
   chipText,
+  type ReleaseCell,
   type Tile,
 } from "../attention/board.js";
 import type { FilteredQueue, QueueFilter } from "../attention/filter.js";
@@ -122,6 +123,7 @@ export const STYLE = `${TOKEN_STYLE}
   .chip.high { color: var(--high); font-weight: 400; }
   .chip.uncovered { color: var(--warn); font-style: normal; text-decoration: underline dotted; }
   .chip.unconfirmed { color: var(--muted); font-style: italic; }
+  .chip.untracked { color: var(--muted); font-style: normal; border: 1px dashed var(--muted); }
   .attest { color: var(--muted); font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; font-style: italic; margin: ${SPACE[2]} 0 0; }
   .attest.warn { color: var(--warn); }
   .shown { color: var(--muted); font-size: ${TYPE.small.size}; font-weight: 400; line-height: ${TYPE.small.lineHeight}; }
@@ -351,6 +353,42 @@ const CountChip: FC<{ chip: Chip; text?: string }> = ({
     }
   }
 };
+
+/**
+ * The Release cell (#196). Not a topic chip: never a count. `ready` links to
+ * the repository page's release section, with the summary on its title and
+ * on the why-line; `unconfirmed` is the same marker CountChip uses, with its
+ * reason on the title, so a value nobody collected never reads as `none`.
+ * `not tracked` is an opt-out, so it has its own outline and never wears
+ * `none`'s class.
+ */
+const ReleaseChip: FC<{ cell: ReleaseCell }> = ({ cell }) => {
+  switch (cell.state) {
+    case "ready":
+      return (
+        <a class="chip" href={cell.href} title={cell.summary}>
+          ready
+        </a>
+      );
+    case "none":
+      return <span class="chip zero">none</span>;
+    case "not-tracked":
+      return <span class="chip untracked">not tracked</span>;
+    case "unconfirmed":
+      return (
+        <span class="chip unconfirmed" title={cell.reason}>
+          unconfirmed
+        </span>
+      );
+  }
+};
+
+/**
+ * Columns the board shows on desktop after the why-line's row header: the
+ * second half of Repository, Tier, one per topic, Release and Last confirmed.
+ * The tablet's Signals cell is hidden on desktop and not counted.
+ */
+const WHY_COLSPAN = 1 + 1 + TOPICS.length + 1 + 1;
 
 /**
  * A lane of this tile's topic failed or stalled, so the count is a lower
@@ -625,6 +663,7 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
                 {t.label}
               </Th>
             ))}
+            <Th>Release</Th>
             <Th>Last confirmed</Th>
           </tr>
         </thead>
@@ -656,6 +695,9 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
                   <CountChip chip={row.chips[t.topic]} />
                 </Td>
               ))}
+              <Td label="Release" show>
+                <ReleaseChip cell={row.release} />
+              </Td>
               <Td class="fresh-cell" label="Last confirmed">
                 <FreshnessBadge freshness={row.freshness} age={row.age} />
               </Td>
@@ -664,7 +706,7 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
               <th scope="row" role="rowheader">
                 <span class="sr-only">why</span>
               </th>
-              <Td colspan={9} label="why">
+              <Td colspan={WHY_COLSPAN} label="why">
                 <span class="why">
                   {row.reason}
                   {/* The reason is on the chip's title too, but a title is
@@ -678,6 +720,9 @@ const BoardBody: FC<{ board: Board }> = ({ board }) => (
                   {row.chips.security.caveat === null
                     ? ""
                     : ` · ${row.chips.security.caveat}`}
+                  {row.release.state === "ready"
+                    ? ` · ready to release: ${row.release.summary}`
+                    : ""}
                   <SignalsRest rest={row.signalsRest} />
                 </span>
               </Td>
@@ -1784,9 +1829,122 @@ export const RepoPage: FC<{ view: RepoView; generatedAt: string }> = ({
       {TOPICS.map((t) => (
         <RepoSection key={t.topic} topic={t.topic} view={view} />
       ))}
+      <ReleaseSection view={view} />
     </section>
   </Layout>
 );
+
+/**
+ * What would go into a release (#196). Its own component and not a `Section`:
+ * Release is not a Topic, so it has no queue filter and no label in TOPICS.
+ * Every state says which absence it is; `unconfirmed` never reads as
+ * "nothing to release" (AD-28).
+ */
+const ReleaseSection: FC<{ view: RepoView }> = ({ view }) => {
+  const r = view.releaseSection;
+  const verdict = r.verdict;
+  return (
+    <>
+      <h2 id="release">
+        Release{" "}
+        {r.cell.state === "not-tracked" ? null : (
+          <FreshnessBadge freshness={r.freshness} age={r.age} />
+        )}
+      </h2>
+      {r.cell.state === "not-tracked" ? (
+        <p class="attest">Not tracked: release: false in repos.yaml.</p>
+      ) : verdict === null ? (
+        <p class="attest">
+          Release readiness has no current, complete reading for this repository
+          {r.cell.state === "unconfirmed" ? ` (${r.cell.reason})` : ""}, so
+          whether anything is worth releasing is unknown.
+        </p>
+      ) : (
+        <>
+          <p class="attest">
+            {verdict.tag === null
+              ? "no tag yet"
+              : `latest tag ${verdict.tag}${r.tagAge === null ? "" : ` (${r.tagAge})`}`}
+          </p>
+          {verdict.truncated ? (
+            <p class="attest warn">
+              More commits exist than were read, so the improvements below are a
+              lower bound.
+            </p>
+          ) : null}
+          {!verdict.ready ? (
+            <p class="attest">
+              {verdict.tag === null
+                ? "Nothing worth releasing yet."
+                : `Nothing worth releasing since ${verdict.tag}.`}
+            </p>
+          ) : (
+            <>
+              {verdict.securityFixes.length === 0 ? null : (
+                <table class="cards" role="table">
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <Th>Security fix</Th>
+                      <Th>Package</Th>
+                      <Th>Severity</Th>
+                      <Th>Fixed</Th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    {verdict.securityFixes.map((a) => (
+                      <tr key={`fix-${a.number}`} role="row">
+                        <Td label="Security fix">
+                          <ExternalLink href={a.htmlUrl}>
+                            {a.ghsaId ?? a.cveId ?? `#${a.number}`}
+                          </ExternalLink>
+                        </Td>
+                        <Td label="Package" show>
+                          {a.packageName ?? "unknown"}
+                        </Td>
+                        <Td label="Severity" show>
+                          {a.severity}
+                        </Td>
+                        <Td label="Fixed" show>
+                          {a.fixedAt.slice(0, 10)}
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {verdict.improvements.length === 0 ? null : (
+                <table class="cards" role="table">
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <Th>Improvement</Th>
+                      <Th>Kind</Th>
+                      <Th>Commit</Th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    {verdict.improvements.map((c) => (
+                      <tr key={`commit-${c.sha}`} role="row">
+                        <Td label="Improvement">{c.subject}</Td>
+                        <Td label="Kind" show>
+                          {c.kind}
+                        </Td>
+                        <Td label="Commit" show>
+                          <ExternalLink href={c.url}>
+                            {c.sha.slice(0, 7)}
+                          </ExternalLink>
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </>
+      )}
+    </>
+  );
+};
 
 const UNKNOWN_REPO_POLICY =
   "Only repositories listed in repos.yaml have a page; nothing is discovered.";

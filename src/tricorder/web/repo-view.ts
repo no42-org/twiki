@@ -13,6 +13,10 @@ import {
 } from "../../core/coverage.js";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import {
+  type ReleaseVerdict,
+  releaseSummary,
+} from "../../core/release-worthy.js";
+import {
   DEFAULT_HUNG_AFTER_MS,
   isBrokenVerdict,
   type RunVerdict,
@@ -33,6 +37,7 @@ import {
   laneAttestation,
   type SectionState,
 } from "../attention/attestation.js";
+import type { ReleaseCell } from "../attention/board.js";
 import {
   ageLabel,
   type Freshness,
@@ -50,7 +55,8 @@ import {
   readStatus,
   readWorkflowRun,
 } from "../attention/payloads.js";
-import { repoAttention } from "../attention/tiers.js";
+import { RELEASE_NOT_CONFIRMED } from "../attention/release.js";
+import { repoAttentionWithRelease } from "../attention/tiers.js";
 import type { RepoCodeScanningObservation } from "../collect/code-scanning.js";
 import {
   type CoverageObservation,
@@ -58,6 +64,7 @@ import {
 } from "../collect/coverage.js";
 import type { RepoObservation } from "../collect/dependabot-alerts.js";
 import { LANE as ISSUE_LANE } from "../collect/issues.js";
+import { LANE as RELEASE_LANE } from "../collect/release-readiness.js";
 import {
   REVIEWS_INSTALLATION,
   LANE as REVIEWS_LANE,
@@ -381,6 +388,18 @@ export interface RepoView {
   reviews: RepoReviewRow[];
   reviewSection: SectionState;
   /**
+   * What would go into a release (#196). Not a topic. `cell` is the board's
+   * own reading (`releaseReadings`), so the page cannot disagree with it;
+   * `verdict` and `tagDate` are set only when `cell` is `ready` or `none`.
+   */
+  releaseSection: SectionState & {
+    cell: ReleaseCell;
+    verdict: ReleaseVerdict | null;
+    tagDate: string | null;
+    /** `tagDate` as an age, e.g. `10d ago`; null when there is no date. */
+    tagAge: string | null;
+  };
+  /**
    * Rows stored for this repository that could not be read. Rendered, never
    * dropped: a page quietly missing items looks complete.
    */
@@ -428,6 +447,11 @@ export interface RepoViewDeps {
    * the Actions cadence, the same expression the lane's wiring uses.
    */
   hungAfterMs?: number;
+  /**
+   * False when repos.yaml opted this repository out with `release: false`,
+   * so the header's tier gets no release lift (#196). Absent means tracked.
+   */
+  releaseTracked?: (repo: RepoRef) => boolean;
   /**
    * What this repository calls its default branch, in production
    * `resolveDefaultBranch` bound to the loaded config (AD-33), or null when
@@ -592,7 +616,7 @@ export function buildRepoView(
   // and handed in, PER FEATURE, so a repository this page refuses to count a
   // feature's findings for is not at the same time judged `now` by one of
   // them - and a feature that is still on keeps its findings and its tier.
-  const attention = repoAttention(
+  const { attention, release } = repoAttentionWithRelease(
     store,
     repo,
     now,
@@ -604,6 +628,7 @@ export function buildRepoView(
       cutRank,
       reviewBudgetDays,
       hungAfterMs,
+      releaseTracked: deps.releaseTracked ?? (() => true),
       // One repository's page, so one branch: `repoAttention` keeps only this
       // repository's items and discards the rest, so a run in some other
       // repository judged against this branch reaches nothing. Constant
@@ -978,6 +1003,49 @@ export function buildRepoView(
     ].filter((s): s is string => typeof s === "string"),
   );
 
+  // The reading the header's tier was judged on, the board's own
+  // (`releaseReadings`), so the page, the tier and the Release cell cannot
+  // disagree. The lane's attestation supplies only the heading's freshness
+  // and age.
+  const releaseReading = release ?? {
+    state: "unconfirmed" as const,
+    reason: RELEASE_NOT_CONFIRMED,
+  };
+  const releaseLane = laneAttestation(
+    store,
+    RELEASE_LANE,
+    installation,
+    now,
+    alertPolicy,
+  );
+  const releaseSection: RepoView["releaseSection"] =
+    releaseReading.state === "confirmed"
+      ? {
+          ...releaseLane,
+          attested: true,
+          cell: releaseReading.verdict.ready
+            ? {
+                state: "ready",
+                summary: releaseSummary(releaseReading.verdict),
+                href: "#release",
+              }
+            : { state: "none" },
+          verdict: releaseReading.verdict,
+          tagDate: releaseReading.tagDate,
+          tagAge:
+            releaseReading.tagDate === null
+              ? null
+              : ageLabel(releaseReading.tagDate, now),
+        }
+      : {
+          ...releaseLane,
+          attested: false,
+          cell: releaseReading,
+          verdict: null,
+          tagDate: null,
+          tagAge: null,
+        };
+
   return {
     slug,
     coverageReasons,
@@ -1078,6 +1146,7 @@ export function buildRepoView(
       now,
       reviewPolicy,
     ),
+    releaseSection,
     unreadable,
     unattributable,
   };

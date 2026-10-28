@@ -8,6 +8,7 @@ import {
   type Config,
   loadConfig,
   resolveDefaultBranch,
+  resolveReleaseTracked,
 } from "./core/config.js";
 import {
   assertRankPolicy,
@@ -50,6 +51,11 @@ import {
   collectPullRequests,
   LANE as PULL_REQUEST_LANE,
 } from "./tricorder/collect/pull-requests.js";
+import {
+  collectReleaseReadiness,
+  LANE as RELEASE_READINESS_LANE,
+  type ReleaseReadinessDeps,
+} from "./tricorder/collect/release-readiness.js";
 import {
   collectReviewRequests,
   REVIEWS_INSTALLATION,
@@ -255,6 +261,8 @@ export function buildSchedules(deps: {
   /** Null when no reviewers are configured: the lane is absent, loudly. */
   reviewRequests: (() => Promise<{ outcome: RunOutcome }>) | null;
   updateStatuses: (installation: string) => Promise<{ outcome: RunOutcome }>;
+  /** What each tracked repository has shipped since its latest tag (#196). */
+  releaseReadiness: (installation: string) => Promise<{ outcome: RunOutcome }>;
   /**
    * Null only when the lane is switched off outright. It runs across every
    * installation now that its cost is measured; TRICORDER_ACTIONS_INSTALLATION
@@ -364,6 +372,15 @@ export function buildSchedules(deps: {
       cadenceMs: ALERT_CADENCE_MS,
       installations: deps.installations,
       run: deps.updateStatuses,
+    },
+    // The alert cadence, so it needs no `lanePolicies` entry: `policy`
+    // already is this cadence.
+    {
+      lane: RELEASE_READINESS_LANE,
+      scope: "full",
+      cadenceMs: ALERT_CADENCE_MS,
+      installations: deps.installations,
+      run: deps.releaseReadiness,
     },
     ...(deps.actionsRuns === null
       ? []
@@ -668,6 +685,9 @@ export function buildWebDeps(input: {
     // The same expression the lane's wiring uses, so a run the page paints as
     // broken is one the lane counted as failing.
     hungAfterMs: ACTIONS_CADENCE_MS * 2,
+    // The same accessor the release-readiness lane is wired with, so the
+    // board says `not tracked` for exactly the repositories it skips.
+    releaseTracked: (repo) => resolveReleaseTracked(config, repo),
     now,
   };
 }
@@ -849,6 +869,18 @@ async function main(): Promise<void> {
           : null,
       updateStatuses: (installation) =>
         collectUpdateStatuses(laneDeps, installation, "full"),
+      releaseReadiness: (installation) =>
+        collectReleaseReadiness(
+          {
+            ...laneDeps,
+            // Bound here so the lane never holds the config itself, the same
+            // binding the Actions lane makes for the default branch.
+            releaseTracked: (repo) => resolveReleaseTracked(config, repo),
+            defaultBranchOf: (repo) => resolveDefaultBranch(config, repo),
+          } satisfies Required<ReleaseReadinessDeps>,
+          installation,
+          "full",
+        ),
       // Case-folded like the installations it must match. assertSchedules
       // catches a typo, with one hole it cannot see: it validates against
       // cycleInstallations, which unions in KEV's pseudo-installation, so

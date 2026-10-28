@@ -14,6 +14,7 @@ import type { BoardDeps } from "../src/tricorder/attention/board.js";
 import type { QueueDeps } from "../src/tricorder/attention/queue.js";
 import { LANE as COVERAGE_LANE } from "../src/tricorder/collect/coverage.js";
 import { LANE as KEV_LANE } from "../src/tricorder/collect/kev.js";
+import type { ReleaseReadinessDeps } from "../src/tricorder/collect/release-readiness.js";
 import {
   LANE as ACTIONS_LANE,
   type ActionsDeps,
@@ -86,6 +87,7 @@ describe("the web role's wiring", () => {
       "now",
       "policy",
       "rankPolicy",
+      "releaseTracked",
       "reviewBudgetDays",
       "store",
       "watched",
@@ -112,6 +114,7 @@ describe("the web role's wiring", () => {
       // wiring uses, so the page and the lane call the same run hung.
       hungAfterMs: ACTIONS_CADENCE_MS * 2,
       defaultBranchOf: deps.defaultBranchOf,
+      releaseTracked: deps.releaseTracked,
       now,
     });
 
@@ -122,6 +125,32 @@ describe("the web role's wiring", () => {
       "master",
     );
     expect(deps.now()).toEqual(new Date("2026-09-08T00:00:00.000Z"));
+  });
+
+  it("binds the release opt-out to repos.yaml, the same accessor the lane uses", () => {
+    const optedOut = buildConfig({
+      mode: "shadow",
+      repos: [
+        { repo: "no42-org/legacy", release: false },
+        { repo: "no42-org/twiki" },
+      ],
+      bots: [],
+      reviewers: [],
+    });
+    const deps = buildWebDeps({
+      store,
+      config: optedOut,
+      attention,
+      now: () => new Date(),
+    });
+
+    expect(
+      [
+        { owner: "no42-org", name: "legacy" },
+        { owner: "No42-Org", name: "Legacy" },
+        { owner: "no42-org", name: "twiki" },
+      ].map(deps.releaseTracked),
+    ).toEqual([false, false, true]);
   });
 });
 
@@ -144,6 +173,7 @@ const webDeps = {
   reviewBudgetDays: 3,
   defaultBranchOf: () => "main",
   hungAfterMs: ACTIONS_CADENCE_MS * 2,
+  releaseTracked: () => true,
   now: () => new Date(),
 };
 
@@ -177,6 +207,12 @@ describe("Required<AppDeps>", () => {
     const { reviewBudgetDays: _budget, ...noReviewBudget } = webDeps;
     // @ts-expect-error the review budget cannot be dropped from the wiring
     wireWeb(noReviewBudget);
+
+    // repos.yaml `release: false`. Dropped, the board would read every
+    // opted-out repository as tracked and show a verdict for it (#196).
+    const { releaseTracked: _tracked, ...noReleaseTracked } = webDeps;
+    // @ts-expect-error the release opt-out cannot be dropped from the wiring
+    wireWeb(noReleaseTracked);
 
     expect(wireWeb(webDeps)).toBe(webDeps);
   });
@@ -253,6 +289,36 @@ describe("Required<ActionsDeps>", () => {
   });
 });
 
+/** Everything the release-readiness lane's literal supplies. */
+const releaseDeps = {
+  github,
+  store,
+  watchedIn: () => [] as readonly RepoRef[],
+  releaseTracked: () => true,
+  defaultBranchOf: () => "main",
+  now: () => "2026-10-28T00:00:00.000Z",
+  log: () => {},
+};
+const wireRelease = (
+  deps: Required<ReleaseReadinessDeps>,
+): Required<ReleaseReadinessDeps> => deps;
+
+describe("Required<ReleaseReadinessDeps>", () => {
+  it("rejects a literal missing either config binding", () => {
+    // Both come from repos.yaml. Dropped, the lane would either sweep a
+    // repository the operator opted out of or read the wrong branch.
+    const { releaseTracked: _tracked, ...noReleaseTracked } = releaseDeps;
+    // @ts-expect-error the opt-out cannot be dropped from the wiring
+    wireRelease(noReleaseTracked);
+
+    const { defaultBranchOf: _branch, ...noDefaultBranch } = releaseDeps;
+    // @ts-expect-error the default-branch resolver cannot be dropped
+    wireRelease(noDefaultBranch);
+
+    expect(wireRelease(releaseDeps)).toBe(releaseDeps);
+  });
+});
+
 // The three INNER hops, the ones `buildWebDeps` cannot see. Each route used
 // to build a fresh literal for its builder with no assertion on it at all, so
 // a binding dropped between the resolved environment and a builder fell back
@@ -288,6 +354,7 @@ const appDeps: AppDeps = {
   reviewBudgetDays: 9,
   hungAfterMs: 5_000,
   defaultBranchOf: (repo) => (repo.name === "legacy" ? "master" : "main"),
+  releaseTracked: (repo) => repo.name !== "legacy",
   now: () => new Date("2026-09-09T00:00:00.000Z"),
 };
 
@@ -310,6 +377,8 @@ describe("the routes' own wiring", () => {
       // A wrapper round the caller's resolver, so the comparison above cannot
       // see through it; asserted by behaviour below.
       defaultBranchOf: resolved.defaultBranchOf,
+      // The caller's own function, passed through untouched.
+      releaseTracked: appDeps.releaseTracked,
     });
     expect(
       resolved.defaultBranchOf({ owner: "no42-org", name: "legacy" }),
@@ -328,6 +397,10 @@ describe("the routes' own wiring", () => {
     expect(bare.coveragePolicy).toEqual({ cadenceMs: 1_000 });
     expect(bare.kevPolicy).toEqual({ cadenceMs: 1_000 });
     expect(bare.actionsPolicy).toEqual({ cadenceMs: 1_000 });
+    // An absent `release` key means tracked, so the default tracks all.
+    expect(bare.releaseTracked({ owner: "no42-org", name: "legacy" })).toBe(
+      true,
+    );
     // `{}` and not undefined: the field is required at the builders now, and
     // the health table reads a lane absent from it as judged on `policy`.
     expect(bare.lanePolicies).toEqual({});
@@ -345,6 +418,7 @@ describe("the routes' own wiring", () => {
       reviewBudgetDays: 9,
       hungAfterMs: 5_000,
       defaultBranchOf: resolved.defaultBranchOf,
+      releaseTracked: appDeps.releaseTracked,
     });
   });
 
@@ -371,6 +445,7 @@ describe("the routes' own wiring", () => {
       cutRank: 41,
       reviewBudgetDays: 9,
       hungAfterMs: 5_000,
+      releaseTracked: appDeps.releaseTracked,
       defaultBranch: "master",
     });
   });
@@ -402,6 +477,10 @@ describe("Required<BoardDeps>", () => {
     const { lanePolicies: _lanes, ...noLanePolicies } = board;
     // @ts-expect-error the lane cadences cannot be dropped from the wiring
     wireBoard(noLanePolicies);
+
+    const { releaseTracked: _tracked, ...noReleaseTracked } = board;
+    // @ts-expect-error the release opt-out cannot be dropped from the wiring
+    wireBoard(noReleaseTracked);
 
     expect(wireBoard(board)).toBe(board);
   });
@@ -453,7 +532,7 @@ describe("Required<QueueDeps>", () => {
 
 describe("Required<RepoViewDeps>", () => {
   it("rejects a literal missing any binding", () => {
-    // All six optional members, not the two somebody worried about: the
+    // All seven optional members, not the two somebody worried about: the
     // annotation covers every one, and a demonstration that covers a subset
     // is the shape this file exists to argue against.
     const { coveragePolicy: _coverage, ...noCoveragePolicy } = repoView;
@@ -481,6 +560,12 @@ describe("Required<RepoViewDeps>", () => {
     const { hungAfterMs: _hung, ...noHungAfterMs } = repoView;
     // @ts-expect-error the hung threshold cannot be dropped from the wiring
     wireRepoView(noHungAfterMs);
+
+    // repos.yaml `release: false`. Dropped, the page header would lift an
+    // opted-out repository the overview calls not tracked (#196).
+    const { releaseTracked: _tracked, ...noReleaseTracked } = repoView;
+    // @ts-expect-error the release opt-out cannot be dropped from the wiring
+    wireRepoView(noReleaseTracked);
 
     expect(wireRepoView(repoView)).toBe(repoView);
   });
