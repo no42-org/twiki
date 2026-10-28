@@ -5,7 +5,7 @@ Source code and CI comments cite these decisions by number.
 
 | Document | Covers |
 | --- | --- |
-| [dependabot-release-agent.md](dependabot-release-agent.md) | The agent itself: advisor/executor split, gates, statelessness, release-by-tag, App auth |
+| [dependabot-release-agent.md](dependabot-release-agent.md) | The agent itself: advisor/executor split, gates, statelessness, App auth. Its release-by-tag part is superseded (#197): twiki no longer releases |
 | [ci-release-pipeline.md](ci-release-pipeline.md) | Release workflow, versioning, image publishing, supply-chain hardening |
 | [ci-remediation.md](ci-remediation.md) | Bounded CI re-runs and rebase handling |
 

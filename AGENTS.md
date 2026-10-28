@@ -18,7 +18,7 @@ Releases: bump `package.json`, commit, tag `vX.Y.Z`, push. See `RELEASING.md`.
 
 Two roles from one image, sharing one SQLite file in WAL mode.
 
-- **twiki** (`src/twiki/`) is the write side. It gathers facts per repo, asks an LLM advisor for a merge/release plan, and executes it. `shadow` reports what it would do; `enforce` acts. The advisor returns a plan through one tool and has no GitHub-mutating tool of its own.
+- **twiki** (`src/twiki/`) is the write side. It gathers facts per repo, asks an LLM advisor for a merge plan, and executes it. It never releases; gitricorder's Release column informs the human who does. `shadow` reports what it would do; `enforce` acts. The advisor returns a plan through one tool and has no GitHub-mutating tool of its own.
 - **gitricorder** (`src/tricorder/`) is the read side: collection lanes sweep alerts, CI failures, issues, update PRs and review requests into a store, and a web process serves them as one ranked queue. It authenticates as a **separate, read-only App** — that separation is the point, so do not merge the credentials.
 - `src/core/` is pure and shared. `src/github/` is the port and its Octokit adapter. A lint rule enforces the module boundary; if it fails, the fix is the layering, not the rule.
 

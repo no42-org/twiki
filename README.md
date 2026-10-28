@@ -5,15 +5,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Autonomous Dependabot/Security PR manager for a set of GitHub repositories.
-It merges green dependency PRs that are within policy, batch-cuts a single
-patch release once the queue settles, and reports to chat — **safe by
-construction**.
+It merges green dependency PRs that are within policy and reports to chat.
+It never releases: humans tag, and gitricorder's Release column tells them when a repository is worth it.
+It is **safe by construction**.
 
 ## Safety model (read this first)
 
-twiki is an autonomous actor with merge and release authority across many
-repos, and its LLM reads *untrusted third-party changelog text*. The
-architecture makes that safe structurally, not by instruction:
+twiki is an autonomous actor with merge authority across many repos, and its LLM reads *untrusted third-party changelog text*.
+The architecture makes that safe structurally, not by instruction:
 
 ```
    facts ──▶ LLM advisor (NO write tools) ──▶ typed JSON plan ──▶ executor
@@ -21,50 +20,28 @@ architecture makes that safe structurally, not by instruction:
                                                                  shadow: log │ enforce: act
 ```
 
-- **The LLM never touches GitHub.** It only emits a plan (`merge`/`hold` per PR,
-  `release`/`wait` per repo). Only the deterministic executor calls the API.
-- **Gates are code, re-validated at execution time** — never merge if CI isn't
-  green, never auto-merge a major, never release if `main` is red, only act on
-  allowlisted repos. The plan can only *narrow* outcomes.
-- **Prompt-injection is contained.** A poisoned changelog can at worst push the
-  advisor toward `hold` (more conservative); it can never manufacture a merge or
-  release. (See `test/injection.test.ts`.)
+- **The LLM never touches GitHub.** It only emits a plan: `merge` or `hold` per PR. Only the deterministic executor calls the API.
+- **Gates are code, re-validated at execution time.** Never merge if CI isn't green, never auto-merge a major, only act on allowlisted repos. The plan can only *narrow* outcomes.
+- **Prompt-injection is contained.** A poisoned changelog can at worst push the advisor toward `hold`, which is more conservative. It can never manufacture a merge. (See `test/injection.test.ts`.)
 
 ## How it decides
 
 - **Auto-merge:** patch + minor bumps when green (minor configurable per repo).
   Majors are never auto-merged — they're flagged for a human; security majors
   are flagged urgently.
-- **Batch release ("settled"):** cut one patch release for a repo only when
-  *(a)* no open Dependabot PR remains that policy would merge, *(b)* `main` is
-  green, and *(c)* there are merged-but-unreleased dependency commits. A stuck
-  red PR doesn't block — it's reported.
-- **Release mechanism:** the executor pushes the next `vX.Y.Z+1` tag; each
-  repo's own tag-triggered workflow builds/publishes. Repos without one are
-  reported as merge-only.
+- **No releases:** twiki never pushes a tag. A human decides when to release, and gitricorder's Release column shows which repositories have an unreleased security fix or improvement.
 - **Stateless:** every tick re-derives truth from GitHub, so skipped or repeated
   runs self-heal.
 
 ## Configure
 
-Copy `repos.example.yaml` to `repos.yaml` and list your repos (see that file for per-repo `autoMergeMinor`, `mergeOnly`, `defaultBranch` and `versionSources` overrides).
+Copy `repos.example.yaml` to `repos.yaml` and list your repos (see that file for per-repo `autoMergeMinor`, `defaultBranch` and `release` overrides).
 
 `defaultBranch` is what the repository calls its default branch.
 Absent means `main`, so only a repository on something else needs the line.
 Write the branch name, not a ref: `master`, never `refs/heads/master`.
 The declaration is what the read side will sort workflow runs by, and against the wrong name a failed build on the real default branch would read as a build on just another branch.
 `tricorder doctor` compares the declaration against what GitHub reports and names any disagreement.
-
-`versionSources` is where the repository's tree carries its version: a file, and a pattern with exactly one capture group.
-Before pushing a tag, twiki reads those files at the exact commit it is about to tag and compares what they say against the version it computed.
-A disagreement blocks the release, writes nothing, and says in the digest which file said what.
-So does a declared file that is not there at that commit, a pattern that finds no version, and a pattern that matches in more than one place, because none of those identifies a version either.
-twiki never edits the tree: a human lands the bump, and the next tick releases.
-Until that bump lands, a settled repository reports the same block on every tick.
-That repetition is the check working, not a fault: the repository is ready to release and its tree says otherwise, and that stays true until somebody changes it.
-A repository with no tag yet computes `v0.0.1` for its first release, so a declared source has to say `0.0.1` before that release will go out.
-Absent means the tree carries no version, which is a real answer and not an opt-out.
-A repository that declares nothing releases exactly as it did before, and no file is read for it.
 
 ### Environment
 
@@ -95,12 +72,11 @@ set), otherwise the digest is printed to **stdout**.
 
 ## GitHub App setup
 
-twiki authenticates as a GitHub App so merges/tags show as `twiki[bot]`,
-tokens are short-lived, and the blast radius is scoped per install.
+twiki authenticates as a GitHub App so merges show as `twiki[bot]`, tokens are short-lived, and the blast radius is scoped per install.
 
 1. Create a GitHub App (org → Settings → Developer settings → GitHub Apps).
 2. Grant these **repository permissions**:
-   - **Contents:** Read & write (push tags, read workflow files, compare commits)
+   - **Contents:** Read & write (merge pull requests, compare commits)
    - **Pull requests:** Read & write (merge, post `@dependabot rebase`)
    - **Actions:** Read & write (re-run failed CI jobs — CI remediation)
    - **Checks:** Read-only
@@ -126,8 +102,7 @@ with copy-paste examples for **Slack**, **Discord**, and **Matrix**.
 
 ## Rollout
 
-1. Deploy in **shadow** mode (`mode: shadow`). twiki posts what it *would*
-   merge/release and writes nothing.
+1. Deploy in **shadow** mode (`mode: shadow`). twiki posts what it *would* merge and writes nothing.
 2. Watch the digests across several daily cycles; confirm they match your
    judgment.
 3. Flip to **enforce** (`mode: enforce` or `TWIKI_MODE=enforce`).
@@ -167,10 +142,9 @@ Release is not a topic: it has no tile and no `/queue` filter.
 
 ### The read-only GitHub App
 
-gitricorder uses **its own App**, separate from twiki's. This is the point, not
-an inconvenience: twiki's App can merge, tag and re-run, and the dashboard must
-hold no such capability. Sharing one credential would hand the read side the
-ability to write.
+gitricorder uses **its own App**, separate from twiki's.
+This is the point, not an inconvenience: twiki's App can merge and re-run, and the dashboard must hold no such capability.
+Sharing one credential would hand the read side the ability to write.
 
 Create a new GitHub App and grant **read-only** on exactly these, nothing more:
 
@@ -394,7 +368,7 @@ src/
   tricorder.ts     entrypoint: role dispatch, store open, server (gitricorder)
   core/            shared domain, a closed leaf (see "Module boundaries" below)
     config.ts      allowlist + per-repo policy (strict YAML schema)
-    semver.ts      bump classification + next-patch tag (pure)
+    semver.ts      bump classification + newest stable tag (pure)
     types.ts       domain types
   github/          read/write ports, App auth, Octokit adapter
     port.ts        GitHubRepoReadPort, GitHubAccountReadPort, GitHubReadPort,
@@ -402,7 +376,7 @@ src/
     auth.ts        GitHub App auth + installation token cache
     octokit-adapter.ts   the one adapter, implements both halves
   twiki/           the write side: everything that decides or mutates
-    gates.ts       deterministic safety gates + "settled" predicate (pure)
+    gates.ts       deterministic safety gates (pure)
     plan.ts        the advisor's typed output contract (zod + JSON schema)
     advisor.ts     LLM advisor, one output tool, no write tools
     facts.ts       stateless per-tick fact gathering
@@ -435,7 +409,7 @@ both entrypoints would need it. If only one would, it does not go in `core/`.
 
 `src/twiki/` is the write side. `src/github/` splits its port along two axes.
 
-The first is mutation. `GitHubReadPort` has no mutating method and `GitHubWritePort` has only mutating ones, so a consumer given the read port cannot merge, tag or re-run anything: the type has no such member. `test/ports.test.ts` pins that with `@ts-expect-error`, so a write method leaking onto the read port fails typecheck rather than review.
+The first is mutation. `GitHubReadPort` has no mutating method and `GitHubWritePort` has only mutating ones, so a consumer given the read port cannot merge or re-run anything: the type has no such member. `test/ports.test.ts` pins that with `@ts-expect-error`, so a write method leaking onto the read port fails typecheck rather than review.
 
 The second is what a call names. `GitHubRepoReadPort` names a repository and resolves its installation from that repository, so it works whoever owns it. `GitHubAccountReadPort` names an account, which takes an installation resolved by account plus the account's kind, because a GitHub App on a user account has no org-level endpoint. `GitHubReadPort` is their union, which gitricorder's collector consumes.
 
