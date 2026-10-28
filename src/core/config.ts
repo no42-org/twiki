@@ -25,6 +25,11 @@ const RepoEntrySchema = z.strictObject({
   autoMergeMinor: z.boolean().optional(),
   mergeOnly: z.boolean().optional(),
   /**
+   * `false` opts this repository out of gitricorder's release signal; absent
+   * means tracked. Read by gitricorder only, so it is not part of RepoPolicy.
+   */
+  release: z.boolean().optional(),
+  /**
    * What this repository calls its default branch; absent means `main`.
    *
    * A branch NAME, not a ref. Two shapes an operator plausibly writes could
@@ -160,6 +165,11 @@ export interface Config {
    * way in, and this is it. Read both through the accessors below.
    */
   declaredSlugs: Map<string, string>;
+  /**
+   * Case-folded (`watchKey`) slugs declared `release: false`. Kept out of
+   * RepoPolicy because twiki does not read it. Use `resolveReleaseTracked`.
+   */
+  releaseUntracked: ReadonlySet<string>;
   /** CI-remediation settings. */
   remediation: RemediationConfig;
   /** Dependency-update bot actors (AD-19). Empty when none are configured. */
@@ -253,6 +263,7 @@ export function buildConfig(
   const repos: RepoRef[] = [];
   const policies = new Map<string, RepoPolicy>();
   const declaredSlugs = new Map<string, string>();
+  const releaseUntracked = new Set<string>();
   for (const entry of raw.repos) {
     const ref = parseRepoSlug(entry.repo);
     const slug = repoSlug(ref);
@@ -277,12 +288,14 @@ export function buildConfig(
       versionSources: entry.versionSources ?? DEFAULT_POLICY.versionSources,
     });
     declaredSlugs.set(key, slug);
+    if (entry.release === false) releaseUntracked.add(key);
   }
   return {
     mode: modeOverride ?? raw.mode,
     repos,
     policies,
     declaredSlugs,
+    releaseUntracked,
     remediation,
     bots: raw.bots ?? [],
     reviewers: raw.reviewers ?? [],
@@ -328,6 +341,16 @@ export function resolveDefaultBranch(config: Config, repo: RepoRef): string {
   // holding the value would be two copies kept in step by hand.
   const policy = slug === undefined ? undefined : config.policies.get(slug);
   return policy?.defaultBranch ?? DEFAULT_POLICY.defaultBranch;
+}
+
+/**
+ * Whether gitricorder tracks the release signal for a repository.
+ *
+ * Folded through `watchKey` like `resolveDefaultBranch`. Absent or undeclared
+ * answers `true`: only an explicit `release: false` opts a repository out.
+ */
+export function resolveReleaseTracked(config: Config, repo: RepoRef): boolean {
+  return !config.releaseUntracked.has(watchKey(repo));
 }
 
 /**

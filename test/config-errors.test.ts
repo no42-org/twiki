@@ -7,7 +7,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadConfig, resolveDefaultBranch } from "../src/core/config.js";
+import {
+  loadConfig,
+  resolveDefaultBranch,
+  resolveReleaseTracked,
+} from "../src/core/config.js";
 
 // Unwrapped, a schema failure surfaced as zod's serialised issue array plus a
 // stack trace into config.ts - naming the parser and never the config file the
@@ -386,6 +390,50 @@ describe("a rejected config says which file and what is wrong", () => {
     expect(config.policies.get("no42-org/b")?.versionSources).toEqual([]);
   });
 
+  it("release: false opts a repository out of the release signal", () => {
+    const p = write(
+      "repos.yaml",
+      "mode: shadow\nrepos:\n  - repo: No42-Org/Tools\n    release: false\n",
+    );
+    const config = loadConfig(p);
+    expect(
+      resolveReleaseTracked(config, { owner: "no42-org", name: "tools" }),
+    ).toBe(false);
+  });
+
+  it("a repository without the release key is tracked", () => {
+    const p = write(
+      "repos.yaml",
+      "mode: shadow\nrepos:\n  - repo: no42-org/a\n    release: true\n  - repo: no42-org/b\n",
+    );
+    const config = loadConfig(p);
+    expect(
+      resolveReleaseTracked(config, { owner: "no42-org", name: "a" }),
+    ).toBe(true);
+    expect(
+      resolveReleaseTracked(config, { owner: "no42-org", name: "b" }),
+    ).toBe(true);
+    // Not declared at all: absence of a declaration is not an opt-out.
+    expect(
+      resolveReleaseTracked(config, { owner: "no42-org", name: "other" }),
+    ).toBe(true);
+  });
+
+  it("rejects a non-boolean release value", () => {
+    const p = write(
+      "repos.yaml",
+      'mode: shadow\nrepos:\n  - repo: no42-org/a\n    release: "no"\n',
+    );
+    try {
+      loadConfig(p);
+      expect.unreachable("a string release value must be rejected");
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain(p);
+      expect(msg).toContain("repos[0].release");
+    }
+  });
+
   it("parses the example config this repository ships", () => {
     // The file the README tells every operator to copy. Nothing else parses
     // it, so a misspelled key here would break first startup with the whole
@@ -405,6 +453,9 @@ describe("a rejected config says which file and what is wrong", () => {
         name: "example-service",
       }),
     ).toBe("main");
+    expect(
+      resolveReleaseTracked(config, { owner: "no42-org", name: "scripts" }),
+    ).toBe(false);
     // Every pattern the example ships is compiled by the strict parse, so a
     // documented pattern that could never identify a version fails here.
     expect(
