@@ -39,6 +39,15 @@ export interface ReleaseEvidence {
   fixedAlerts: readonly FixedAlertRef[];
 }
 
+/**
+ * What the lane stores for a repository whose reads threw: why, and no
+ * evidence. The reason is the error message, which names the repository and
+ * the cause, e.g. a tag off the default branch.
+ */
+export interface ReleaseReadFailure {
+  readFailed: string;
+}
+
 export interface ReleaseVerdict {
   ready: boolean;
   tag: string | null;

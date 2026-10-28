@@ -1467,6 +1467,103 @@ describe("the per-repository view (CAP-7)", () => {
       expect(section).not.toContain("Nothing worth releasing");
     });
 
+    describe("after a partial run, each repository reads on its own", () => {
+      const OTHER = { owner: "no42-org", name: "other" };
+      const DIVERGED =
+        "comparison v1.2.0...main for no42-org/twiki: tag v1.2.0 is not reachable from main (the comparison diverged)";
+      const seedPartial = (rows: { repo: typeof REPO; payload: unknown }[]) => {
+        const r = store.beginRun({
+          lane: RELEASE_LANE,
+          installation: "no42-org",
+          scope: "full",
+          startedAt: "2026-08-20T11:55:00.000Z",
+        });
+        store.recordObservations(
+          r,
+          "2026-08-20T11:55:00.000Z",
+          rows.map(({ repo, payload }) => ({
+            subject: releaseSubject(repo),
+            payload,
+          })) as never[],
+        );
+        store.finishRun(
+          r,
+          "partial",
+          "2026-08-20T11:55:00.000Z",
+          "1 repositories failed",
+        );
+      };
+
+      it("confirms this repository when only a sibling failed", () => {
+        seedPartial([
+          { repo: REPO, payload: EVIDENCE },
+          { repo: OTHER, payload: { readFailed: "boom" } },
+        ]);
+
+        expect(buildRepoView(store, REPO, NOW, DEPS).releaseSection).toEqual({
+          attested: true,
+          freshness: "fresh",
+          age: "5m ago",
+          cell: {
+            state: "ready",
+            summary:
+              "1 security fix (high, lodash) · 1 feature, 1 perf since v1.2.0",
+            href: "#release",
+          },
+          verdict: {
+            ready: true,
+            tag: "v1.2.0",
+            securityFixes: EVIDENCE.fixedAlerts,
+            improvements: [
+              { ...EVIDENCE.commits[0], kind: "feat" },
+              { ...EVIDENCE.commits[1], kind: "perf" },
+            ],
+            truncated: false,
+          },
+          tagDate: "2026-08-10T12:00:00.000Z",
+          tagAge: "10d ago",
+        });
+      });
+
+      it("says unconfirmed and names the failure when this repository's read failed", () => {
+        seedPartial([
+          { repo: REPO, payload: { readFailed: DIVERGED } },
+          { repo: OTHER, payload: EVIDENCE },
+        ]);
+
+        expect(buildRepoView(store, REPO, NOW, DEPS).releaseSection).toEqual({
+          attested: false,
+          freshness: "fresh",
+          age: "5m ago",
+          cell: { state: "unconfirmed", reason: DIVERGED },
+          verdict: null,
+          tagDate: null,
+          tagAge: null,
+        });
+      });
+    });
+
+    it("reads the release rows once for the whole page", () => {
+      // The header's tier and the Release section read one reading, so
+      // they cannot disagree and the store is not read twice for it.
+      seedRelease(EVIDENCE);
+      const reads = new Map<string, number>();
+      const counted = new Proxy(store, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver);
+          if (prop !== "currentByType") return value;
+          return (type: string) => {
+            reads.set(type, (reads.get(type) ?? 0) + 1);
+            return target.currentByType(type as never);
+          };
+        },
+      });
+
+      buildRepoView(counted, REPO, NOW, DEPS);
+
+      expect(reads.get("release_readiness")).toBe(1);
+    });
+
     it("says unconfirmed, never nothing to release, when the read was truncated and nothing read counts", async () => {
       seedRelease({
         ...EVIDENCE,

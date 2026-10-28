@@ -5,7 +5,10 @@
 
 import { safeLog } from "../../core/log.js";
 import { redact } from "../../core/redact.js";
-import type { ReleaseEvidence } from "../../core/release-worthy.js";
+import type {
+  ReleaseEvidence,
+  ReleaseReadFailure,
+} from "../../core/release-worthy.js";
 import { releaseSubject } from "../../core/subject.js";
 import type { RepoRef } from "../../core/types.js";
 import type { GitHubReadPort } from "../../github/port.js";
@@ -74,11 +77,16 @@ export async function collectReleaseReadiness(
           observations.push({ subject: releaseSubject(repo), payload });
         } catch (err) {
           // One repository's failure degrades the run; it does not end it.
+          // Its row says why, so it reads unconfirmed on its own and its
+          // siblings keep their readings.
           failedRepos++;
+          const reason = redact(
+            err instanceof Error ? err.message : String(err),
+          );
+          const payload: ReleaseReadFailure = { readFailed: reason };
+          observations.push({ subject: releaseSubject(repo), payload });
           log(
-            `${LANE} ${installation}: ${repo.owner}/${repo.name} failed, ${redact(
-              err instanceof Error ? err.message : String(err),
-            )}`,
+            `${LANE} ${installation}: ${repo.owner}/${repo.name} failed, ${reason}`,
           );
         }
       }
@@ -86,8 +94,9 @@ export async function collectReleaseReadiness(
       deps.store.recordObservations(run, deps.now(), observations);
 
       // A row goes when its repository left the allowlist or opted out, and
-      // only on a clean full sweep: a partial one may simply have failed to
-      // reach a repository that is still tracked. On a clean sweep every
+      // only on a clean full sweep. A partial sweep also writes a row for
+      // every tracked repository, a failed read included, but a retraction is
+      // kept off any run that failed somewhere. On a clean sweep every
       // tracked repository was observed, so "not seen" is exactly "no longer
       // watched or no longer tracked".
       const outcome: RunOutcome = failedRepos > 0 ? "partial" : "ok";
@@ -109,8 +118,9 @@ export async function collectReleaseReadiness(
         deps.now(),
         failedRepos > 0 ? `${failedRepos} repositories failed` : undefined,
       );
-      log(`${LANE} ${installation}: ${observations.length} repositories`);
-      return { installation, outcome, repos: observations.length };
+      const read = observations.length - failedRepos;
+      log(`${LANE} ${installation}: ${read} repositories`);
+      return { installation, outcome, repos: read };
     },
   );
 }

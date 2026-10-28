@@ -188,8 +188,11 @@ export interface Board {
   };
   tiles: Tile[];
   /**
-   * `now` rows first, then `soon`, each in chain order, then quiet
-   * repositories that are ready to release, by slug.
+   * `now` rows first, then `soon`, then quiet repositories that are ready to
+   * release. Within each, by the chain order of the item that gave the
+   * repository its tier; rows with no such item (lifted by a review or a
+   * release alone, or quiet with no open item) after those that have one;
+   * then by slug.
    */
   rows: BoardRow[];
   /**
@@ -423,9 +426,14 @@ export function buildBoard(
     // table and the chip must judge one lane on one budget.
     [ACTIONS_LANE]: deps.actionsPolicy,
   });
+  // A lane with no tile, release readiness, collected nothing a tile counts,
+  // so its run alone does not end "never collected".
   const collected =
-    health.some((h) => h.outcome === "ok" || h.outcome === "partial") ||
-    confirmations.size > 0;
+    health.some(
+      (h) =>
+        (h.outcome === "ok" || h.outcome === "partial") &&
+        laneTopic(h.lane)?.topic !== null,
+    ) || confirmations.size > 0;
   const owners = new Set(
     [...repos.values()].map((repo) => repo.owner.toLowerCase()),
   );
@@ -879,9 +887,10 @@ export function buildBoard(
   }
 
   // `now` before `soon` before quiet-but-ready; within a tier, the chain
-  // order of the item that gave the repository its tier, with rows lifted by
-  // a review or a release alone after every item-bearing row; then the slug,
-  // so ties never reshuffle.
+  // order of the item that gave the repository its tier, with rows that have
+  // no such item (lifted by a review or a release alone, or quiet with no
+  // open item) after every item-bearing row; then the slug, so ties never
+  // reshuffle.
   const TIER_INDEX: Record<Tier, number> = { now: 0, soon: 1, quiet: 2 };
   judged.sort((a, b) => {
     const byTier = TIER_INDEX[a.row.tier] - TIER_INDEX[b.row.tier];

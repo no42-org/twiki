@@ -7,6 +7,7 @@ import type {
   CommitRef,
   FixedAlertRef,
   ReleaseEvidence,
+  ReleaseReadFailure,
 } from "../../core/release-worthy.js";
 import type { CodeScanningAlertObservation } from "../collect/code-scanning.js";
 import type { AlertObservation } from "../collect/dependabot-alerts.js";
@@ -99,6 +100,13 @@ export function readReleaseEvidence(payload: unknown): ReleaseEvidence | null {
     return null;
   }
   return e;
+}
+
+/** The reason a release row records a failed read, or null for any other shape. */
+export function readReleaseFailure(payload: unknown): string | null {
+  const f = payload as ReleaseReadFailure | null | undefined;
+  if (!f || typeof f !== "object") return null;
+  return typeof f.readFailed === "string" ? f.readFailed : null;
 }
 
 /**

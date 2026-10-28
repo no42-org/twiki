@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommitRef, ReleaseEvidence } from "../src/core/release-worthy.js";
 import type { RepoRef } from "../src/core/types.js";
+import { releaseReadings } from "../src/tricorder/attention/release.js";
 import {
   collectReleaseReadiness,
   LANE,
@@ -231,8 +232,10 @@ describe("the release-readiness lane", () => {
       outcome: "partial",
       repos: 1,
     });
+    // other's older evidence is replaced by a row saying its read failed
+    // and why, so the reading says that rather than an old verdict.
     expect(current()).toEqual([
-      { key: "no42-org/other", payload: TWIKI_EVIDENCE },
+      { key: "no42-org/other", payload: { readFailed: "Not Found" } },
       { key: "no42-org/twiki", payload: changed },
     ]);
     expect(store.latestRuns(1)[0]).toMatchObject({
@@ -240,6 +243,85 @@ describe("the release-readiness lane", () => {
       detail: "1 repositories failed",
     });
     expect(logs.some((l) => l.includes("no42-org/other failed"))).toBe(true);
+  });
+
+  describe("one failing repository degrades only itself", () => {
+    const POLICY = { cadenceMs: 15 * 60_000 };
+    const TWIKI = { owner: "no42-org", name: "twiki" };
+    const OTHER = { owner: "no42-org", name: "other" };
+    /** Every reading, as the board, the tier lift and the repo page see it. */
+    const readings = () =>
+      Object.fromEntries(
+        releaseReadings(
+          store,
+          new Map([
+            ["no42-org/twiki", TWIKI],
+            ["no42-org/other", OTHER],
+          ]),
+          new Date(Date.UTC(2026, 9, 28, 12, 30)),
+          POLICY,
+          () => true,
+        ),
+      );
+    const twikiReady = {
+      state: "confirmed",
+      verdict: {
+        ready: true,
+        truncated: false,
+        tag: "v1.2.3",
+        securityFixes: TWIKI_EVIDENCE.fixedAlerts,
+        improvements: [{ ...FEAT, kind: "feat" }],
+      },
+      tagDate: "2026-10-01T10:00:00Z",
+      verifiedAt: expect.any(String),
+    };
+
+    beforeEach(() => {
+      watched.push(OTHER);
+      data.set("no42-org/twiki", seeded(TWIKI_EVIDENCE));
+      data.set("no42-org/other", seeded(TWIKI_EVIDENCE));
+    });
+
+    it("keeps the sibling confirmed and names the failure on the failed one", async () => {
+      github.failUnreleasedCommitsWith(
+        "no42-org/other",
+        new Error(
+          "comparison v1.2.3...main for no42-org/other failed: Not Found",
+        ),
+      );
+
+      const r = await collectReleaseReadiness(deps(), "no42-org", "full");
+
+      expect(r.outcome).toBe("partial");
+      expect(readings()).toEqual({
+        "no42-org/twiki": twikiReady,
+        "no42-org/other": {
+          state: "unconfirmed",
+          reason:
+            "comparison v1.2.3...main for no42-org/other failed: Not Found",
+        },
+      });
+    });
+
+    it("names the diverged tag and does not blank the sibling", async () => {
+      github.failUnreleasedCommitsWith(
+        "no42-org/other",
+        new Error(
+          "comparison v1.2.3...main for no42-org/other: tag v1.2.3 is not reachable from main (the comparison diverged)",
+        ),
+      );
+
+      await collectReleaseReadiness(deps(), "no42-org", "full");
+
+      expect(readings()).toEqual({
+        "no42-org/twiki": twikiReady,
+        "no42-org/other": {
+          state: "unconfirmed",
+          reason:
+            "comparison v1.2.3...main for no42-org/other: tag v1.2.3 is not reachable from main (the comparison diverged)",
+        },
+      });
+    });
   });
 
   describe("reconciliation (Review Focus 5)", () => {

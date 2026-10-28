@@ -55,11 +55,8 @@ import {
   readStatus,
   readWorkflowRun,
 } from "../attention/payloads.js";
-import {
-  RELEASE_NOT_CONFIRMED,
-  releaseReadings,
-} from "../attention/release.js";
-import { repoAttention } from "../attention/tiers.js";
+import { RELEASE_NOT_CONFIRMED } from "../attention/release.js";
+import { repoAttentionWithRelease } from "../attention/tiers.js";
 import type { RepoCodeScanningObservation } from "../collect/code-scanning.js";
 import {
   type CoverageObservation,
@@ -619,7 +616,7 @@ export function buildRepoView(
   // and handed in, PER FEATURE, so a repository this page refuses to count a
   // feature's findings for is not at the same time judged `now` by one of
   // them - and a feature that is still on keeps its findings and its tier.
-  const attention = repoAttention(
+  const { attention, release } = repoAttentionWithRelease(
     store,
     repo,
     now,
@@ -1006,16 +1003,11 @@ export function buildRepoView(
     ].filter((s): s is string => typeof s === "string"),
   );
 
-  // The board's own reading, for this one repository, so the page and the
-  // Release cell cannot disagree. The lane's attestation supplies only the
-  // heading's freshness and age.
-  const releaseReading = releaseReadings(
-    store,
-    new Map([[slug, repo]]),
-    now,
-    alertPolicy,
-    deps.releaseTracked ?? (() => true),
-  ).get(slug) ?? {
+  // The reading the header's tier was judged on, the board's own
+  // (`releaseReadings`), so the page, the tier and the Release cell cannot
+  // disagree. The lane's attestation supplies only the heading's freshness
+  // and age.
+  const releaseReading = release ?? {
     state: "unconfirmed" as const,
     reason: RELEASE_NOT_CONFIRMED,
   };

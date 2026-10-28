@@ -12,13 +12,13 @@ import { LANE } from "../collect/release-readiness.js";
 import type { CurrentValue, RunRecord, StorePort } from "../store/port.js";
 import { confirmationVouches, latestFullRun } from "./attestation.js";
 import { type FreshnessPolicy, freshness } from "./freshness.js";
-import { readReleaseEvidence } from "./payloads.js";
+import { readReleaseEvidence, readReleaseFailure } from "./payloads.js";
 
 // One reading of a repository's release evidence (#196), shared by the tier
 // lift and the board's Release cell so the two cannot disagree: a repository
 // is never lifted by a row its own cell calls unconfirmed or not tracked.
 
-/** No `ok`, fresh run of the lane on the owner, or no fresh row of its own. */
+/** No `ok` or `partial`, fresh run of the lane on the owner, or no fresh row of its own. */
 export const RELEASE_NOT_CONFIRMED =
   "not confirmed by a current, complete release-readiness run";
 /** The row is present and fresh, but its payload does not parse. */
@@ -47,9 +47,13 @@ export type ReleaseReading =
  * Every watched repository's reading, keyed by `slug(repo)`.
  *
  * Confirmed only while the lane's latest full run on the repository's owner
- * is `ok` and fresh, AND the repository's own present row is fresh, AND its
- * payload reads. A failed run leaves an older row behind; reading it would
- * publish a verdict nobody renewed (AD-28).
+ * is `ok` or `partial` and fresh, AND the repository's own present row is
+ * fresh, AND its payload reads. A failed run leaves an older row behind;
+ * reading it would publish a verdict nobody renewed (AD-28).
+ *
+ * A partial run counts because the lane writes a row for every repository
+ * it tried: evidence, or the reason its read failed. A failed repository
+ * reads unconfirmed with that reason; its siblings keep their readings.
  *
  * A truncated read that is not ready is unconfirmed too, decided here so the
  * board cell and the repository page cannot differ on it. A truncated read
@@ -76,7 +80,7 @@ export function releaseReadings(
     if (!runs.has(owner)) runs.set(owner, latestFullRun(store, LANE, owner));
     const run = runs.get(owner);
     return (
-      run?.outcome === "ok" &&
+      (run?.outcome === "ok" || run?.outcome === "partial") &&
       freshness(run.verifiedAt, now, policy) === "fresh"
     );
   };
@@ -96,6 +100,8 @@ export function releaseReadings(
     ) {
       return { state: "unconfirmed", reason: RELEASE_NOT_CONFIRMED };
     }
+    const failure = readReleaseFailure(row.payload);
+    if (failure !== null) return { state: "unconfirmed", reason: failure };
     const evidence = readReleaseEvidence(row.payload);
     if (evidence === null) {
       return { state: "unconfirmed", reason: RELEASE_UNREADABLE };

@@ -2488,6 +2488,23 @@ describe("buildBoard (AD-32, AD-35)", () => {
       } satisfies Board);
     });
 
+    it("is not collected when only the release lane has run", () => {
+      // The release lane has no tile; its run alone collected nothing the
+      // tiles count, so the board still reads never collected.
+      seed("rest-release-readiness", "no42-org", [], AT, "ok");
+
+      expect(buildBoard(store, [REPO], NOW, DEPS)).toEqual({
+        summary: { watched: 1, now: 0, soon: 0, quiet: 0, unconfirmed: 1 },
+        tiles: TOPICS_ORDER.map((topic) => never(topic)),
+        rows: [],
+        quiet: [],
+        unconfirmed: ["no42-org/twiki"],
+        unreadable: 0,
+        collected: false,
+        health: [ran("rest-release-readiness", "no42-org", "ok")],
+      } satisfies Board);
+    });
+
     it("does not count a failed sweep's rows as collected", () => {
       // The failed run wrote an alert and a row nothing can read before it
       // died, and confirmed no repository. Neither row is a finding: the
@@ -2681,6 +2698,44 @@ describe("buildBoard (AD-32, AD-35)", () => {
       expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
         soonRow(RELEASE_UNSWEPT),
       ]);
+    });
+
+    it("reads each repository on its own after a partial run, naming the one that failed", () => {
+      // One repository's read threw; the lane stored why. Its sibling's
+      // reading stands, and the failed one says what went wrong.
+      sweep([
+        { repo: REPO, alerts: [soonAlert(REPO, 1)] },
+        { repo: THIRD, alerts: [soonAlert(THIRD, 2)] },
+      ]);
+      release(
+        [
+          { repo: REPO, evidence: READY },
+          {
+            repo: THIRD,
+            evidence: {
+              readFailed:
+                "comparison v1.2.0...main for no42-org/third: tag v1.2.0 is not reachable from main (the comparison diverged)",
+            },
+          },
+        ],
+        AT,
+        "partial",
+      );
+
+      const rows = buildBoard(store, [REPO, THIRD], NOW, DEPS).rows;
+
+      expect(rows.map((r) => [r.slug, r.release])).toEqual([
+        [
+          "no42-org/third",
+          {
+            state: "unconfirmed",
+            reason:
+              "comparison v1.2.0...main for no42-org/third: tag v1.2.0 is not reachable from main (the comparison diverged)",
+          },
+        ],
+        ["no42-org/twiki", READY_CELL],
+      ]);
+      expect(rows[1]).toEqual(soonRow(READY_CELL));
     });
 
     it("says unconfirmed once the row has aged past the lane's cadence", () => {

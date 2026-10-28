@@ -340,7 +340,27 @@ export function repoAttention(
   deps: AttentionDeps,
   suppressed: SuppressedByFeature = {},
 ): RepoAttention {
-  const { byRepo } = attentionByRepo(store, [repo], now, deps, suppressed);
+  return repoAttentionWithRelease(store, repo, now, deps, suppressed).attention;
+}
+
+/**
+ * `repoAttention`, and the release reading the tier lift was judged on, so
+ * the repository page shows that same reading rather than reading it again.
+ */
+export function repoAttentionWithRelease(
+  store: StorePort,
+  repo: RepoRef,
+  now: Date,
+  deps: AttentionDeps,
+  suppressed: SuppressedByFeature = {},
+): { attention: RepoAttention; release: ReleaseReading | undefined } {
+  const { byRepo, release } = attentionByRepo(
+    store,
+    [repo],
+    now,
+    deps,
+    suppressed,
+  );
   const attention = byRepo.get(watchKey(repo));
   if (attention === undefined) {
     // Unreachable: the batch form seeds a group for every repository it was
@@ -348,5 +368,5 @@ export function repoAttention(
     // read a missing verdict as quiet.
     throw new Error(`no attention computed for ${watchKey(repo)}`);
   }
-  return attention;
+  return { attention, release: release.get(watchKey(repo)) };
 }
