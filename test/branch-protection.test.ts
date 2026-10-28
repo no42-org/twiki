@@ -233,9 +233,6 @@ describe("protection is reported, never gated on", () => {
   const facts = (state: ProtectionFact["state"]) => ({
     repo: REPO,
     mainChecks: "green" as const,
-    latestTag: "v1.0.0",
-    hasTagReleaseWorkflow: true,
-    unreleasedDependencyCommits: 3,
     protection: {
       state,
       rulesInForce: state === "protected" ? ["pull_request"] : [],
