@@ -57,6 +57,9 @@ const PAGES = ["/", "/queue", "/repo/no42-org/twiki", "/reviews"] as const;
 const PHONE = { width: 320, height: 640 };
 const TABLET = { width: 800, height: 1024 };
 const DESKTOP = { width: 1280, height: 800 };
+// The narrowest desktop: the first width where nothing collapses, so the one
+// where every table's unbreakable cells come closest to the edge.
+const SMALL_DESKTOP = { width: 1024, height: 800 };
 
 describe("rendered in Chromium (Story 1.9, #131)", () => {
   let dir: string;
@@ -164,15 +167,18 @@ describe("rendered in Chromium (Story 1.9, #131)", () => {
       root: document.documentElement.scrollWidth - window.innerWidth,
     }));
 
-  describe.each([PHONE, TABLET, DESKTOP])("at $width px", (viewport) => {
-    it.each(PAGES)("%s does not scroll sideways", async (path) => {
-      const page = await open(path, viewport);
-      const reach = await overflow(page);
-      expect(reach.body).toBe(0);
-      expect(reach.root).toBeLessThanOrEqual(0);
-      await page.close();
-    });
-  });
+  describe.each([PHONE, TABLET, SMALL_DESKTOP, DESKTOP])(
+    "at $width px",
+    (viewport) => {
+      it.each(PAGES)("%s does not scroll sideways", async (path) => {
+        const page = await open(path, viewport);
+        const reach = await overflow(page);
+        expect(reach.body).toBe(0);
+        expect(reach.root).toBeLessThanOrEqual(0);
+        await page.close();
+      });
+    },
+  );
 
   /** The board's layout facts at one width, from computed style. */
   const board = (page: Page) =>
