@@ -184,6 +184,8 @@ function makeRecorder(sink: () => unknown[]): typeof fetch {
 /** A plan the executor will act on, with no LLM involved. */
 function stubAdvisor(plan: Plan): Advisor {
   return {
+    // No LLM read anything, which is what "rules" tells the digest.
+    kind: "rules",
     async plan(input: AdvisorRepoInput[]): Promise<Plan> {
       console.error(
         `[spike] stub advisor: ${input.length} repo(s) in, ` +

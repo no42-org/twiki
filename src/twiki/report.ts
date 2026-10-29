@@ -106,6 +106,14 @@ export function buildDigest(result: RunResult): string {
     );
   }
 
+  if (result.rulesOnly) {
+    // Not activity on its own: it says how to read the lines below, and a
+    // tick with nothing else to say is suppressed before this is built.
+    blocks.push(
+      "\n📏 *Rules-only: no changelog was read.* Merges below passed the gates alone.",
+    );
+  }
+
   for (const repo of result.repos) {
     const lines = repoLines(repo, shadow);
     if (lines.length === 0) continue;

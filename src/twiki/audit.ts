@@ -30,6 +30,7 @@ export class JsonlAudit implements AuditSink {
       ...(result.advisorFailed !== undefined
         ? { advisorFailed: result.advisorFailed }
         : {}),
+      ...(result.rulesOnly ? { rulesOnly: true } : {}),
     });
     try {
       appendFileSync(this.path, `${line}\n`);

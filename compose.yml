@@ -34,11 +34,10 @@ services:
       TWIKI_AUDIT_PATH: /state/audit.jsonl
       TWIKI_STATE_DIR: /state
       # Named so `make up` fails legibly rather than the container starting and
-      # misbehaving later. Without the API key twiki does not crash: it holds
-      # every pull request every cycle and logs "advisor failed, holding all",
-      # which reads as a healthy service that merges nothing.
+      # misbehaving later. ANTHROPIC_API_KEY is not named here: it is needed
+      # only when TWIKI_ADVISOR=claude, which compose cannot express, so twiki
+      # checks it at startup instead and exits naming the variable.
       TWIKI_GITHUB_APP_ID: ${TWIKI_GITHUB_APP_ID:?set it in .env}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set it in .env}
     volumes:
       - ./repos.yaml:/config/repos.yaml:ro
       - ${TWIKI_KEY_PATH:-./twiki.pem}:/secrets/twiki.pem:ro

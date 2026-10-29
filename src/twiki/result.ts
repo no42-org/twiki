@@ -93,4 +93,9 @@ export interface RunResult {
    * every cycle, and the digest read like a healthy quiet run.
    */
   advisorFailed?: string;
+  /**
+   * Set when the rules-only advisor ran: every merge below passed the gates
+   * and nothing read the changelog. Absent means the LLM advisor ran.
+   */
+  rulesOnly?: true;
 }

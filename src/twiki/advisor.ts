@@ -53,6 +53,11 @@ export interface AdvisorRepoInput {
 }
 
 export interface Advisor {
+  /**
+   * Which advisor produced the plan. Carried onto the run result so a merge
+   * the gates alone allowed never reads as one an LLM looked at.
+   */
+  readonly kind: "claude" | "rules";
   plan(input: AdvisorRepoInput[]): Promise<Plan>;
 }
 
@@ -109,6 +114,7 @@ function indent(text: string, pad: string): string {
 }
 
 export class ClaudeAdvisor implements Advisor {
+  readonly kind = "claude";
   private readonly client: Anthropic;
   private readonly model: string;
 
@@ -147,4 +153,53 @@ export class ClaudeAdvisor implements Advisor {
     // Reject and surface schema mismatches rather than acting on a bad plan.
     return PlanSchema.parse(toolUse.input);
   }
+}
+
+/**
+ * The advisor for running without an LLM: it votes `merge` on every pull
+ * request and leaves the whole decision to the gates, which the executor
+ * re-validates anyway. Nothing reads the changelog, so a green patch or minor
+ * bump whose notes announce a behaviour change is merged.
+ */
+export class RulesAdvisor implements Advisor {
+  readonly kind = "rules";
+
+  async plan(input: AdvisorRepoInput[]): Promise<Plan> {
+    return {
+      repos: input.map(({ facts }) => ({
+        repo: repoSlug(facts.repo),
+        prDecisions: facts.prs.map((pr) => ({
+          number: pr.number,
+          action: "merge" as const,
+          reason: "rules-only: gates passed, changelog not read",
+          risk: "low" as const,
+        })),
+      })),
+    };
+  }
+}
+
+/**
+ * The advisor `TWIKI_ADVISOR` names, `claude` when unset.
+ *
+ * Fails at startup rather than degrading. A typo falling back to either
+ * advisor would be wrong both ways: to `claude` it holds everything for want
+ * of a key, to `rules` it drops the changelog read nobody asked to drop. The
+ * key is checked here for the same reason: without it every tick fails the
+ * plan call and holds every pull request, which reads as a quiet, healthy run.
+ */
+export function advisorFromEnv(env: NodeJS.ProcessEnv = process.env): Advisor {
+  // Empty counts as unset: `TWIKI_ADVISOR=` in an env file is a blank, not a choice.
+  const kind = env.TWIKI_ADVISOR || "claude";
+  if (kind === "rules") return new RulesAdvisor();
+  if (kind !== "claude") {
+    throw new Error(`TWIKI_ADVISOR is "${kind}"; expected "claude" or "rules"`);
+  }
+  if (!env.ANTHROPIC_API_KEY) {
+    throw new Error(
+      "ANTHROPIC_API_KEY is not set, and TWIKI_ADVISOR is claude. " +
+        "Set the key, or set TWIKI_ADVISOR=rules to merge on the gates alone.",
+    );
+  }
+  return new ClaudeAdvisor({ model: env.TWIKI_MODEL });
 }

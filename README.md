@@ -23,6 +23,7 @@ The architecture makes that safe structurally, not by instruction:
 - **The LLM never touches GitHub.** It only emits a plan: `merge` or `hold` per PR. Only the deterministic executor calls the API.
 - **Gates are code, re-validated at execution time.** Never merge if CI isn't green, never auto-merge a major, only act on allowlisted repos. The plan can only *narrow* outcomes.
 - **Prompt-injection is contained.** A poisoned changelog can at worst push the advisor toward `hold`, which is more conservative. It can never manufacture a merge. (See `test/injection.test.ts`.)
+- **The LLM is optional.** `TWIKI_ADVISOR=rules` swaps it for an advisor that votes `merge` on every PR, so the gates alone decide. No Anthropic account is needed. Nothing reads the changelog, so a green patch or minor bump that announces a behaviour change is merged anyway. The digest and audit log mark these runs.
 
 ## How it decides
 
@@ -56,7 +57,8 @@ The declaration is what the read side will sort workflow runs by, and against th
 | `TWIKI_GITHUB_APP_ID` | GitHub App ID | — (required) |
 | `TWIKI_GITHUB_APP_PRIVATE_KEY` | App private key (PEM, inline) | — |
 | `TWIKI_GITHUB_APP_PRIVATE_KEY_PATH` | App private key file path | — |
-| `ANTHROPIC_API_KEY` | Advisor LLM key (read by the SDK) | — (required) |
+| `TWIKI_ADVISOR` | `claude` asks the LLM advisor; `rules` merges on the gates alone, without reading changelogs | `claude` |
+| `ANTHROPIC_API_KEY` | Advisor LLM key (read by the SDK) | — (required when `TWIKI_ADVISOR=claude`) |
 | `TWIKI_MODEL` | Advisor model | `claude-sonnet-4-6` |
 | `TWIKI_SLACK_WEBHOOK_URL` | Slack incoming webhook | — |
 | `TWIKI_DISCORD_WEBHOOK_URL` | Discord webhook | — |

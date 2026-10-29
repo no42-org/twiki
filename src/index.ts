@@ -11,7 +11,7 @@ import {
 } from "./core/config.js";
 import type { Mode } from "./core/types.js";
 import { createGitHubFromEnv } from "./github/octokit-adapter.js";
-import { ClaudeAdvisor } from "./twiki/advisor.js";
+import { advisorFromEnv } from "./twiki/advisor.js";
 import { JsonlAudit } from "./twiki/audit.js";
 import {
   ConsoleNotifier,
@@ -61,7 +61,7 @@ function buildNotifier(env = process.env): Notifier {
 function buildDeps(config: Config, env = process.env): RunDeps {
   return {
     github: createGitHubFromEnv((repo) => isAllowlisted(config, repo), env),
-    advisor: new ClaudeAdvisor({ model: env.TWIKI_MODEL }),
+    advisor: advisorFromEnv(env),
     notifier: buildNotifier(env),
     audit: new JsonlAudit(env.TWIKI_AUDIT_PATH),
     now: () => new Date().toISOString(),
@@ -77,7 +77,8 @@ async function main(): Promise<void> {
   const deps = buildDeps(config, env);
 
   console.error(
-    `[twiki] mode=${config.mode} repos=${config.repos.length} ` +
+    `[twiki] mode=${config.mode} advisor=${deps.advisor.kind} ` +
+      `repos=${config.repos.length} ` +
       `(${env.TWIKI_ONCE ? "single run" : "polling"})`,
   );
 

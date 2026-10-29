@@ -58,6 +58,7 @@ function deps(notifier: Notifier, advisorErr?: Error) {
   return {
     github: new FakeGitHub(new Map([[SLUG, data]])),
     advisor: {
+      kind: "claude" as const,
       plan: advisorErr
         ? vi.fn(async () => {
             throw advisorErr;
