@@ -37,6 +37,7 @@ const LONG_TITLE =
 const NOW = new Date("2026-09-08T12:00:00.000Z");
 const AT = "2026-09-08T11:55:00.000Z";
 
+const PHONE = { width: 320, height: 640 };
 const NARROW = { width: 640, height: 1024 };
 const TABLET = { width: 800, height: 1024 };
 const DESKTOP = { width: 1280, height: 800 };
@@ -198,7 +199,7 @@ describe("queue columns (#201)", () => {
     await page.close();
   });
 
-  it.each([SMALL_DESKTOP, DESKTOP, TABLET, NARROW])(
+  it.each([SMALL_DESKTOP, DESKTOP, TABLET, NARROW, PHONE])(
     "at $width px a 100-character repository name does not scroll the page sideways",
     async (viewport) => {
       const page = await open(viewport);
@@ -212,10 +213,33 @@ describe("queue columns (#201)", () => {
 
   it("copies the slug as exactly owner/name", async () => {
     const page = await open(DESKTOP);
-    const text = await page.evaluate(() =>
-      [...document.querySelectorAll("#list .slug")].map((s) => s.textContent),
+    // What a reader gets from a selection, not textContent: an inline-block
+    // can add a line break to the copied text where textContent shows none.
+    const copied = await page.evaluate(() => {
+      const slug = [...document.querySelectorAll("#list .slug")].find((s) =>
+        s.textContent?.startsWith("labmonkeys-space/"),
+      ) as Element;
+      const range = document.createRange();
+      range.selectNodeContents(slug);
+      const selection = window.getSelection() as Selection;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return selection.toString();
+    });
+    expect(copied).toBe("labmonkeys-space/prometheus-remote-writer");
+    await page.close();
+  });
+
+  it("underlines a linked slug like every other link", async () => {
+    const page = await open(DESKTOP);
+    // Not inherited into an inline-block: the segments have to take it.
+    const lines = await page.evaluate(() =>
+      [...document.querySelectorAll("#list a.slug .seg")].map(
+        (s) => getComputedStyle(s).textDecorationLine,
+      ),
     );
-    expect(text).toContain("labmonkeys-space/prometheus-remote-writer");
+    expect(lines.length).toBeGreaterThan(0);
+    expect(new Set(lines)).toEqual(new Set(["underline"]));
     await page.close();
   });
 });

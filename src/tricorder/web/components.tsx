@@ -56,12 +56,14 @@ import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
 //
 // Body's `overflow-wrap: anywhere` lowers every table cell's min-content to
 // one character, so one long title once squeezed the rank, topic and badges
-// to a letter per line (#201). Headers, ranks, topics and badges hold bounded
-// text, so they are kept whole and the long cells give instead. A slug is not
-// bounded, so its two segments are kept whole only up to a cap, and only at
-// desktop width: at tablet width a whole slug leaves the item a word wide.
-// Headers may wrap between words at tablet width too, where all six held on
-// one line beside a long slug no longer fit.
+// to a letter per line (#201). Queue headers, ranks, topics and badges hold
+// bounded text, so they are kept whole and the long cells give instead. Only
+// the queue's headers: the board's ten, held whole, scroll the page at
+// 1024px. A slug is not bounded, so its two segments are kept whole only up
+// to a cap, and only at desktop width: held whole at 640px they scroll the
+// page sideways, as do queue headers held on one line there. Both are
+// checked in test/browser/queue-columns.test.ts. An inline-block does not
+// receive its link's underline, so the segments take it explicitly.
 export const STYLE = `${TOKEN_STYLE}
   @supports (font: -apple-system-body) { @media (hover: none) and (pointer: coarse) { html { font: -apple-system-body; } } }
   body { font-family: system-ui, sans-serif; font-size: ${TYPE.body.size}; line-height: ${TYPE.body.lineHeight}; color: var(--fg); background: var(--bg); margin: ${SPACE[8]} auto; max-width: ${SPACE.contentMax}; padding: 0 ${SPACE.gutter}; overflow-wrap: anywhere; }
@@ -74,7 +76,7 @@ export const STYLE = `${TOKEN_STYLE}
   th, td { text-align: left; padding: ${SPACE[2]} ${SPACE[3]}; border-bottom: 1px solid var(--border); }
   th { font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  th, td.num, td.topic, .badge { overflow-wrap: normal; white-space: nowrap; }
+  .queue th, td.num, td.topic, .badge { overflow-wrap: normal; white-space: nowrap; }
   .badge { display: inline-block; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; padding: ${SPACE[1]} ${SPACE[2]}; border-radius: ${RADIUS.full}; border: 1px solid currentColor; }
   .fresh   { color: var(--ok); }
   .stale   { color: var(--warn); }
@@ -126,7 +128,7 @@ export const STYLE = `${TOKEN_STYLE}
   tbody.soon tr.why th { border-left: 3px solid var(--warn); }
   .board .signals, .signals-rest { display: none; }
   .slug { font-weight: 600; }
-  .seg { display: inline-block; width: max-content; max-width: 20rem; }
+  .seg { display: inline-block; width: max-content; max-width: 20rem; text-decoration: inherit; }
   .chip { display: inline-block; min-width: 24px; min-height: 24px; box-sizing: border-box; padding: 3px 6px; border-radius: ${RADIUS.sm}; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; font-variant-numeric: tabular-nums; }
   .chip.zero { color: var(--muted); }
   .chip.critical { color: var(--critical); font-weight: 700; }
@@ -173,7 +175,7 @@ export const STYLE = `${TOKEN_STYLE}
   @media (min-width: 640px) and (max-width: 1023px) {
     .tiles { grid-template-columns: repeat(3, 1fr); }
     .seg { display: inline; }
-    th { white-space: normal; }
+    .queue th { white-space: normal; }
     .board .c { display: none; }
     .board .signals { display: table-cell; }
     .signals-rest { display: inline; }
@@ -1050,7 +1052,7 @@ export const QueuePage: FC<{
         ) : null}
 
         {filtered.shown.length > 0 ? (
-          <table class="cards" role="table">
+          <table class="cards queue" role="table">
             <QueueHead />
             <tbody role="rowgroup">
               {filtered.shown.map((item, i) => (
@@ -1070,7 +1072,7 @@ export const QueuePage: FC<{
         // not silently lost, counted nowhere so they inflate nothing.
         <>
           <h2>no longer watched</h2>
-          <table class="cards" role="table">
+          <table class="cards queue" role="table">
             <QueueHead />
             <tbody role="rowgroup">
               {filtered.delisted.map((item, i) => (

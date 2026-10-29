@@ -313,7 +313,7 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
         // topic labels and badge words. Without it body's overflow-wrap
         // squeezed them to a letter per line beside a long title (#201).
         expect(
-          [".ext", ".sr-only", "th, td.num, td.topic, .badge"],
+          [".ext", ".sr-only", ".queue th, td.num, td.topic, .badge"],
           selector,
         ).toContain(selector);
       }
@@ -402,7 +402,7 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
         "@media (min-width: 640px) and (max-width: 1023px) {\n" +
           "    .tiles { grid-template-columns: repeat(3, 1fr); }\n" +
           "    .seg { display: inline; }\n" +
-          "    th { white-space: normal; }\n" +
+          "    .queue th { white-space: normal; }\n" +
           "    .board .c { display: none; }\n" +
           "    .board .signals { display: table-cell; }\n" +
           "    .signals-rest { display: inline; }",
