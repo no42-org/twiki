@@ -134,6 +134,9 @@ jobs:
           image-ref: twiki:dev
           format: table
           severity: HIGH,CRITICAL
+          # Without this the action applies `severity` to table output only
+          # and uploads every finding to the Security tab (#205).
+          limit-severities-for-sarif: true
           exit-code: "0"
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0

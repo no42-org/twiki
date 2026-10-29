@@ -7,7 +7,7 @@
 # QEMU-emulated build. Only the distroless runtime base differs per TARGETARCH.
 
 # --- build: install deps, compile TypeScript, prune to prod (pure JS) -------
-FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS build
+FROM --platform=$BUILDPLATFORM node:24-trixie-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -37,7 +37,12 @@ RUN mkdir -p /data /state && chown 65532:65532 /data /state
 # only resolved by an upstream rebuild — the Dependabot digest bump is how we
 # pick that up; the CI Trivy scan surfaces it. nodejs24 is the newest distroless
 # Node line, so the build base and @types/node are aligned to Node 24.
-FROM gcr.io/distroless/nodejs24-debian12:nonroot@sha256:14d42e2511532589a7c7e01a753667a74fcc96266e137e8125006b87b0c32d0a AS runtime
+#
+# Debian 13, and the build stage matches it. The Debian 12 image stopped being
+# rebuilt upstream: its tag sat on one digest from June to October 2026, so
+# the digest bump had nothing to propose while OpenSSL fixes piled up (#205).
+# When Debian moves on again, the same silence is the symptom to look for.
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:a6c34457f6da4295807e051411c7783739c65b997a324fed14e4fa292615ae91 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
