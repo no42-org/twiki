@@ -48,6 +48,10 @@ twiki authenticates as a GitHub App so merges show as `twiki[bot]`, tokens are s
 Create a key at <https://console.anthropic.com/> → *API Keys*. This is
 `ANTHROPIC_API_KEY` (read directly by the SDK).
 
+To run without an Anthropic account, skip this step and set
+`TWIKI_ADVISOR=rules`. twiki then merges green patch and minor bumps on the
+gates alone and does not read changelogs.
+
 ### 1c. Define the repo allowlist
 
 Copy the example and edit:

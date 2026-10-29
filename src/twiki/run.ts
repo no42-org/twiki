@@ -61,6 +61,7 @@ export async function runOnce(
   // advisor outage holds every pull request, and holding is what twiki does
   // when it is being careful, so the two must not look the same.
   if (failure !== undefined) result.advisorFailed = failure;
+  if (deps.advisor.kind === "rules") result.rulesOnly = true;
 
   // Skip purely-routine ticks (no merges, holds or remediations) so the
   // channel isn't spammed every poll; the audit log still records every tick.

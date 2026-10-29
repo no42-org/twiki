@@ -301,6 +301,8 @@ export const makeWorkflowRun = (
 
 /** Advisor stub: returns a fixed plan, or one derived from the input. */
 export class StubAdvisor implements Advisor {
+  // Stands in for the LLM advisor, which is what every existing test models.
+  readonly kind = "claude";
   constructor(
     private readonly impl: Plan | ((i: AdvisorRepoInput[]) => Plan),
   ) {}
