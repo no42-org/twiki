@@ -301,7 +301,7 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
       return STYLE.slice(start, STYLE.indexOf("\n  }\n", start));
     };
 
-    it("uses white-space: nowrap on the external-link glyph and the visually hidden clip only", () => {
+    it("uses white-space: nowrap on the external-link glyph, the visually hidden clip and fixed-word cells only", () => {
       // A nowrap anywhere else is a horizontal scroller waiting for a long
       // value. Every rule carrying one is found and its selector checked.
       const users = [
@@ -309,7 +309,13 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
       ].map((m) => (m[1] ?? "").trim());
       expect(users).toContain(".sr-only");
       for (const selector of users) {
-        expect([".ext", ".sr-only"], selector).toContain(selector);
+        // The one exception holds only fixed words: column headers, ranks,
+        // topic labels and badge words. Without it body's overflow-wrap
+        // squeezed them to a letter per line beside a long title (#201).
+        expect(
+          [".ext", ".sr-only", "th, td.num, td.topic, .badge"],
+          selector,
+        ).toContain(selector);
       }
       // The skip link carried one; it is 1px wide until focused, and a
       // wrap inside a clipped box paints nothing.
@@ -395,6 +401,8 @@ describe("page style (DESIGN.md Typography, Layout, Components)", () => {
       expect(media("@media (min-width: 640px) and (max-width: 1023px)")).toBe(
         "@media (min-width: 640px) and (max-width: 1023px) {\n" +
           "    .tiles { grid-template-columns: repeat(3, 1fr); }\n" +
+          "    .seg { display: inline; }\n" +
+          "    th { white-space: normal; }\n" +
           "    .board .c { display: none; }\n" +
           "    .board .signals { display: table-cell; }\n" +
           "    .signals-rest { display: inline; }",
