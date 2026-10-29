@@ -2,12 +2,20 @@
 # SPDX-License-Identifier: MIT
 
 version: 2
+# A 7-day cooldown on every ecosystem holds back brand-new releases, so a
+# compromised package has a week to be caught upstream before a PR exists.
+# GitHub's options reference says cooldown applies to version updates only,
+# not security updates. It does not say how cooldown treats a docker
+# digest-only bump: expect a rebuilt distroless base up to a week later, but
+# that is unverified (#205).
 updates:
   - package-ecosystem: npm
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       octokit:
         patterns: ["@octokit/*"]
@@ -26,16 +34,21 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns: ["*"]
 
-  # Daily so a patched distroless base digest is proposed promptly (base OS
-  # CVEs can only be fixed by an upstream rebuild we pull in via the digest).
+  # Daily so a patched distroless base digest is proposed promptly, subject to
+  # the cooldown above (base OS CVEs can only be fixed by an upstream rebuild
+  # we pull in via the digest).
   - package-ecosystem: docker
     directory: "/"
     schedule:
       interval: daily
+    cooldown:
+      default-days: 7
     ignore:
       # The runtime is distroless nodejs24 (its newest Node line), so keep the
       # build base on Node 24 too. A major is a deliberate upgrade, not automatic.

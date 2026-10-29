@@ -68,6 +68,9 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
+          # Without this the action applies `severity` to table output only
+          # and uploads every finding to the Security tab (#205).
+          limit-severities-for-sarif: true
           # Report-only by design: the runtime is distroless (no package
           # manager), so base-image OS CVEs (e.g. openssl) can't be patched
           # here — only by a newer upstream base. Findings surface in the
