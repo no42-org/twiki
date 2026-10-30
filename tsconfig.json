@@ -17,6 +17,7 @@
     "declaration": true,
     "sourceMap": true,
     "resolveJsonModule": true,
+    "allowJs": true,
     "forceConsistentCasingInFileNames": true,
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx"

@@ -131,16 +131,24 @@ One pull request reaches one of the two and never both.
 That lane runs whatever `bots:` says: with no actor configured, nothing is a bot and every open pull request is a human one.
 Its only ranking term is whether its checks are stuck, read from the workflow runs the Actions lane already retains — no checks API call is made.
 
-`web` serves two pages on the loopback bind: `/` lists every watched repository with its alert count and freshness, and `/queue` is one cross-repository list ordered by the ranking chain, each row saying why it ranks where it does.
+`web` serves one overview on the loopback bind, built on the [LCARS-47](https://github.com/no42-org/lcars-47) component library.
+Three boxes total what needs you: Security, Pull Requests and Release Worthy.
+One table below lists the items, with Severity, State, Repository, ID, What and impact, and Age columns.
+Click a box, a severity, a state or a repository name to filter, and click a header to sort.
+Filters and sort live in the query string, so a view can be bookmarked, and the full table renders without JavaScript.
+A box with no confirmed sweep behind it says `UNCONFIRMED` rather than a zero, and the footer names any lane that is not current.
+The LCARS bundle and the client script are served by the web process, so the page calls no other host.
+
+`/repo/owner/name` keeps a per-repository page. It is the only place default-branch CI failures and open issues show, and the overview does not link to it.
+
+Rows follow the ranking chain within each group.
 The ordering is a local policy, not SSVC or any published standard: a broken default branch, then CISA KEV listing, then EPSS, then severity, then update size, then whether GitHub could prepare the update.
 A failed or hung workflow run on a repository's default branch leads the chain, because nothing ships from a red main whatever else is open.
 
-The overview's Release column says whether each repository is worth releasing since its latest stable semver tag (or since the first commit when there is no tag).
-It reads `ready` when a Dependabot alert with runtime or unknown scope was fixed after the tag, or when a default-branch commit is a Conventional Commit `feat`, `fix` or `perf`, or carries `!`; commits scoped `deps` never count, and the `BREAKING CHANGE:` footer is not read.
-The summary appears on the row's rationale line, and a quiet repository that is ready is shown as a row rather than folded into the quiet block.
+Release Worthy says whether each repository is worth releasing since its latest stable semver tag (or since the first commit when there is no tag).
+A repository qualifies when a Dependabot alert with runtime or unknown scope was fixed after the tag, or when a default-branch commit is a Conventional Commit `feat`, `fix` or `perf`, or carries `!`; commits scoped `deps` never count, and the `BREAKING CHANGE:` footer is not read.
 An unreleased security fix lifts a repository to at least `soon`, never to `now`; code improvements alone never change the tier.
-The cell reads `none` when nothing qualifies, `unconfirmed` when the lane has no current, successful reading, and `not tracked` for a repository opted out with `release: false` in `repos.yaml`.
-Release is not a topic: it has no tile and no `/queue` filter.
+A repository opted out with `release: false` in `repos.yaml` is not tracked.
 
 ### The read-only GitHub App
 

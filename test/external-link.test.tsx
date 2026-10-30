@@ -117,9 +117,7 @@ describe("every page's outbound links", () => {
   // the repo page, the review row on /reviews. The overview links inward only.
   it.each([
     ["/", 0],
-    ["/queue", 1],
     ["/repo/no42-org/twiki", 2],
-    ["/reviews", 1],
   ] as const)(
     "%s: https anchors open a new tab, internal ones do not, javascript: never renders",
     async (path, outbound) => {
@@ -141,11 +139,4 @@ describe("every page's outbound links", () => {
       expect(html).not.toContain("javascript:");
     },
   );
-
-  it("renders the queue row's link as the whole anchor and the unsafe one as text", async () => {
-    const html = await render("/queue");
-    expect(html).toContain(ANCHOR);
-    expect(html).toContain("no42-org/twiki#8");
-    expect(html).not.toMatch(/<a [^>]*>no42-org\/twiki#8/);
-  });
 });

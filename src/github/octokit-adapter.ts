@@ -2629,6 +2629,9 @@ function toDependabotAlert(
       severity?: string;
       epss?: { percentage?: number; percentile?: number } | null;
     };
+    security_vulnerability?: {
+      first_patched_version?: { identifier?: string } | null;
+    };
   };
   // The org-level listing names the repository on every alert; the
   // per-repository listing does NOT - measured 2026-08-21, `repository` is
@@ -2653,6 +2656,8 @@ function toDependabotAlert(
     epssPercentile: a.security_advisory?.epss?.percentile ?? null,
     relationship: a.dependency?.relationship ?? null,
     scope: a.dependency?.scope ?? null,
+    firstPatchedVersion:
+      a.security_vulnerability?.first_patched_version?.identifier ?? null,
     htmlUrl: a.html_url ?? null,
     // Null, not "": an empty string reaches core/stamp.ts and throws there
     // instead of being visibly absent here.

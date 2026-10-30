@@ -7,11 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   absoluteUrl,
   overviewPath,
-  queueClearPath,
-  queuePath,
-  queueRepoPath,
   repoPath,
-  reviewsPath,
   topicPath,
 } from "../src/tricorder/attention/links.js";
 
@@ -26,32 +22,19 @@ describe("links (AD-39)", () => {
     expect(repoPath("no42-org/we ird?")).toBe("/repo/no42-org/we%20ird%3F");
   });
 
-  it("filters the queue by topic, and by repository before topic with the folded slug", () => {
-    expect(queuePath("issues")).toBe("/queue?topic=issues");
-    expect(queuePath("security", { owner: "No42-Org", name: "TWiki" })).toBe(
-      "/queue?repo=no42-org%2Ftwiki&topic=security",
+  it("leads each topic to the overview, filtered as far as the overview can", () => {
+    const repo = { owner: "No42-Org", name: "TWiki" };
+    expect(topicPath("security")).toBe("/?kind=SECURITY");
+    expect(topicPath("pulls")).toBe("/?kind=PULL+REQUESTS");
+    expect(topicPath("dependencies")).toBe("/?kind=PULL+REQUESTS");
+    expect(topicPath("reviews")).toBe("/?kind=PULL+REQUESTS");
+    expect(topicPath("security", repo)).toBe(
+      "/?kind=SECURITY&repo=no42-org%2Ftwiki",
     );
-  });
-
-  it("refuses a queue filter for reviews, which are not in the queue", () => {
-    expect(() => queuePath("reviews")).toThrow(/reviews has no queue filter/);
-    expect(reviewsPath()).toBe("/reviews");
-    expect(topicPath("reviews")).toBe("/reviews");
-    expect(topicPath("reviews", { owner: "no42-org", name: "twiki" })).toBe(
-      "/reviews",
-    );
-    expect(topicPath("ci")).toBe("/queue?topic=ci");
-  });
-
-  it("clears every filter with the bare queue path", () => {
-    expect(queueClearPath()).toBe("/queue");
+    // CI and issues have no box, so only the repository narrows them.
+    expect(topicPath("ci")).toBe("/");
+    expect(topicPath("issues", repo)).toBe("/?repo=no42-org%2Ftwiki");
     expect(overviewPath()).toBe("/");
-  });
-
-  it("narrows the queue to one repository, every topic, with the folded slug", () => {
-    expect(queueRepoPath({ owner: "No42-Org", name: "TWiki" })).toBe(
-      "/queue?repo=no42-org%2Ftwiki",
-    );
   });
 
   it("joins an internal path to TRICORDER_BASE_URL", () => {
@@ -61,8 +44,8 @@ describe("links (AD-39)", () => {
     // A base under a prefix keeps the prefix, whether or not it ends in a
     // slash; a double slash or a dropped prefix would both 404.
     expect(
-      absoluteUrl(new URL("https://example.test/dash/"), queuePath("issues")),
-    ).toBe("https://example.test/dash/queue?topic=issues");
+      absoluteUrl(new URL("https://example.test/dash/"), topicPath("security")),
+    ).toBe("https://example.test/dash/?kind=SECURITY");
     expect(absoluteUrl(new URL("https://example.test/dash"), "/reviews")).toBe(
       "https://example.test/dash/reviews",
     );

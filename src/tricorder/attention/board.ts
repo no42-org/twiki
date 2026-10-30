@@ -50,8 +50,8 @@ import {
 import { buildCollectionHealth, type CollectionHealth } from "./health.js";
 import { laneTopic } from "./lane-topics.js";
 import { repoPath, topicPath } from "./links.js";
-import type { QueueItem } from "./queue.js";
-import { RELEASE_NOT_CONFIRMED } from "./release.js";
+import type { Queue, QueueItem } from "./queue.js";
+import { RELEASE_NOT_CONFIRMED, type ReleaseReading } from "./release.js";
 import {
   type AttentionDeps,
   attentionByRepo,
@@ -345,6 +345,28 @@ export function buildBoard(
   now: Date,
   deps: BoardDeps,
 ): Board {
+  const {
+    queue: _queue,
+    release: _release,
+    ...board
+  } = buildBoardWithSources(store, watched, now, deps);
+  return board;
+}
+
+/** What a board was built from, for a page that lists more than it counts. */
+export interface BoardSources {
+  /** The one queue everything on the board comes from (AD-32). */
+  queue: Queue;
+  /** Every watched repository's release reading, keyed by slug. */
+  release: Map<string, ReleaseReading>;
+}
+
+export function buildBoardWithSources(
+  store: StorePort,
+  watched: readonly RepoRef[],
+  now: Date,
+  deps: BoardDeps,
+): Board & BoardSources {
   // One entry per distinct slug: two allowlist lines folding to the same
   // repository are one repository, as they are in every lane (AD-33).
   const repos = new Map<string, RepoRef>();
@@ -549,6 +571,8 @@ export function buildBoard(
       quiet: [],
       unconfirmed: [...repos.keys()],
       unreadable: queue.unreadable,
+      queue,
+      release,
       collected,
       health,
     };
@@ -966,6 +990,8 @@ export function buildBoard(
     quiet,
     unconfirmed,
     unreadable: queue.unreadable,
+    queue,
+    release,
     collected,
     health,
   };

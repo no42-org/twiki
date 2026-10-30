@@ -8,23 +8,17 @@ import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import { DEFAULT_HUNG_AFTER_MS } from "../../core/run-verdict.js";
 import { DEFAULT_REVIEW_BUDGET_DAYS, defaultCutRank } from "../../core/tier.js";
 import type { RepoRef } from "../../core/types.js";
-import { type BoardDeps, buildBoard } from "../attention/board.js";
-import { applyQueueFilter, parseQueueFilter } from "../attention/filter.js";
+import type { BoardDeps } from "../attention/board.js";
 import type { FreshnessPolicy } from "../attention/freshness.js";
-import { buildQueue, type QueueDeps } from "../attention/queue.js";
 import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
 import { LANE as KEV_LANE } from "../collect/kev.js";
 import { LANE as ACTIONS_LANE } from "../collect/workflow-runs.js";
 import type { StorePort } from "../store/port.js";
-import {
-  Page,
-  QueuePage,
-  RepoPage,
-  ReviewsPage,
-  UnknownRepoPage,
-} from "./components.js";
+import { loadAssets } from "./assets.js";
+import { RepoPage, UnknownRepoPage } from "./components.js";
+import { OverviewPage } from "./overview-page.js";
+import { buildOverview } from "./overview-view.js";
 import { buildRepoView, type RepoViewDeps } from "./repo-view.js";
-import { buildReviewView } from "./review-view.js";
 
 // Routes read through StorePort only: no SQL, no table name, no predicate
 // composed here (AD-27). No GitHub call happens on the request path (AD-3).
@@ -47,10 +41,9 @@ import { buildReviewView } from "./review-view.js";
  * in a helper - is invisible to it, and no amount of `Required<>` will find
  * it.
  *
- * The hops BELOW this one are guarded the same way, and there are four:
+ * The hops BELOW this one are guarded the same way, and there are three:
  * `resolveAppDeps`, which declares no optional member and is what lets the
- * other three be `Required<>` at all, then `boardDeps`, `queueDeps` and
- * `repoViewDeps`.
+ * other two be `Required<>` at all, then `boardDeps` and `repoViewDeps`.
  */
 export interface AppDeps {
   store: StorePort;
@@ -221,18 +214,6 @@ export function boardDeps(resolved: ResolvedDeps): Required<BoardDeps> {
   };
 }
 
-/** The queue's dependencies: ranking, no tiles and no lane table. */
-export function queueDeps(resolved: ResolvedDeps): Required<QueueDeps> {
-  return {
-    policy: resolved.policy,
-    kevPolicy: resolved.kevPolicy,
-    actionsPolicy: resolved.actionsPolicy,
-    rankPolicy: resolved.rankPolicy,
-    hungAfterMs: resolved.hungAfterMs,
-    defaultBranchOf: resolved.defaultBranchOf,
-  };
-}
-
 /**
  * One repository page's dependencies.
  *
@@ -262,12 +243,12 @@ export function repoViewDeps(
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
   const resolved = resolveAppDeps(deps);
+  // At startup, so a missing file stops the process rather than a page.
+  const assets = loadAssets();
 
   app.get("/", (c) => {
     const now = deps.now();
-    // One queue build per request (AD-32): tiles, rows, summary and the
-    // collection-health table all read this one result.
-    const board = buildBoard(
+    const view = buildOverview(
       deps.store,
       deps.watched,
       now,
@@ -275,7 +256,7 @@ export function createApp(deps: AppDeps): Hono {
     );
     // Without the doctype browsers render in quirks mode, where the box model
     // and table metrics differ from what the styles were written against.
-    const body = Page({ board, generatedAt: now.toISOString() });
+    const body = OverviewPage({ view, assets });
     // Every freshness verdict on this page is computed against the render
     // clock. A cached copy re-presents those verdicts later, still claiming
     // "fresh", which is the one thing the page must never do.
@@ -283,26 +264,13 @@ export function createApp(deps: AppDeps): Hono {
     return c.html(`<!DOCTYPE html>${body}`);
   });
 
-  app.get("/queue", (c) => {
-    const now = deps.now();
-    const queue = buildQueue(deps.store, now, queueDeps(resolved));
-    // The two parameters are the whole filter grammar (AD-39). A value the
-    // grammar does not know renders the no-matches state, still 200: a
-    // stale link must land on a sentence, never on an error page.
-    const filter = parseQueueFilter(
-      c.req.query("topic"),
-      c.req.query("repo"),
-      deps.watched,
-    );
-    const filtered = applyQueueFilter(queue, filter, deps.watched);
-    const body = QueuePage({
-      queue,
-      filtered,
-      filter,
-      generatedAt: now.toISOString(),
-    });
-    c.header("Cache-Control", "no-store");
-    return c.html(`<!DOCTYPE html>${body}`);
+  // The file table is fixed, so a name that is not in it reaches no disk.
+  app.get("/assets/:name", (c) => {
+    const asset = assets[c.req.param("name")];
+    if (asset === undefined) return c.notFound();
+    c.header("Cache-Control", "public, max-age=31536000, immutable");
+    c.header("Content-Type", asset.contentType);
+    return c.body(asset.body);
   });
 
   app.get("/repo/:owner/:name", (c) => {
@@ -338,14 +306,6 @@ export function createApp(deps: AppDeps): Hono {
       repoViewDeps(resolved, resolved.defaultBranchOf(repo)),
     );
     const body = RepoPage({ view, generatedAt: now.toISOString() });
-    return c.html(`<!DOCTYPE html>${body}`);
-  });
-
-  app.get("/reviews", (c) => {
-    const now = deps.now();
-    const view = buildReviewView(deps.store, deps.watched, now, deps.policy);
-    const body = ReviewsPage({ view, generatedAt: now.toISOString() });
-    c.header("Cache-Control", "no-store");
     return c.html(`<!DOCTYPE html>${body}`);
   });
 

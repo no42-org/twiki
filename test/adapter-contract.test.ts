@@ -139,6 +139,9 @@ describe("Dependabot alerts map field for field", () => {
         severity: string;
         epss: { percentage: number; percentile: number };
       };
+      security_vulnerability: {
+        first_patched_version: { identifier: string };
+      };
     }>("alert-org.json");
     const adapter = adapterFor(restStub([raw]), "organization");
 
@@ -161,6 +164,8 @@ describe("Dependabot alerts map field for field", () => {
       epssPercentile: raw.security_advisory.epss.percentile,
       relationship: raw.dependency.relationship ?? null,
       scope: raw.dependency.scope ?? null,
+      firstPatchedVersion:
+        raw.security_vulnerability.first_patched_version.identifier,
       htmlUrl: raw.html_url,
       createdAt: raw.created_at,
     });

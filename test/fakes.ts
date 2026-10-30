@@ -182,6 +182,7 @@ export function makeAlert(
     epssPercentile: 0.9,
     relationship: "direct",
     scope: "runtime",
+    firstPatchedVersion: "2.4.1",
     htmlUrl: "https://github.com/no42-org/twiki/security/dependabot/1",
     createdAt: "2026-08-01T00:00:00.000Z",
     ...partial,
@@ -988,17 +989,12 @@ export { REPO };
  * test pins it entire rather than one link of it. `current` is the link
  * carrying `aria-current="page"`; a repo page has none.
  */
-export const primaryNav = (
-  current: "overview" | "queue" | "reviews" | null,
-  at: string,
-): string => {
+export const primaryNav = (current: "overview" | null, at: string): string => {
   const link = (href: string, text: string) =>
     `<a href="${href}"${current === text ? ' aria-current="page"' : ""}>${text}</a>`;
   return (
     '<nav class="primary" aria-label="primary">' +
     link("/", "overview") +
-    link("/queue", "queue") +
-    link("/reviews", "reviews") +
     `<span class="rendered">rendered <time datetime="${at}">${at}</time></span>` +
     "</nav>"
   );

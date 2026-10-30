@@ -53,7 +53,7 @@ const NOW = new Date("2026-09-08T12:00:00.000Z");
 const AT = "2026-09-08T11:55:00.000Z";
 const POLICY = { cadenceMs: 15 * 60_000 };
 
-const PAGES = ["/", "/queue", "/repo/no42-org/twiki", "/reviews"] as const;
+const PAGES = ["/", "/repo/no42-org/twiki"] as const;
 const PHONE = { width: 320, height: 640 };
 const TABLET = { width: 800, height: 1024 };
 const DESKTOP = { width: 1280, height: 800 };
@@ -167,86 +167,20 @@ describe("rendered in Chromium (Story 1.9, #131)", () => {
       root: document.documentElement.scrollWidth - window.innerWidth,
     }));
 
-  describe.each([PHONE, TABLET, SMALL_DESKTOP, DESKTOP])(
-    "at $width px",
-    (viewport) => {
-      it.each(PAGES)("%s does not scroll sideways", async (path) => {
-        const page = await open(path, viewport);
-        const reach = await overflow(page);
-        expect(reach.body).toBe(0);
-        expect(reach.root).toBeLessThanOrEqual(0);
-        await page.close();
-      });
-    },
-  );
-
-  /** The board's layout facts at one width, from computed style. */
-  const board = (page: Page) =>
-    page.evaluate(() => {
-      const display = (selector: string) =>
-        getComputedStyle(document.querySelector(selector) as Element).display;
-      const tbody = document.querySelector("table.board tbody") as Element;
-      return {
-        tileColumns: getComputedStyle(
-          document.querySelector("nav.tiles") as Element,
-        ).gridTemplateColumns.split(" ").length,
-        tbodyOverflow: tbody.scrollWidth - tbody.clientWidth,
-        signals: display("td.signals"),
-        chips: display("td.c"),
-        rest: display(".signals-rest"),
-        // Visually hidden, not display: none: the roles stay in the tree.
-        theadHidden: display("table.board thead") === "none",
-        theadPosition: getComputedStyle(
-          document.querySelector("table.board thead") as Element,
-        ).position,
-        // The header word painted on the card, off beside a real header.
-        label: display("table.board td.c .lbl"),
-      };
+  describe.each([
+    PHONE,
+    { width: 400, height: 640 },
+    { width: 640, height: 800 },
+    TABLET,
+    SMALL_DESKTOP,
+    DESKTOP,
+  ])("at $width px", (viewport) => {
+    it.each(PAGES)("%s does not scroll sideways", async (path) => {
+      const page = await open(path, viewport);
+      const reach = await overflow(page);
+      expect(reach.body).toBe(0);
+      expect(reach.root).toBeLessThanOrEqual(0);
+      await page.close();
     });
-
-  it("at 320px wraps the tiles into two columns and stacks the board into cards", async () => {
-    const page = await open("/", PHONE);
-    expect(await board(page)).toEqual({
-      tileColumns: 2,
-      tbodyOverflow: 0,
-      signals: "none",
-      chips: "block",
-      rest: "none",
-      theadHidden: false,
-      theadPosition: "absolute",
-      label: "inline",
-    });
-    await page.close();
-  });
-
-  it("at 800px shows one signals cell in place of the six chip columns, and three tile columns", async () => {
-    const page = await open("/", TABLET);
-    expect(await board(page)).toEqual({
-      tileColumns: 3,
-      tbodyOverflow: 0,
-      signals: "table-cell",
-      chips: "none",
-      rest: "inline",
-      theadHidden: false,
-      theadPosition: "static",
-      label: "none",
-    });
-    expect(await overflow(page)).toEqual({ body: 0, root: 0 });
-    await page.close();
-  });
-
-  it("at 1280px shows the six chip columns and no signals cell", async () => {
-    const page = await open("/", DESKTOP);
-    expect(await board(page)).toEqual({
-      tileColumns: 6,
-      tbodyOverflow: 0,
-      signals: "none",
-      chips: "table-cell",
-      rest: "none",
-      theadHidden: false,
-      theadPosition: "static",
-      label: "none",
-    });
-    await page.close();
   });
 });
