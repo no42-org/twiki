@@ -207,7 +207,31 @@ describe("the overview in Chromium", () => {
     await page.close();
   });
 
-  it("leaves room for a pill's hover ring inside the scrolling table", async () => {
+  it("answers hover and press as lcars-button does, with no ring", async () => {
+    const page = await open();
+    const pill = '#rows button[data-value="CRITICAL"]';
+    const style = () =>
+      page.$eval(pill, (el) => {
+        const s = getComputedStyle(el);
+        return { filter: s.filter, shadow: s.boxShadow };
+      });
+    await page.hover(pill);
+    expect(await style()).toEqual({
+      filter: "brightness(1.2)",
+      shadow: "none",
+    });
+    await page.click(pill);
+    await page.mouse.move(0, 0);
+    expect(
+      await page.$eval(
+        '#rows button[data-value="CRITICAL"]',
+        (el) => getComputedStyle(el).filter,
+      ),
+    ).toBe("brightness(1.4)");
+    await page.close();
+  });
+
+  it("leaves room for a pill's focus outline inside the scrolling table", async () => {
     const page = await open();
     const room = await page.evaluate(() => {
       const wrap = document.querySelector(".table-wrap") as Element;

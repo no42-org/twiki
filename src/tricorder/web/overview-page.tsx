@@ -40,8 +40,8 @@ const STYLE = `
   .chip .x { display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 50%; background: ${C.ink}; color: ${C.lilac}; }
   .chip .x svg { display: block; width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
   #clear { all: unset; cursor: pointer; color: ${C.ice}; font-size: 17px; }
-  /* A scroll container clips what paints outside it, so the hover ring and the
-     focus outline need room inside it. */
+  /* A scroll container clips what paints outside it, so the focus outline
+     needs room inside it. */
   .table-wrap { overflow-x: auto; padding-inline: 4px; margin-inline: -4px; }
   @media (max-width: 599px) { .table-wrap { max-width: calc(100vw - 32px); } }
   table { width: 100%; border-collapse: collapse; font-size: 19px; letter-spacing: .02em; }
@@ -67,7 +67,9 @@ const STYLE = `
     .pill { padding-block: 6px; text-box: trim-both cap alphabetic; }
     .chip:not(.repo) .label { text-box: trim-both cap alphabetic; }
   }
-  .pill:hover, .pill[aria-pressed="true"] { box-shadow: 0 0 0 2px ${C.text}; }
+  /* The same states as lcars-button: brighter on hover, brighter and pressed in when active. */
+  .pill:hover, .chip:hover { filter: brightness(1.2); }
+  .pill:active, .chip:active, .pill[aria-pressed="true"] { filter: brightness(1.4); transform: scale(0.98); }
   .CRITICAL, .FAILING { background: ${C.critical}; }
   .HIGH { background: ${C.high}; }
   .MEDIUM { background: ${C.medium}; }
