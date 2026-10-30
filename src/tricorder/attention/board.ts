@@ -346,8 +346,10 @@ export function buildBoard(
   deps: BoardDeps,
 ): Board {
   const {
+    items: _items,
     queue: _queue,
     release: _release,
+    scopedHealth: _scopedHealth,
     ...board
   } = buildBoardWithSources(store, watched, now, deps);
   return board;
@@ -355,10 +357,17 @@ export function buildBoard(
 
 /** What a board was built from, for a page that lists more than it counts. */
 export interface BoardSources {
+  /**
+   * The items the board may count, in chain order: the queue without
+   * de-listed repositories and without alerts coverage withdrew.
+   */
+  items: QueueItem[];
   /** The one queue everything on the board comes from (AD-32). */
   queue: Queue;
   /** Every watched repository's release reading, keyed by slug. */
   release: Map<string, ReleaseReading>;
+  /** Full runs of lanes that speak for a watched owner, as tile warnings read them. */
+  scopedHealth: CollectionHealth[];
 }
 
 export function buildBoardWithSources(
@@ -459,6 +468,12 @@ export function buildBoardWithSources(
   const owners = new Set(
     [...repos.values()].map((repo) => repo.owner.toLowerCase()),
   );
+  const scopedHealth = health.filter(
+    (h) =>
+      h.scope === "full" &&
+      (laneTopic(h.lane)?.installation !== null ||
+        owners.has(h.installation.toLowerCase())),
+  );
   const warnings = new Map<Topic, string[]>();
   for (const h of health) {
     // Every outcome but a clean one and a run still inside its budget: a
@@ -544,6 +559,10 @@ export function buildBoardWithSources(
     deps,
     off,
   );
+  const itemKeys = new Set(
+    [...byRepo.values()].flatMap((repo) => repo.items.map((i) => i.key)),
+  );
+  const items = queue.items.filter((item) => itemKeys.has(item.key));
 
   // Nothing has ever been collected. No count on this page would be a
   // finding, so none is offered (AD-28): every tile reads `never collected`,
@@ -571,8 +590,10 @@ export function buildBoardWithSources(
       quiet: [],
       unconfirmed: [...repos.keys()],
       unreadable: queue.unreadable,
+      items,
       queue,
       release,
+      scopedHealth,
       collected,
       health,
     };
@@ -990,8 +1011,10 @@ export function buildBoardWithSources(
     quiet,
     unconfirmed,
     unreadable: queue.unreadable,
+    items,
     queue,
     release,
+    scopedHealth,
     collected,
     health,
   };

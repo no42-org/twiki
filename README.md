@@ -139,7 +139,7 @@ Filters and sort live in the query string, so a view can be bookmarked, and the 
 A box with no confirmed sweep behind it says `UNCONFIRMED` rather than a zero, and the footer names any lane that is not current.
 The LCARS bundle and the client script are served by the web process, so the page calls no other host.
 
-`/repo/owner/name` keeps a per-repository page. It is the only place default-branch CI failures and open issues show, and the overview does not link to it.
+`/repo/owner/name` keeps a per-repository page. It is the only place open issues show, and the only place listing default-branch CI failures. The overview does not link to it, but a red default branch is named in its footer, which also turns the lower corner to `RED MAIN`.
 
 Rows follow the ranking chain within each group.
 The ordering is a local policy, not SSVC or any published standard: a broken default branch, then CISA KEV listing, then EPSS, then severity, then update size, then whether GitHub could prepare the update.

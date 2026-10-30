@@ -89,10 +89,6 @@ export const STYLE = `${TOKEN_STYLE}
   .shown { color: var(--muted); font-size: ${TYPE.small.size}; font-weight: 400; line-height: ${TYPE.small.lineHeight}; }
   .crumb { color: var(--muted); font-size: ${TYPE.small.size}; margin-bottom: ${SPACE[2]}; }
   .crumb a { margin-right: 0; }
-  .quiet { background: var(--surface); border: 1px solid var(--border); border-radius: ${RADIUS.md}; padding: ${SPACE[3]} ${SPACE[4]}; margin-top: ${SPACE[6]}; }
-  .quiet summary { font-weight: 600; }
-  .quiet p { margin: ${SPACE[2]} 0 0; font-size: ${TYPE.small.size}; line-height: 1.8; }
-  .quiet a { margin-right: ${SPACE[3]}; }
   .topic { font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); }
   @media (max-width: 639px) {
     .count.unconfirmed, .count.never { font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; }

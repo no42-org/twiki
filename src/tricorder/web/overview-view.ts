@@ -35,6 +35,17 @@ const SEVERITY_RANK: Readonly<Record<string, number>> = {
   LOW: 1,
 };
 
+const SEVERITY_ORDER = [
+  "CRITICAL",
+  "HIGH",
+  "MEDIUM",
+  "LOW",
+  "UNKNOWN",
+  "UNGRADED",
+];
+
+const NO_CONFIRMATION = "no sweep has confirmed this";
+
 const HOUR_MS = 3_600_000;
 const DAY_HOURS = 24;
 
@@ -71,6 +82,8 @@ export interface OverviewBox {
   unconfirmed: string | null;
   breakdown: string;
   notes: string[];
+  /** Something behind this box is unconfirmed, so the footer may not say all clear. */
+  partial: boolean;
 }
 
 export interface OverviewHealth {
@@ -295,21 +308,49 @@ function tally(
     .join(" / ");
 }
 
-/** A box's number, or the reason it has none: absence is never a zero (AD-28). */
-function fromTile(
+/** One lane a box stands on, and what it says about itself. */
+interface BoxSource {
+  confirmed: boolean;
+  word: string;
+  reason: string;
+  warnings: readonly string[];
+}
+
+function tileSource(tile: Tile | undefined): BoxSource {
+  return {
+    confirmed: typeof tile?.count === "number",
+    word: (typeof tile?.count === "string"
+      ? tile.count
+      : "unconfirmed"
+    ).toUpperCase(),
+    reason: tile?.reason ?? NO_CONFIRMATION,
+    warnings: tile?.warnings ?? [],
+  };
+}
+
+/**
+ * A box's number, or the reason it has none: absence is never a zero (AD-28).
+ * With rows to show, the rows are the number and a gap goes beside it, so a
+ * box never says unconfirmed above items listed under it.
+ */
+function boxFrom(
   group: Group,
-  tile: Tile | undefined,
   rows: readonly OverviewRow[],
   breakdown: string,
+  sources: readonly BoxSource[],
+  extra: readonly string[] = [],
 ): OverviewBox {
-  if (tile === undefined || typeof tile.count !== "number") {
-    const word = typeof tile?.count === "string" ? tile.count : "unconfirmed";
+  const gaps = sources.filter((source) => !source.confirmed);
+  const warnings = sources.flatMap((source) => source.warnings);
+  const first = gaps[0];
+  if (rows.length === 0 && first !== undefined) {
     return {
       group,
       count: null,
-      unconfirmed: word.toUpperCase(),
-      breakdown: tile?.reason ?? "no sweep has confirmed this",
-      notes: tile?.warnings ?? [],
+      unconfirmed: first.word,
+      breakdown: first.reason,
+      notes: [...warnings, ...extra],
+      partial: true,
     };
   }
   return {
@@ -317,7 +358,8 @@ function fromTile(
     count: rows.length,
     unconfirmed: null,
     breakdown,
-    notes: tile.warnings,
+    notes: [...gaps.map((gap) => gap.reason), ...warnings, ...extra],
+    partial: gaps.length > 0 || extra.length > 0,
   };
 }
 
@@ -343,6 +385,7 @@ function releaseBox(
       unconfirmed: "UNCONFIRMED",
       breakdown: open[0]?.reason ?? "",
       notes: [],
+      partial: true,
     };
   }
   return {
@@ -351,6 +394,7 @@ function releaseBox(
     unconfirmed: null,
     breakdown,
     notes: open.length > 0 ? [`${open.length} unconfirmed`] : [],
+    partial: open.length > 0,
   };
 }
 
@@ -358,6 +402,7 @@ function healthOf(
   health: readonly CollectionHealth[],
   newestAge: string | null,
   boxes: readonly OverviewBox[],
+  redBranches: readonly string[],
 ): OverviewHealth {
   if (health.length === 0) {
     return {
@@ -377,20 +422,24 @@ function healthOf(
         .map((h) => h.lane),
     ),
   ];
-  if (behind.length > 0) {
-    return {
-      allCurrent: false,
-      readout: `LANES NOT CURRENT: ${behind.join(", ")}`,
-      status: "CHECK LANES",
-    };
-  }
   // A lane that has never run has no health row, so its box is the only sign.
-  const waiting = boxes.filter((box) => box.count === null);
-  if (waiting.length > 0) {
+  const waiting = boxes.filter((box) => box.partial);
+  const problems = [
+    // Not a box of its own, and it tops the ranking chain, so it may not sit
+    // behind an all-clear.
+    redBranches.length > 0
+      ? `RED DEFAULT BRANCH: ${redBranches.join(", ")}`
+      : null,
+    behind.length > 0 ? `LANES NOT CURRENT: ${behind.join(", ")}` : null,
+    waiting.length > 0
+      ? `NOT CONFIRMED: ${waiting.map((box) => box.group).join(", ")}`
+      : null,
+  ].filter((problem) => problem !== null);
+  if (problems.length > 0) {
     return {
       allCurrent: false,
-      readout: `NOT CONFIRMED: ${waiting.map((box) => box.group).join(", ")}`,
-      status: "CHECK LANES",
+      readout: problems.join(" // "),
+      status: redBranches.length > 0 ? "RED MAIN" : "CHECK LANES",
     };
   }
   return {
@@ -408,17 +457,27 @@ export function buildOverview(
 ): Overview {
   const board = buildBoardWithSources(store, watched, now, deps);
   const reviews = buildReviewView(store, watched, now, deps.policy);
-  const { queue, release } = board;
+  const { items, queue, release, scopedHealth } = board;
 
-  const updatePrs = updatePrIndex(queue.items);
-  const security = queue.items
+  const updatePrs = updatePrIndex(items);
+  const security = items
     .filter((item) => topicOf(item.kind) === "security")
     .map((item) => securityRow(item, queue, updatePrs, now));
 
-  const failing = queue.items
+  const failing = items
     .filter((item) => item.stuck)
     .map((item) => failingRow(item, now));
-  const asked = reviews.rows.map(
+  // One pull request, one row: a failing one that also waits on your review
+  // says so in its sentence rather than counting twice.
+  const failingByPull = new Map(
+    failing.map((row) => [`${row.repo}${row.id}`, row]),
+  );
+  const unasked = reviews.rows.filter((r) => {
+    const row = failingByPull.get(`${foldSlug(r.repo)}#${r.number}`);
+    if (row !== undefined) row.what = `${row.what} Your review requested.`;
+    return row === undefined;
+  });
+  const asked = unasked.map(
     (r): OverviewRow => ({
       key: `review:${r.key}`,
       group: "PULL REQUESTS",
@@ -460,25 +519,42 @@ export function buildOverview(
     .sort()
     .at(-1);
 
+  const reviewSource: BoxSource = {
+    confirmed: reviews.attested,
+    word: "UNCONFIRMED",
+    reason: "review requests not confirmed by a completed sweep",
+    warnings: [],
+  };
+  const unconfirmedRepos = board.unconfirmed.length;
   const boxes = [
-    fromTile(
+    boxFrom(
       "SECURITY",
-      tileOf("security"),
       security,
-      tally(security, (r) => r.severity ?? "UNGRADED", [
-        "CRITICAL",
-        "HIGH",
-        "MEDIUM",
-        "LOW",
-        "UNKNOWN",
-        "UNGRADED",
-      ]),
+      tally(security, (r) => r.severity ?? "UNGRADED", SEVERITY_ORDER),
+      [tileSource(tileOf("security"))],
+      [
+        ...(unconfirmedRepos > 0
+          ? [
+              `${unconfirmedRepos} ${unconfirmedRepos === 1 ? "repository" : "repositories"} not confirmed`,
+            ]
+          : []),
+        ...(board.unreadable > 0
+          ? [`${plural(board.unreadable, "row")} could not be read`]
+          : []),
+      ],
     ),
-    fromTile(
+    boxFrom(
       "PULL REQUESTS",
-      tileOf("pulls"),
       pulls,
       tally(pulls, (r) => r.state, ["FAILING", "REVIEW"]),
+      [
+        tileSource(tileOf("pulls")),
+        tileSource(tileOf("dependencies")),
+        reviewSource,
+      ],
+      reviews.unreadable > 0
+        ? [`${plural(reviews.unreadable, "review row")} could not be read`]
+        : [],
     ),
     releaseBox(releases, release),
   ];
@@ -487,9 +563,16 @@ export function buildOverview(
     boxes,
     rows: [...security, ...pulls, ...releases],
     health: healthOf(
-      board.health,
+      scopedHealth,
       newest === undefined ? null : ageLabel(newest, now).toUpperCase(),
       boxes,
+      [
+        ...new Set(
+          items
+            .filter((item) => item.kind === "ci_failure")
+            .map((item) => nameOf(item.repo)),
+        ),
+      ],
     ),
   };
 }

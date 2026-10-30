@@ -113,9 +113,9 @@ function defaultBranchOrNull(deps: AppDeps, repo: RepoRef): string | null {
 
 /**
  * `AppDeps` with every optional member already resolved to a value, computed
- * once per app and handed to the three builders below.
+ * once per app and handed to the two builders below.
  *
- * It is what makes those three literals assertable at all. A builder that
+ * It is what makes those two literals assertable at all. A builder that
  * resolved `deps.lanePolicies?.[COVERAGE_LANE]` for itself would be handing
  * `FreshnessPolicy | undefined` to a field `Required<>` makes mandatory, and
  * the only way to satisfy the compiler would be the silent fallback this
@@ -179,7 +179,7 @@ export function resolveAppDeps(deps: AppDeps): ResolvedDeps {
   };
 }
 
-// The three inner wiring hops, each on a SIGNATURE returning `Required<>`,
+// The two inner wiring hops, each on a SIGNATURE returning `Required<>`,
 // exactly as `buildWebDeps` guards the outer one (#143). Until now they were
 // literals inside the routes with no assertion at all: a binding dropped
 // there fell back to a default that was right for every test and wrong only
@@ -194,8 +194,7 @@ export function resolveAppDeps(deps: AppDeps): ResolvedDeps {
 //
 // `ResolvedDeps` carries the same eleven members `BoardDeps` needs today. That
 // is a coincidence of the overview wanting everything, not an identity: the
-// queue takes six of them and the repository view swaps the resolver for one
-// resolved branch.
+// repository view swaps the resolver for one resolved branch.
 
 /** The overview's dependencies. */
 export function boardDeps(resolved: ResolvedDeps): Required<BoardDeps> {
@@ -266,7 +265,9 @@ export function createApp(deps: AppDeps): Hono {
 
   // The file table is fixed, so a name that is not in it reaches no disk.
   app.get("/assets/:name", (c) => {
-    const asset = assets[c.req.param("name")];
+    const name = c.req.param("name");
+    // Own keys only: `constructor` is a property of every object.
+    const asset = Object.hasOwn(assets, name) ? assets[name] : undefined;
     if (asset === undefined) return c.notFound();
     c.header("Cache-Control", "public, max-age=31536000, immutable");
     c.header("Content-Type", asset.contentType);

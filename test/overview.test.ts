@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import type { ReleaseEvidence } from "../src/core/release-worthy.js";
-import { releaseSubject } from "../src/core/subject.js";
+import { coverageSubject, releaseSubject } from "../src/core/subject.js";
 import { DEFAULT_NOW_EPSS } from "../src/core/tier.js";
 import {
   LANE as ALERTS_LANE,
@@ -19,6 +19,7 @@ import {
 import { summarisePullRequests } from "../src/tricorder/collect/pull-requests.js";
 import { normalise as normaliseSecret } from "../src/tricorder/collect/secret-scanning.js";
 import { normalisePr } from "../src/tricorder/collect/update-prs.js";
+import { LANE as ACTIONS_LANE } from "../src/tricorder/collect/workflow-runs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { loadAssets } from "../src/tricorder/web/assets.js";
@@ -212,6 +213,35 @@ describe("the overview", () => {
       expect(row?.what).toContain("exposed. Rotate the credential.");
     });
 
+    it("lists nothing from a repository outside the allowlist", () => {
+      seedAlerts([
+        makeAlert({ repo: { owner: "no42-org", name: "delisted" } }),
+      ]);
+      expect(build().rows).toEqual([]);
+    });
+
+    it("drops alerts coverage says GitHub stopped reporting", () => {
+      seedAlerts([makeAlert()]);
+      seed("coverage", [
+        {
+          subject: coverageSubject(REPO),
+          payload: {
+            repo: "no42-org/twiki",
+            state: "alerts_disabled",
+            archived: false,
+            codeScanning: { state: "covered", reason: null },
+            secretScanning: { state: "covered", reason: null },
+          },
+        },
+      ]);
+      expect(
+        buildOverview(store, WATCHED, NOW, {
+          ...DEPS,
+          coveragePolicy: { cadenceMs: 86_400_000 },
+        }).rows,
+      ).toEqual([]);
+    });
+
     it("keeps the ranking chain's order", () => {
       seedAlerts([
         makeAlert({ number: 1, severity: "low", epssPercentage: 0.001 }),
@@ -284,6 +314,35 @@ describe("the overview", () => {
       seed("graphql-pull-requests", [pr()]);
       seed("rest-actions-runs", [check("success")]);
       expect(build().rows).toEqual([]);
+    });
+
+    it("lists a failing pull request that wants your review once", () => {
+      seed("graphql-pull-requests", [pr()]);
+      seed("rest-actions-runs", [check("failure")]);
+      seed(
+        "graphql-review-requests",
+        [
+          {
+            subject: { type: "review_request", key: "RR_7" },
+            payload: {
+              repo: "No42-Org/twiki",
+              number: 7,
+              title: "Fix the thing",
+              author: "a-contributor",
+              htmlUrl: "https://github.com/no42-org/twiki/pull/7",
+              createdAt: "2026-08-15T12:00:00.000Z",
+              requestedReviewers: ["indigo423"],
+            },
+          },
+        ],
+        "ok",
+        AT,
+        "reviews",
+      );
+      const pulls = build().rows;
+      expect(pulls.map((r) => [r.state, r.what])).toEqual([
+        ["FAILING", "Fix the thing. Checks failing. Your review requested."],
+      ]);
     });
 
     it("lists a review request, naming the owner of an unwatched repository", () => {
@@ -429,6 +488,64 @@ describe("the overview", () => {
       });
     });
 
+    it("shows rows it has over a lane that is unconfirmed, and says so beside them", () => {
+      seed(
+        "graphql-review-requests",
+        [
+          {
+            subject: { type: "review_request", key: "RR_1" },
+            payload: {
+              repo: "no42-org/twiki",
+              number: 9,
+              title: "Wire the thing",
+              author: "a-contributor",
+              htmlUrl: "https://github.com/no42-org/twiki/pull/9",
+              createdAt: "2026-08-15T12:00:00.000Z",
+              requestedReviewers: ["indigo423"],
+            },
+          },
+        ],
+        "ok",
+        AT,
+        "reviews",
+      );
+      const pulls = build().boxes[1];
+      expect(pulls).toMatchObject({ count: 1, partial: true });
+      expect(pulls?.notes.join()).toContain("not confirmed");
+    });
+
+    it("withholds a zero when only the review lane is missing", () => {
+      seed("graphql-pull-requests", [summarisePullRequests(REPO, [])]);
+      seed("graphql-update-prs", []);
+      expect(build().boxes[1]).toMatchObject({
+        count: null,
+        breakdown: "review requests not confirmed by a completed sweep",
+      });
+    });
+
+    it("states unreadable rows and takes back the all-clear", () => {
+      seedAlerts([]);
+      seed(ALERTS_LANE, [
+        {
+          subject: { type: "dependabot_alert", key: "no42-org/twiki#9" },
+          payload: { number: 9, repo: "no42-org/twiki", severity: 7 },
+        },
+        summariseRepo(REPO, []),
+      ]);
+      const [security] = build().boxes;
+      expect(security?.notes).toContain("1 row could not be read");
+      expect(build().health.allCurrent).toBe(false);
+    });
+
+    it("says how many repositories nothing confirmed", () => {
+      seedAlerts([]);
+      const [security] = build([
+        REPO,
+        { owner: "no42-org", name: "other" },
+      ]).boxes;
+      expect(security?.notes).toContain("1 repository not confirmed");
+    });
+
     it("reads a confirmed zero as a zero", () => {
       seedAlerts([]);
       expect(build().boxes[0]).toMatchObject({ count: 0, unconfirmed: null });
@@ -448,8 +565,53 @@ describe("the overview", () => {
     const seedAllClean = () => {
       seedAlerts([]);
       seed("graphql-pull-requests", [summarisePullRequests(REPO, [])]);
+      seed("graphql-update-prs", []);
+      seed("graphql-review-requests", [], "ok", AT, "reviews");
       seedRelease(evidence({ commits: [] }));
     };
+
+    it("ignores a failed run for an owner nobody watches, and a failed hot run", () => {
+      seedAllClean();
+      seed("rest-org-dependabot", [], "failed", AT, "gone-org");
+      const run = store.beginRun({
+        lane: "rest-org-dependabot",
+        installation: "no42-org",
+        scope: "hot",
+        startedAt: AT,
+      });
+      store.finishRun(run, "failed", AT);
+      expect(build().health.allCurrent).toBe(true);
+    });
+
+    it("names a red default branch, ahead of everything, in place of an all-clear", () => {
+      seedAllClean();
+      seed(ACTIONS_LANE, [
+        {
+          subject: { type: "repository_actions", key: "no42-org/twiki" },
+          payload: { repo: "no42-org/twiki", workflows: 1, failing: 1 },
+        },
+        {
+          subject: { type: "workflow_run", key: "WFR_1" },
+          payload: {
+            repo: "no42-org/twiki",
+            workflowId: 1,
+            workflowName: "CI",
+            runNumber: 3,
+            status: "completed",
+            conclusion: "failure",
+            headBranch: "main",
+            event: "push",
+            htmlUrl: "https://github.com/no42-org/twiki/actions/runs/3",
+            createdAt: "2026-08-17T11:00:00.000Z",
+          },
+        },
+      ]);
+      expect(build().health).toEqual({
+        allCurrent: false,
+        readout: "RED DEFAULT BRANCH: twiki",
+        status: "RED MAIN",
+      });
+    });
 
     it("does not call a lane current that has never run", () => {
       seedAlerts([]);
@@ -474,7 +636,8 @@ describe("the overview", () => {
       seed("rest-release-readiness", [], "failed");
       expect(build().health).toEqual({
         allCurrent: false,
-        readout: "LANES NOT CURRENT: rest-release-readiness",
+        readout:
+          "LANES NOT CURRENT: rest-release-readiness // NOT CONFIRMED: PULL REQUESTS, RELEASE WORTHY",
         status: "CHECK LANES",
       });
     });
@@ -597,6 +760,9 @@ describe("the overview", () => {
 
     it.each([
       "/assets/package.json",
+      "/assets/constructor",
+      "/assets/toString",
+      "/assets/__proto__",
       "/assets/..%2F..%2Fpackage.json",
       "/assets/%2e%2e%2fapp.js",
     ])("refuses %s", async (path) => {

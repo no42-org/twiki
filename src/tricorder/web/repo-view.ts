@@ -382,8 +382,8 @@ export interface RepoView {
   /**
    * Review requests on THIS repository only, even though the lane collects
    * them estate-wide: this page is about one watched repository, and a row
-   * from elsewhere has no business on it. The estate-wide list lives at
-   * /reviews.
+   * from elsewhere has no business on it. The estate-wide list is the
+   * overview's REVIEW rows.
    */
   reviews: RepoReviewRow[];
   reviewSection: SectionState;
@@ -893,10 +893,10 @@ export function buildRepoView(
   // 38 of 40 measured rows were in repositories nobody watches, so one
   // corrupt third-party row would mark EVERY watched repository's page
   // incomplete - the same failure the alert loop above already fixed once.
-  // The /reviews page counts them, where the reader is looking at the
-  // estate-wide list those rows actually belong to.
+  // The overview counts them, where the reader is looking at the estate-wide
+  // list those rows actually belong to.
   const reviews: RepoReviewRow[] = reviewResult.rows
-    // Oldest first, as /reviews sorts: the Waiting column only reads
+    // Oldest first: the Waiting column only reads
     // sensibly in that order. Ties break on the key so the list does not
     // reshuffle between refreshes.
     .sort(
