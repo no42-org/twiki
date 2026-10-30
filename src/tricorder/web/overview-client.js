@@ -84,6 +84,10 @@ export function formatState(filters, sort) {
   return text === "" ? "" : `?${text}`;
 }
 
+/** Drawn, because a text × sits wherever the font puts it. A constant. */
+const CROSS =
+  '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg>';
+
 function rowFrom(element) {
   const data = element.dataset;
   return {
@@ -141,12 +145,14 @@ function start() {
     button.dataset.value = value;
     const label = labels.get(`${facet}:${value}`) ?? value;
     button.setAttribute("aria-label", `Remove filter ${label}`);
-    button.textContent = label;
+    const text = document.createElement("span");
+    text.className = "label";
+    text.textContent = label;
     const cross = document.createElement("span");
     cross.className = "x";
     cross.setAttribute("aria-hidden", "true");
-    cross.textContent = "×";
-    button.append(cross);
+    cross.innerHTML = CROSS;
+    button.append(text, cross);
     return button;
   }
 

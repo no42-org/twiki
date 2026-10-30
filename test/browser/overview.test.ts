@@ -162,6 +162,64 @@ describe("the overview in Chromium", () => {
     await page.close();
   });
 
+  it("centers pill and badge capitals by trimming to the cap height", async () => {
+    const page = await open("/?severity=CRITICAL");
+    const trim = await page.evaluate(() =>
+      ["#rows .pill", ".chip .label"].map((selector) => {
+        const style = getComputedStyle(
+          document.querySelector(selector) as Element,
+        );
+        return style.getPropertyValue("text-box-trim");
+      }),
+    );
+    expect(trim).toEqual(["trim-both", "trim-both"]);
+    await page.close();
+  });
+
+  it("centers the drawn cross in its circle", async () => {
+    const page = await open("/?severity=CRITICAL");
+    const offset = await page.evaluate(() => {
+      const middle = (selector: string) => {
+        const r = (
+          document.querySelector(selector) as Element
+        ).getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      };
+      const circle = middle(".chip .x");
+      const cross = middle(".chip .x svg");
+      return { x: circle.x - cross.x, y: circle.y - cross.y };
+    });
+    expect(offset).toEqual({ x: 0, y: 0 });
+    await page.close();
+  });
+
+  it("lines the repository name up with its ID", async () => {
+    const page = await open();
+    const [repo, id] = await page.evaluate(() =>
+      ["#rows .rb", "#rows .num"].map((selector) => {
+        const r = (
+          document.querySelector(selector) as Element
+        ).getBoundingClientRect();
+        return r.y + r.height / 2;
+      }),
+    );
+    expect(repo).toBeCloseTo(id as number, 0);
+    await page.close();
+  });
+
+  it("leaves room for a pill's hover ring inside the scrolling table", async () => {
+    const page = await open();
+    const room = await page.evaluate(() => {
+      const wrap = document.querySelector(".table-wrap") as Element;
+      const pill = document.querySelector("#rows .pill") as Element;
+      return (
+        pill.getBoundingClientRect().left - wrap.getBoundingClientRect().left
+      );
+    });
+    expect(room).toBeGreaterThanOrEqual(4);
+    await page.close();
+  });
+
   it("keeps the boxes on screen at 400px, with the table scrolling inside itself", async () => {
     const page = await open();
     await page.setViewportSize({ width: 400, height: 800 });
