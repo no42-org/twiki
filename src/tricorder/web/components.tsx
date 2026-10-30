@@ -6,47 +6,21 @@
 /* biome-ignore-all lint/a11y/noRedundantRoles: the table roles are implied by the elements at desktop width only; the phone cards restyle them to `display: block`, and a browser then drops the implied role. Stating it survives that (EXPERIENCE.md Accessibility Floor). */
 
 import type { Child, FC, PropsWithChildren } from "hono/jsx";
-import { Fragment } from "hono/jsx";
 import { FEATURE_LABELS, joinNotes } from "../../core/coverage.js";
 import { isBrokenVerdict, type RunVerdict } from "../../core/run-verdict.js";
 import { safeUrl } from "../../core/safe-url.js";
-import { foldSlug } from "../../core/slug.js";
 import type { Tier } from "../../core/tier.js";
-import { TOPICS, type Topic, topicOf } from "../../core/topics.js";
+import { TOPICS, type Topic } from "../../core/topics.js";
 import type { SectionState } from "../attention/attestation.js";
-import {
-  type Board,
-  type BoardRow,
-  type Chip,
-  chipText,
-  type ReleaseCell,
-  type Tile,
-} from "../attention/board.js";
-import type { FilteredQueue, QueueFilter } from "../attention/filter.js";
 import type { Freshness } from "../attention/freshness.js";
-import type { CollectionHealth, HealthOutcome } from "../attention/health.js";
-import {
-  overviewPath,
-  queueClearPath,
-  queuePath,
-  queueRepoPath,
-  repoPath,
-  reviewsPath,
-} from "../attention/links.js";
-import type { Queue, QueueItem } from "../attention/queue.js";
+import { overviewPath } from "../attention/links.js";
 import type { RepoView } from "./repo-view.js";
-import type { ReviewView } from "./review-view.js";
-import {
-  overviewTitle,
-  queueTitle,
-  repoTitle,
-  reviewsTitle,
-  unknownRepoTitle,
-} from "./titles.js";
+import { repoTitle, unknownRepoTitle } from "./titles.js";
 import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
 
-// Server-rendered tables. There is no client-side interactivity layer in this
-// build, deliberately: nothing here needs partial updates.
+// The repository page: server-rendered tables with no client-side layer,
+// deliberately, because nothing here needs partial updates. The overview has
+// its own page in overview-page.tsx.
 //
 // Colors, sizes and spacing come from tokens.ts. Rules here name tokens only,
 // so the contrast test in test/tokens.test.ts covers every text color the page
@@ -54,16 +28,7 @@ import { RADIUS, SPACE, TOKEN_STYLE, TYPE } from "./tokens.js";
 // color in no pair is the border rule, which is decorative. No hex, no px for
 // text, no shadow: the dashboard is an instrument.
 //
-// Body's `overflow-wrap: anywhere` lowers every table cell's min-content to
-// one character, so one long title once squeezed the rank, topic and badges
-// to a letter per line (#201). Queue headers, ranks, topics and badges hold
-// bounded text, so they are kept whole and the long cells give instead. Only
-// the queue's headers: the board's ten, held whole, scroll the page at
-// 1024px. A slug is not bounded, so its two segments are kept whole only up
-// to a cap, and only at desktop width: held whole at 640px they scroll the
-// page sideways, as do queue headers held on one line there. Both are
-// checked in test/browser/queue-columns.test.ts. An inline-block does not
-// receive its link's underline, so the segments take it explicitly.
+
 export const STYLE = `${TOKEN_STYLE}
   @supports (font: -apple-system-body) { @media (hover: none) and (pointer: coarse) { html { font: -apple-system-body; } } }
   body { font-family: system-ui, sans-serif; font-size: ${TYPE.body.size}; line-height: ${TYPE.body.lineHeight}; color: var(--fg); background: var(--bg); margin: ${SPACE[8]} auto; max-width: ${SPACE.contentMax}; padding: 0 ${SPACE.gutter}; overflow-wrap: anywhere; }
@@ -76,7 +41,7 @@ export const STYLE = `${TOKEN_STYLE}
   th, td { text-align: left; padding: ${SPACE[2]} ${SPACE[3]}; border-bottom: 1px solid var(--border); }
   th { font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .queue th, td.num, td.topic, .badge { overflow-wrap: normal; white-space: nowrap; }
+  td.num, .badge { overflow-wrap: normal; white-space: nowrap; }
   .badge { display: inline-block; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; padding: ${SPACE[1]} ${SPACE[2]}; border-radius: ${RADIUS.full}; border: 1px solid currentColor; }
   .fresh   { color: var(--ok); }
   .stale   { color: var(--warn); }
@@ -92,8 +57,6 @@ export const STYLE = `${TOKEN_STYLE}
   .partial { color: var(--warn); font-weight: 600; }
   .stalled { color: var(--critical); font-weight: 600; }
   .running { color: var(--muted); }
-  .why-rank { color: var(--muted); font-size: ${TYPE.small.size}; }
-  .kev-hit { color: var(--critical); font-weight: 700; }
   .policy-note { color: var(--muted); font-size: ${TYPE.small.size}; margin-top: ${SPACE[8]}; }
   .tier { display: inline-block; font-size: ${TYPE.small.size}; font-weight: 600; line-height: ${TYPE.small.lineHeight}; padding: ${SPACE[1]} ${SPACE[2]}; border-radius: ${RADIUS.full}; border: 1px solid transparent; vertical-align: middle; }
   .tier.now { color: var(--critical); background: var(--critical-tint); }
@@ -110,25 +73,10 @@ export const STYLE = `${TOKEN_STYLE}
   nav.primary a[aria-current] { color: var(--fg); text-decoration: none; border-bottom: 2px solid var(--link); }
   .rendered { margin-left: auto; color: var(--muted); }
   @media (max-width: 639px) { nav.primary { position: sticky; top: 0; z-index: 1; margin: 0 -${SPACE.gutter}; padding: 0 ${SPACE.gutter}; } .rendered { flex-basis: 100%; } html { scroll-padding-top: calc(2 * ${SPACE.navHeight}); } }
-  .tiles { display: grid; grid-template-columns: repeat(6, minmax(min-content, 1fr)); gap: ${SPACE[3]}; margin: ${SPACE[4]} 0 ${SPACE[6]}; }
-  .tile { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: ${RADIUS.md}; padding: ${SPACE[3]}; text-decoration: none; color: var(--fg); }
-  .count { display: block; font-size: ${TYPE.count.size}; font-weight: ${TYPE.count.weight}; line-height: ${TYPE.count.lineHeight}; font-variant-numeric: tabular-nums; margin-bottom: ${SPACE[2]}; }
   .count.critical { color: var(--critical); }
   .count.unconfirmed { color: var(--muted); font-style: italic; }
-  .now-marker { font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; color: var(--critical); }
   .label { display: block; font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--link); text-decoration: underline; }
-  .board tbody td, .board tbody th { border-bottom: 0; }
-  .board tbody { border-bottom: 1px solid var(--border); }
-  .board tr.repo td:first-child { padding-left: 9px; }
-  .board tr.why th { padding: 0; width: 0; }
-  .board tr.why td { padding: 0 ${SPACE[3]} ${SPACE[3]} 9px; }
-  tbody.now tr.repo td:first-child { border-left: 3px solid var(--critical); }
-  tbody.soon tr.repo td:first-child { border-left: 3px solid var(--warn); }
-  tbody.now tr.why th { border-left: 3px solid var(--critical); }
-  tbody.soon tr.why th { border-left: 3px solid var(--warn); }
-  .board .signals, .signals-rest { display: none; }
   .slug { font-weight: 600; }
-  .seg { display: inline-block; width: max-content; max-width: 20rem; text-decoration: inherit; }
   .chip { display: inline-block; min-width: 24px; min-height: 24px; box-sizing: border-box; padding: 3px 6px; border-radius: ${RADIUS.sm}; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; font-variant-numeric: tabular-nums; }
   .chip.zero { color: var(--muted); }
   .chip.critical { color: var(--critical); font-weight: 700; }
@@ -141,96 +89,21 @@ export const STYLE = `${TOKEN_STYLE}
   .shown { color: var(--muted); font-size: ${TYPE.small.size}; font-weight: 400; line-height: ${TYPE.small.lineHeight}; }
   .crumb { color: var(--muted); font-size: ${TYPE.small.size}; margin-bottom: ${SPACE[2]}; }
   .crumb a { margin-right: 0; }
-  .legend { color: var(--muted); font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; margin: 0; }
-  .quiet { background: var(--surface); border: 1px solid var(--border); border-radius: ${RADIUS.md}; padding: ${SPACE[3]} ${SPACE[4]}; margin-top: ${SPACE[6]}; }
-  .quiet summary { font-weight: 600; }
-  .quiet p { margin: ${SPACE[2]} 0 0; font-size: ${TYPE.small.size}; line-height: 1.8; }
-  .quiet a { margin-right: ${SPACE[3]}; }
-  .filters { display: flex; flex-wrap: wrap; gap: ${SPACE[4]}; margin: ${SPACE[4]} 0 ${SPACE[2]}; font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; }
-  .filters a { display: inline-block; min-width: 24px; min-height: 24px; box-sizing: border-box; margin: 0; padding: ${SPACE[1]}; text-align: center; text-decoration: none; border-bottom: 2px solid transparent; }
-  .filters a[aria-current] { color: var(--fg); border-bottom-color: var(--link); }
-  .filter-state { margin: 0 0 ${SPACE[2]}; }
   .topic { font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); }
   @media (max-width: 639px) {
-    .tiles { grid-template-columns: repeat(2, 1fr); }
-    .seg { display: inline; }
     .count.unconfirmed, .count.never { font-size: ${TYPE.small.size}; line-height: ${TYPE.small.lineHeight}; }
     table.cards, table.cards tbody, table.cards tr, table.cards td { display: block; }
     table.cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     table.cards tr { border-bottom: 1px solid var(--border); padding: ${SPACE[3]} 0; }
     table.cards td { border: 0; padding: 2px 0; text-align: left; }
     table.cards .lbl { display: inline; font-size: ${TYPE.label.size}; font-weight: ${TYPE.label.weight}; line-height: ${TYPE.label.lineHeight}; letter-spacing: ${TYPE.label.tracking}; text-transform: uppercase; color: var(--muted); margin-right: ${SPACE[1]}; }
-    .board tbody { padding: ${SPACE[3]} 0; }
-    .board tbody.now { border-left: 3px solid var(--critical); padding-left: ${SPACE[3]}; }
-    .board tbody.soon { border-left: 3px solid var(--warn); padding-left: ${SPACE[3]}; }
-    table.board tr { border: 0; padding: 0; }
-    .board tbody tr.repo td:first-child { border-left: 0; padding-left: 0; }
-    .board tr.repo { display: flex; flex-wrap: wrap; gap: ${SPACE[2]}; align-items: baseline; }
-    .board tr.repo td { padding: 0; }
-    .board td.slug-cell { flex: 1 1 calc(100% - 6rem); }
-    .board td.fresh-cell { flex-basis: 100%; }
-    .board tr.why th { display: block; border-left: 0; }
-    .board tr.why td { padding: ${SPACE[2]} 0 0; }
-  }
-  @media (min-width: 640px) and (max-width: 1023px) {
-    .tiles { grid-template-columns: repeat(3, 1fr); }
-    .seg { display: inline; }
-    .queue th { white-space: normal; }
-    .board .c { display: none; }
-    .board .signals { display: table-cell; }
-    .signals-rest { display: inline; }
   }
 `;
-
-/**
- * Outcome word to style class, spelled out per outcome so a new member of
- * HealthOutcome fails to compile here rather than rendering unstyled. Running
- * stays muted on purpose: every tick shows a running lane, and amber on the
- * normal state would train the reader to ignore amber.
- */
-const OUTCOME_CLASS: Readonly<Record<HealthOutcome, string>> = {
-  ok: "ok",
-  partial: "partial",
-  failed: "failed",
-  running: "running",
-  stalled: "stalled",
-};
 
 /** Heading label per topic. TOPICS is exhaustive over Topic, so no fallback. */
 const TOPIC_LABEL: Readonly<Record<Topic, string>> = Object.fromEntries(
   TOPICS.map((t) => [t.topic, t.label]),
 ) as Record<Topic, string>;
-
-/**
- * What the queue's summary sentence calls each topic's items.
- *
- * Not derivable from `label` or from `noun`: the sentence wants a plural in
- * the reader's own words - `open alerts`, `broken builds` - where the table
- * headers want the topic's name. Kept as a `Record` over the whole union, so
- * a new topic is a compile error here rather than a count that silently goes
- * missing from the line (which has happened three times, once per new kind).
- */
-const QUEUE_TOPIC_NOUN: Readonly<Record<Topic, string>> = {
-  security: "open alerts",
-  ci: "broken builds",
-  dependencies: "update PRs",
-  pulls: "pull requests",
-  issues: "untriaged issues",
-  // Never counted here: review requests are collected estate-wide, without
-  // the allowlist filter, and have their own page rather than a place in the
-  // queue. It is in the table only so the compiler keeps demanding an entry
-  // per topic; `QUEUE_TOPIC_COUNTS` drops it by asking TOPICS which topics
-  // carry a kind at all.
-  reviews: "review requests",
-};
-
-/**
- * The topics the summary counts, in the vocabulary's order: exactly those
- * with a queue kind behind them.
- */
-const QUEUE_TOPIC_COUNTS = TOPICS.filter((t) => t.kinds.length > 0).map(
-  (t) => ({ topic: t.topic, noun: QUEUE_TOPIC_NOUN[t.topic] }),
-);
 
 // Every table on these pages is one markup for every width. Under 640px CSS
 // restyles it into stacked cards, and a browser that sees `display: block`
@@ -323,156 +196,6 @@ export const FreshnessBadge: FC<{ freshness: Freshness; age: string }> = ({
 );
 
 /**
- * One count chip (AD-35).
- *
- * Four states, each a word plus a color, none mistakable for another: a
- * confirmed zero is muted, a count carries its worst severity in weight, a
- * topic GitHub is not watching reads `not covered`, and a topic no completed
- * sweep confirmed reads `unconfirmed`, never `0` (AD-28). Only a count is a
- * link, and a linked chip is at least 24px square. The signals cell passes
- * its own `text`, the same words with the topic in front.
- */
-const CountChip: FC<{ chip: Chip; text?: string }> = ({
-  chip,
-  text = chipText(chip),
-}) => {
-  switch (chip.state) {
-    case "not-covered":
-      return (
-        <span class="chip uncovered" title={chip.reason ?? undefined}>
-          {text}
-        </span>
-      );
-    case "unconfirmed":
-      return (
-        <span class="chip unconfirmed" title={chip.reason ?? undefined}>
-          {text}
-        </span>
-      );
-    case "zero":
-      return <span class="chip zero">{text}</span>;
-    case "count": {
-      const weight =
-        chip.severity === "critical"
-          ? " critical"
-          : chip.severity === "high"
-            ? " high"
-            : "";
-      return chip.href === null ? (
-        <span class={`chip${weight}`}>{text}</span>
-      ) : (
-        <a class={`chip${weight}`} href={chip.href}>
-          {text}
-        </a>
-      );
-    }
-  }
-};
-
-/**
- * The Release cell (#196). Not a topic chip: never a count. `ready` links to
- * the repository page's release section, with the summary on its title and
- * on the why-line; `unconfirmed` is the same marker CountChip uses, with its
- * reason on the title, so a value nobody collected never reads as `none`.
- * `not tracked` is an opt-out, so it has its own outline and never wears
- * `none`'s class.
- */
-const ReleaseChip: FC<{ cell: ReleaseCell }> = ({ cell }) => {
-  switch (cell.state) {
-    case "ready":
-      return (
-        <a class="chip" href={cell.href} title={cell.summary}>
-          ready
-        </a>
-      );
-    case "none":
-      return <span class="chip zero">none</span>;
-    case "not-tracked":
-      return <span class="chip untracked">not tracked</span>;
-    case "unconfirmed":
-      return (
-        <span class="chip unconfirmed" title={cell.reason}>
-          unconfirmed
-        </span>
-      );
-  }
-};
-
-/**
- * Columns the board shows on desktop after the why-line's row header: the
- * second half of Repository, Tier, one per topic, Release and Last confirmed.
- * The tablet's Signals cell is hidden on desktop and not counted.
- */
-const WHY_COLSPAN = 1 + 1 + TOPICS.length + 1 + 1;
-
-/**
- * A lane of this tile's topic failed or stalled, so the count is a lower
- * bound. Said on the tile, where the reader looks, and not only in the
- * health table at the foot of the page (#127).
- */
-const TileWarnings: FC<{ tile: Tile }> = ({ tile }) => (
-  <>
-    {tile.warnings.map((line) => (
-      <p key={line} class="attest warn">
-        {line}
-      </p>
-    ))}
-  </>
-);
-
-/**
- * One topic tile. The count turns critical, with a `· N now` marker, only
- * when an item of this topic put a repository in `now`. A topic no sweep has
- * confirmed reads `unconfirmed` in the count's place, says which absence
- * that is, and is not a link: the filter behind it has nothing to show.
- * Before the first completed sweep every tile reads `never collected`; the
- * note under the board says where to look.
- */
-const TopicTile: FC<{ tile: Tile }> = ({ tile }) =>
-  // A div rather than a span for the non-link tile: the warning lines are
-  // paragraphs, which phrasing content may not hold.
-  tile.count === "never collected" ? (
-    <div class="tile">
-      <span class="count never">never collected</span>
-      <span class="label">{tile.label}</span>
-      <TileWarnings tile={tile} />
-    </div>
-  ) : tile.count === "unconfirmed" ? (
-    <div class="tile">
-      <span class="count unconfirmed">unconfirmed</span>
-      <span class="label">{tile.label}</span>
-      <span class="attest">{tile.reason}</span>
-      <TileWarnings tile={tile} />
-    </div>
-  ) : (
-    <a class="tile" href={tile.href}>
-      {tile.nowCount > 0 ? (
-        <span class="count critical">
-          {tile.count} <span class="now-marker">· {tile.nowCount} now</span>
-        </span>
-      ) : (
-        <span class="count">{tile.count}</span>
-      )}
-      <span class="label">{tile.label}</span>
-      <TileWarnings tile={tile} />
-    </a>
-  );
-
-/**
- * Rows the store holds but nothing could read. One sentence for every page
- * that shows counts, so the overview and the queue cannot word the same
- * gap two ways: a count over unreadable rows is a lower bound, and the
- * page must say so before it says anything is quiet (AD-28).
- */
-const UnreadableNote: FC<{ count: number }> = ({ count }) =>
-  count > 0 ? (
-    <p class="failed">
-      {count} stored {count === 1 ? "item" : "items"} could not be read and{" "}
-      {count === 1 ? "is" : "are"} not shown. This list is incomplete.
-    </p>
-  ) : null;
-
-/**
  * The one page shell.
  *
  * Both pages used to carry their own copy of the html/head/nav chrome, which
@@ -495,7 +218,7 @@ const Layout: FC<
   PropsWithChildren<{
     title: string;
     /** Which nav link is this page. A repo page is none of them. */
-    current: "overview" | "queue" | "reviews" | null;
+    current: "overview" | null;
     generatedAt: string;
     skips: readonly { href: string; label: string }[];
     footer?: string;
@@ -521,18 +244,6 @@ const Layout: FC<
         >
           overview
         </a>
-        <a
-          href={queueClearPath()}
-          aria-current={current === "queue" ? "page" : undefined}
-        >
-          queue
-        </a>
-        <a
-          href={reviewsPath()}
-          aria-current={current === "reviews" ? "page" : undefined}
-        >
-          reviews
-        </a>
         <span class="rendered">
           rendered <time datetime={generatedAt}>{generatedAt}</time>
         </span>
@@ -545,551 +256,11 @@ const Layout: FC<
   </html>
 );
 
-/**
- * The overview's policy note. Tiers are buckets over the queue's order, so
- * the note names the same local policy the queue does: a reader must not
- * take `now` for a standard's verdict any more than a rank.
- */
-/**
- * The chain in the reader's words, and all six terms of it: a note that
- * lists five invites exactly the belief the ranking module's own comment
- * warns about, that the chain is shorter than it is.
- */
-const CHAIN_IN_WORDS =
-  "a broken default branch, then CISA KEV listing, then EPSS, then severity, then update size, then whether GitHub could prepare the update";
-
-const OVERVIEW_POLICY = `Tiers are buckets over the ordering of the queue, which is a local policy: ${CHAIN_IN_WORDS}. It is not SSVC and not any published standard.`;
-
-const QUEUE_POLICY = `Ordering is a local policy: ${CHAIN_IN_WORDS}. It is not SSVC and not any published standard.`;
-
 const REPO_POLICY =
   "Every value carries its own freshness, because each lane confirms on its own cadence. A section that no lane has vouched for says so rather than showing an empty table.";
 
-const REVIEWS_POLICY =
-  "Review requests are collected wherever they land, not only in watched repositories, because a request is a claim on your attention either way. Rows marked not watched carry nothing else from this dashboard: no alerts, no coverage, no build status.";
-
 /** The one skip link on every page but the overview; `#list` exists on each. */
 const LIST_SKIP = [{ href: "#list", label: "skip to list" }] as const;
-
-/**
- * The overview (AD-32): the attention board, then collection health.
- *
- * Every number on it comes from one `Board`, built from one queue, so the
- * tiles, the rows and the summary cannot disagree. The board table gives
- * each repository its own `tbody`: the repo row and the rationale row under
- * a hidden `why` header are one group, and the tier paints the group's left
- * rule. Quiet repositories fold into one block and every one of them is a
- * link; a missing repository would be indistinguishable from a healthy one.
- *
- * What the page does not know is said where the reader looks (#127):
- * a failed lane on its tile, unreadable rows under the summary, and before
- * the first completed sweep one note in the board's place, pointing at the
- * health table, which is the same read the tiles were warned from.
- */
-export const Page: FC<{
-  board: Board;
-  generatedAt: string;
-}> = ({ board, generatedAt }) => (
-  <Layout
-    title={overviewTitle(board.summary, board.collected, board.unreadable)}
-    current="overview"
-    generatedAt={generatedAt}
-    // The quiet block renders only once something has been collected, so
-    // before that the link to it would lead nowhere and is not offered.
-    skips={[
-      { href: "#board", label: "skip to board" },
-      ...(board.collected
-        ? [{ href: "#quiet", label: "skip to quiet repositories" }]
-        : []),
-      { href: "#health", label: "skip to collection health" },
-    ]}
-    footer={OVERVIEW_POLICY}
-  >
-    <h1>gitricorder</h1>
-    <p class="sub">
-      {board.summary.watched} watched{" "}
-      {board.summary.watched === 1 ? "repository" : "repositories"}
-      {board.collected ? (
-        <>
-          {" · "}
-          {board.summary.now} {board.summary.now === 1 ? "needs" : "need"}{" "}
-          attention now
-          {" · "}
-          {board.summary.soon} soon
-          {" · "}
-          {board.summary.quiet} quiet
-          {board.summary.unconfirmed > 0
-            ? ` · ${board.summary.unconfirmed} unconfirmed`
-            : ""}
-        </>
-      ) : (
-        " · nothing collected yet"
-      )}
-    </p>
-    <UnreadableNote count={board.unreadable} />
-
-    <nav class="tiles" aria-label="topics">
-      {board.tiles.map((tile) => (
-        <TopicTile key={tile.topic} tile={tile} />
-      ))}
-    </nav>
-
-    <h2 id="board">What needs attention</h2>
-    {!board.collected ? (
-      // No sweep has ever completed, so there is no row, no quiet block and
-      // no legend to show: none of them would be a finding (AD-28).
-      <p class="attest">
-        nothing collected yet; see <a href="#health">Collection health</a>
-      </p>
-    ) : (
-      <BoardBody board={board} />
-    )}
-
-    <h2 id="health">Collection health</h2>
-    <p class="sub">A dead lane is visible here rather than only in the logs.</p>
-    {board.health.length === 0 ? (
-      <p class="never">No collection has run yet.</p>
-    ) : (
-      <HealthTable health={board.health} />
-    )}
-  </Layout>
-);
-
-/** The rows, the legend, the quiet block and the unconfirmed list. */
-const BoardBody: FC<{ board: Board }> = ({ board }) => (
-  <>
-    {board.rows.length === 0 ? (
-      // Only when the board can vouch for it: with a repository nobody has
-      // confirmed, or a row nobody could read, "nothing" is not a finding.
-      board.unconfirmed.length === 0 && board.unreadable === 0 ? (
-        <p class="sub">No repository needs attention right now.</p>
-      ) : null
-    ) : (
-      <table class="board cards" role="table">
-        <thead role="rowgroup">
-          <tr role="row">
-            <Th colspan={2}>Repository</Th>
-            <Th>Tier</Th>
-            {/* The tablet's one cell in place of six columns; CSS shows it
-                and hides the `c` columns between 640px and 1023px only. */}
-            <Th class="signals">Signals</Th>
-            {TOPICS.map((t) => (
-              <Th key={t.topic} class="c">
-                {t.label}
-              </Th>
-            ))}
-            <Th>Release</Th>
-            <Th>Last confirmed</Th>
-          </tr>
-        </thead>
-        {board.rows.map((row) => (
-          <tbody key={row.slug} class={row.tier} role="rowgroup">
-            <tr class="repo" role="row">
-              <Td class="slug-cell" colspan={2} label="Repository">
-                <a class="slug" href={repoPath(row.slug)}>
-                  {row.slug}
-                </a>
-              </Td>
-              <Td class="tier-cell" label="Tier">
-                <TierChip tier={row.tier} />
-              </Td>
-              <Td class="signals" label="Signals">
-                {row.signals.map((s, i) => (
-                  <>
-                    {i > 0 ? " · " : ""}
-                    <CountChip
-                      key={s.topic}
-                      chip={row.chips[s.topic]}
-                      text={s.text}
-                    />
-                  </>
-                ))}
-              </Td>
-              {TOPICS.map((t) => (
-                <Td key={t.topic} class="c" label={t.label} show>
-                  <CountChip chip={row.chips[t.topic]} />
-                </Td>
-              ))}
-              <Td label="Release" show>
-                <ReleaseChip cell={row.release} />
-              </Td>
-              <Td class="fresh-cell" label="Last confirmed">
-                <FreshnessBadge freshness={row.freshness} age={row.age} />
-              </Td>
-            </tr>
-            <tr class="why" role="row">
-              <th scope="row" role="rowheader">
-                <span class="sr-only">why</span>
-              </th>
-              <Td colspan={WHY_COLSPAN} label="why">
-                <span class="why">
-                  {row.reason}
-                  {/* The reason is on the chip's title too, but a title is
-                      never the sole carrier; the sentence says it. Same for
-                      the caveat: what the scanners said about a repository
-                      whose count still stands reaches the reader here, not
-                      only on hover. */}
-                  {row.chips.security.state === "not-covered"
-                    ? ` · security not covered: ${row.chips.security.reason}`
-                    : ""}
-                  {row.chips.security.caveat === null
-                    ? ""
-                    : ` · ${row.chips.security.caveat}`}
-                  {row.release.state === "ready"
-                    ? ` · ready to release: ${row.release.summary}`
-                    : ""}
-                  <SignalsRest rest={row.signalsRest} />
-                </span>
-              </Td>
-            </tr>
-          </tbody>
-        ))}
-      </table>
-    )}
-    <p class="legend">
-      now: act today · soon: act this week · quiet: nothing pressing
-    </p>
-
-    {/* Folded on every width: a native details cannot follow the viewport
-        without script, and the quiet ones are the ones to fold away. */}
-    <details class="quiet">
-      <summary id="quiet">
-        {board.quiet.length}{" "}
-        {board.quiet.length === 1 ? "repository is" : "repositories are"} quiet
-      </summary>
-      <p>
-        {board.quiet.map((slug, i) => (
-          <>
-            {i > 0 ? " " : ""}
-            <a key={slug} href={repoPath(slug)}>
-              {slug}
-            </a>
-          </>
-        ))}
-      </p>
-    </details>
-    {board.unconfirmed.length > 0 ? (
-      <p class="attest" id="unconfirmed">
-        {board.unconfirmed.length}{" "}
-        {board.unconfirmed.length === 1 ? "repository" : "repositories"} not yet
-        confirmed by any completed sweep:{" "}
-        {board.unconfirmed.map((slug, i) => (
-          <>
-            {i > 0 ? " " : ""}
-            <a key={slug} href={repoPath(slug)}>
-              {slug}
-            </a>
-          </>
-        ))}
-      </p>
-    ) : null}
-  </>
-);
-
-/**
- * What the tablet's signals cell leaves out, on the rationale line: the
- * topics confirmed at zero and the ones no sweep confirmed, so narrowing
- * the row never turns an absence into silence (AD-28). Shown by CSS on
- * tablet only; nothing when every chip is a signal.
- */
-const SignalsRest: FC<{ rest: BoardRow["signalsRest"] }> = ({ rest }) => {
-  const list = (topics: Topic[]) =>
-    topics.map((t) => TOPIC_LABEL[t]).join(", ");
-  const parts = [
-    ...(rest.zero.length > 0 ? [`zero: ${list(rest.zero)}`] : []),
-    ...(rest.unconfirmed.length > 0
-      ? [`unconfirmed: ${list(rest.unconfirmed)}`]
-      : []),
-  ];
-  return parts.length === 0 ? null : (
-    <span class="signals-rest">{` · ${parts.join(" · ")}`}</span>
-  );
-};
-
-/**
- * The latest run per lane, installation and scope. Row key, order and
- * columns are the table's contract: the rows arrive sorted by that key, so
- * the table does not reshuffle between refreshes.
- */
-const HealthTable: FC<{ health: CollectionHealth[] }> = ({ health }) => (
-  <table class="cards" role="table">
-    <thead role="rowgroup">
-      <tr role="row">
-        <Th>Lane</Th>
-        <Th>Installation</Th>
-        <Th>Scope</Th>
-        <Th>Outcome</Th>
-        <Th>Last run</Th>
-      </tr>
-    </thead>
-    <tbody role="rowgroup">
-      {health.map((h) => (
-        <tr key={`${h.lane}|${h.installation}|${h.scope}`} role="row">
-          <Td label="Lane" show>
-            {h.lane}
-          </Td>
-          <Td label="Installation" show>
-            {h.installation}
-          </Td>
-          <Td label="Scope" show>
-            {h.scope}
-          </Td>
-          <Td class={OUTCOME_CLASS[h.outcome]} label="Outcome" show>
-            {h.outcome}
-            {h.detail ? ` · ${h.detail}` : ""}
-          </Td>
-          <Td label="Last run" show>
-            <FreshnessBadge freshness={h.freshness} age={h.age} />
-          </Td>
-        </tr>
-      ))}
-    </tbody>
-  </table>
-);
-
-/**
- * `owner/name` as two segments that each hold together on a wide screen, up
- * to a cap, so the slug breaks after the slash or not at all. No `<wbr>` is
- * needed: the line breaker already allows a break after `/` before a letter.
- */
-const SlugText: FC<{ slug: string }> = ({ slug }) => {
-  const at = slug.indexOf("/") + 1;
-  return (
-    <>
-      <span class="seg">{slug.slice(0, at)}</span>
-      <span class="seg">{slug.slice(at)}</span>
-    </>
-  );
-};
-
-/**
- * One queue row: rank, topic, repository, item, rationale, freshness.
- *
- * The repository is a link only while it is watched; a de-listed one has
- * no page, and a link to a 404 would say the dashboard knows something it
- * does not. The item link leaves for GitHub in a new tab.
- */
-const QueueRow: FC<{ item: QueueItem; rank: number; linked: boolean }> = ({
-  item,
-  rank,
-  linked,
-}) => {
-  const slug = foldSlug(item.repo);
-  return (
-    <tr role="row">
-      <Td class="num" label="#" show>
-        {rank}
-      </Td>
-      <Td class="topic" label="Topic">
-        {topicOf(item.kind)}
-      </Td>
-      <Td label="Repository">
-        {linked ? (
-          <a class="slug" href={repoPath(slug)}>
-            <SlugText slug={slug} />
-          </a>
-        ) : (
-          <span class="slug">
-            <SlugText slug={slug} />
-          </span>
-        )}
-      </Td>
-      <Td label="Item">
-        {item.kind === "update_pr" ? (
-          <span class="badge">PR</span>
-        ) : item.kind === "issue" ? (
-          <span class="badge">issue</span>
-        ) : item.kind === "code_scanning" ? (
-          // A code scanning `#21` and a Dependabot `#21` are different things
-          // in the same repository's number space, and the rationale beside
-          // them both starts with a word the reader has to parse. The badge
-          // is what tells them apart at a glance.
-          <span class="badge">scan</span>
-        ) : item.kind === "secret_scanning" ? (
-          // Three families now share that number space, and this is the one
-          // whose row is always at the top of the queue: a reader scanning
-          // for what to do first needs to see WHY without reading the
-          // rationale (#158).
-          <span class="badge">secret</span>
-        ) : item.kind === "ci_failure" ? (
-          // A run number looks exactly like an issue or pull request number,
-          // and the rationale beside it calls the thing a workflow run: the
-          // badge is what stops the reader taking `#9` for a pull request
-          // and following it expecting one.
-          <span class="badge">run</span>
-        ) : item.kind === "pull_request" ? (
-          // A plain pull request, an update PR and an issue now share one
-          // repository's number space, and the rationale beside this one is
-          // only ever about checks: without a badge, `#12 · Fix the thing`
-          // is indistinguishable from an issue at a glance (#167). Worded
-          // apart from `PR`, which the Dependencies row already owns.
-          <span class="badge">pull</span>
-        ) : null}{" "}
-        <ExternalLink href={item.htmlUrl}>
-          {item.repo}#{item.number}
-        </ExternalLink>
-        {item.packageName ? ` · ${item.packageName}` : ""}
-        {item.title ? ` · ${item.title}` : ""}
-        {item.advisory ? ` · ${item.advisory}` : ""}
-      </Td>
-      <Td label="Why it ranks here">
-        <div class={item.kevListed ? "kev-hit" : "why-rank"}>
-          {item.explanation}
-        </div>
-      </Td>
-      <Td label="Last confirmed">
-        <FreshnessBadge freshness={item.freshness} age={item.age} />
-      </Td>
-    </tr>
-  );
-};
-
-const QueueHead: FC = () => (
-  <thead role="rowgroup">
-    <tr role="row">
-      <Th>#</Th>
-      <Th>Topic</Th>
-      <Th>Repository</Th>
-      <Th>Item</Th>
-      <Th>Why it ranks here</Th>
-      <Th>Last confirmed</Th>
-    </tr>
-  </thead>
-);
-
-/**
- * The ranked queue (CAP-6), filtered by topic and repository (AD-39).
- *
- * Every row shows the reason it ranks where it does, and every value carries
- * its own freshness. The filter lives in the URL and nowhere else: the bar
- * is links, the sentence says what is shown, and `clear` is a link back to
- * the whole queue. The summary counts the allowlisted estate whatever the
- * filter, so `0 open alerts` is never the filter's zero (AD-28, AD-32). The
- * ordering is labelled a LOCAL POLICY because AD-20 binds the UI here: it
- * is not SSVC, not CVSS, and naming a standard it does not implement would
- * borrow authority the chain has not earned.
- */
-export const QueuePage: FC<{
-  queue: Queue;
-  filtered: FilteredQueue;
-  filter: QueueFilter;
-  generatedAt: string;
-}> = ({ queue, filtered, filter, generatedAt }) => {
-  // `all` is current only on the unfiltered topic dimension; an unknown
-  // topic is current nowhere, so the bar does not claim a filter it is not
-  // applying.
-  const current =
-    filter.topic?.topic ?? (filter.unknownTopic === null ? "all" : null);
-  const repoRef = filter.repoRef;
-  return (
-    <Layout
-      title={queueTitle(filter)}
-      current="queue"
-      generatedAt={generatedAt}
-      skips={LIST_SKIP}
-      footer={QUEUE_POLICY}
-    >
-      <h1>What to deal with next</h1>
-      <p class="sub">
-        {/* Every count derived from the TOPIC, and none from a kind.
-            A kind listed in the table and missing here reads as zeros above
-            the row a reader came for, and this line did exactly that three
-            times: to the first red main it ever showed, to the first code
-            scanning finding, and to the first human pull request - because
-            the fix each time made ONE count topic-derived and left the rest
-            kind-by-kind. There is nothing left to forget: a new kind joins
-            this sentence by being filed under a topic, and a new TOPIC is a
-            compile error in QUEUE_TOPIC_NOUN below. */}
-        {QUEUE_TOPIC_COUNTS.map(({ topic, noun }, i) => (
-          <Fragment key={topic}>
-            {i === 0 ? "" : " · "}
-            {filtered.counted.filter((x) => topicOf(x.kind) === topic).length}{" "}
-            {noun}
-          </Fragment>
-        ))}
-        {" · KEV catalogue "}
-        {queue.kev.usable
-          ? `${queue.kev.version ?? "?"} · ${queue.kev.age}`
-          : "unavailable, so KEV status ranks as unknown"}
-      </p>
-
-      <UnreadableNote count={queue.unreadable} />
-
-      {/* The bar narrows topics within an active repository filter rather
-          than silently widening back to the estate; `all` keeps the repo. */}
-      <nav class="filters" aria-label="topic filter">
-        <a
-          href={repoRef === null ? queueClearPath() : queueRepoPath(repoRef)}
-          aria-current={current === "all" ? "true" : undefined}
-        >
-          all
-        </a>
-        {TOPICS.filter((t) => t.query !== null).map((t) => (
-          <a
-            key={t.topic}
-            href={queuePath(t.topic, repoRef ?? undefined)}
-            aria-current={current === t.topic ? "true" : undefined}
-          >
-            {t.query}
-          </a>
-        ))}
-        <a href={reviewsPath()}>reviews</a>
-      </nav>
-
-      {/* One named region on every render, filtered or not, so `skip to
-          list` always lands on something a screen reader announces. */}
-      <section id="list" aria-label="queue">
-        {filtered.empty !== null ? (
-          <p class="filter-state">
-            {filtered.empty} <a href={queueClearPath()}>Clear filter.</a>
-          </p>
-        ) : filtered.sentence !== null ? (
-          <p class="filter-state">
-            {filtered.sentence}
-            {" · "}
-            <a href={queueClearPath()}>clear</a>
-          </p>
-        ) : null}
-
-        {filtered.shown.length > 0 ? (
-          <table class="cards queue" role="table">
-            <QueueHead />
-            <tbody role="rowgroup">
-              {filtered.shown.map((item, i) => (
-                <QueueRow key={item.key} item={item} rank={i + 1} linked />
-              ))}
-            </tbody>
-          </table>
-        ) : filtered.empty !== null ? null : filtered.delisted.length > 0 ? (
-          <p class="none">Nothing needs attention in watched repositories.</p>
-        ) : (
-          <p class="none">Nothing needs attention.</p>
-        )}
-      </section>
-
-      {filtered.delisted.length > 0 ? (
-        // Still open on GitHub, no longer in repos.yaml: listed so they are
-        // not silently lost, counted nowhere so they inflate nothing.
-        <>
-          <h2>no longer watched</h2>
-          <table class="cards queue" role="table">
-            <QueueHead />
-            <tbody role="rowgroup">
-              {filtered.delisted.map((item, i) => (
-                <QueueRow
-                  key={item.key}
-                  item={item}
-                  rank={i + 1}
-                  linked={false}
-                />
-              ))}
-            </tbody>
-          </table>
-        </>
-      ) : null}
-    </Layout>
-  );
-};
 
 /**
  * One repo-page section: heading, standing, and the table when there is one.
@@ -2004,115 +1175,5 @@ export const UnknownRepoPage: FC<{ slug: string; generatedAt: string }> = ({
     <p>
       <a href={overviewPath()}>back to the overview</a>
     </p>
-  </Layout>
-);
-
-/**
- * The review-request page (CAP-5).
- *
- * Its own page, not a section of the queue, because these rows are the one
- * thing collected without the allowlist filter: most of them are in
- * repositories nobody watches, and nothing behind those has the coverage or
- * freshness discipline every row on the queue carries. Each says which it
- * is, so the reader never has to guess.
- */
-export const ReviewsPage: FC<{ view: ReviewView; generatedAt: string }> = ({
-  view,
-  generatedAt,
-}) => (
-  <Layout
-    title={reviewsTitle(view.rows.length, view.attested)}
-    current="reviews"
-    generatedAt={generatedAt}
-    skips={LIST_SKIP}
-    footer={REVIEWS_POLICY}
-  >
-    <h1>Waiting on your review</h1>
-    <p class="sub">
-      {view.attested ? (
-        <>
-          <FreshnessBadge
-            freshness={view.attestedFreshness}
-            age={view.attestedAge}
-          />{" "}
-          {view.rows.length} open
-        </>
-      ) : (
-        <span class="never">not confirmed by any completed sweep</span>
-      )}
-    </p>
-
-    {view.unreadable > 0 ? (
-      <p class="failed">
-        {view.unreadable} stored {view.unreadable === 1 ? "row" : "rows"} could
-        not be read and {view.unreadable === 1 ? "is" : "are"} not shown. This
-        list is incomplete.
-      </p>
-    ) : null}
-
-    <section id="list" aria-label="review requests">
-      {view.rows.length === 0 ? (
-        // An empty list and an unconfirmed one are different facts (AD-28),
-        // and the region says which rather than landing a reader on silence.
-        view.attested ? (
-          <p class="none">Nothing waiting on you.</p>
-        ) : (
-          <p class="attest">not confirmed by any completed sweep</p>
-        )
-      ) : null}
-
-      {view.rows.length > 0 ? (
-        <table class="cards" role="table">
-          <thead role="rowgroup">
-            <tr role="row">
-              <Th>Pull request</Th>
-              <Th>Opened by</Th>
-              <Th>Requested from</Th>
-              <Th>Waiting</Th>
-              <Th>Last confirmed</Th>
-            </tr>
-          </thead>
-          <tbody role="rowgroup">
-            {view.rows.map((r) => (
-              <tr key={r.key} role="row">
-                <Td label="Pull request">
-                  <ExternalLink href={r.htmlUrl}>
-                    {r.repo}#{r.number}
-                  </ExternalLink>
-                  {r.watched ? null : (
-                    // Said on every row rather than once at the top: this
-                    // repository has no coverage, no alert sweep and no
-                    // freshness behind it beyond this one line.
-                    <>
-                      {" "}
-                      <span class="badge unknown">not watched</span>
-                    </>
-                  )}
-                  <div class="why">{r.title}</div>
-                </Td>
-                <Td label="Opened by" show>
-                  {r.author}
-                </Td>
-                <Td label="Requested from" show>
-                  {/* The reviewers themselves, not a count. GraphQL reports a
-                    TEAM request by its slug, so counting produced "just
-                    you" for a pull request nobody had asked the reader for
-                    personally. */}
-                  {r.requestedReviewers.length === 0
-                    ? "unknown"
-                    : r.requestedReviewers.join(", ")}
-                </Td>
-                <Td label="Waiting" show>
-                  {r.waiting}
-                </Td>
-                <Td label="Last confirmed">
-                  <FreshnessBadge freshness={r.freshness} age={r.age} />
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : null}
-    </section>
   </Layout>
 );

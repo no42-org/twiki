@@ -50,16 +50,13 @@ import {
   normalise as normaliseSecret,
   summariseRepo as summariseSecretRepo,
 } from "../src/tricorder/collect/secret-scanning.js";
-import { normalisePr } from "../src/tricorder/collect/update-prs.js";
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
-import { createApp } from "../src/tricorder/web/app.js";
 import {
   makeAlert,
   makeCodeScanningAlert,
   makeRawIssue,
   makeReviewRequest,
   makeSecretScanningAlert,
-  makeUpdatePr,
 } from "./fakes.js";
 
 // AD-32, AD-35: one board from one queue. Every matrix row of Story 1.4,
@@ -126,7 +123,7 @@ const linked = (
   severity: Chip["severity"] = null,
   caveat: string | null = null,
 ): Chip => ({ state: "count", count, severity, href, reason: null, caveat });
-const SECURITY = "/queue?repo=no42-org%2Ftwiki&topic=security";
+const SECURITY = "/?kind=SECURITY&repo=no42-org%2Ftwiki";
 /**
  * The same chip on a repository NEITHER scanner lane has ever confirmed.
  *
@@ -194,12 +191,12 @@ const alertsOnly = (security: Chip): BoardRow["chips"] => ({
 
 const TILE_FACTS: Record<Topic, [label: string, href: string, absent: string]> =
   {
-    security: ["Security", "/queue?topic=security", NO_SWEEP],
-    ci: ["CI", "/queue?topic=ci", NO_SWEEP],
-    dependencies: ["Dependencies", "/queue?topic=dependencies", NO_SWEEP],
-    pulls: ["Pull requests", "/queue?topic=pulls", NO_SWEEP],
-    issues: ["Issues", "/queue?topic=issues", NO_SWEEP],
-    reviews: ["Reviews", "/reviews", NO_SWEEP],
+    security: ["Security", "/?kind=SECURITY", NO_SWEEP],
+    ci: ["CI", "/", NO_SWEEP],
+    dependencies: ["Dependencies", "/?kind=PULL+REQUESTS", NO_SWEEP],
+    pulls: ["Pull requests", "/?kind=PULL+REQUESTS", NO_SWEEP],
+    issues: ["Issues", "/", NO_SWEEP],
+    reviews: ["Reviews", "/?kind=PULL+REQUESTS", NO_SWEEP],
   };
 const tile = (
   topic: Topic,
@@ -559,38 +556,6 @@ describe("buildBoard (AD-32, AD-35)", () => {
     });
   });
 
-  it("counts a tile without a now marker when nothing is now", () => {
-    // Minor bumps: the smallest thing that ranks above least-known, so the
-    // repository is soon and its Dependencies chip is on a row.
-    sweep([{ repo: REPO, alerts: [] }]);
-    seed(
-      "graphql-update-prs",
-      "no42-org",
-      Array.from({ length: 7 }, (_, i) =>
-        normalisePr(
-          makeUpdatePr({
-            number: 100 + i,
-            repo: REPO,
-            title: "Bump left-pad from 1.0.0 to 1.1.0",
-          }),
-        ),
-      ),
-    );
-
-    const board = buildBoard(store, [REPO], NOW, DEPS);
-
-    expect(board.tiles[2]).toEqual(tile("dependencies", 7));
-    expect(
-      board.rows.map((r) => [r.slug, r.tier, r.chips.dependencies]),
-    ).toEqual([
-      [
-        "no42-org/twiki",
-        "soon",
-        linked(7, "/queue?repo=no42-org%2Ftwiki&topic=dependencies"),
-      ],
-    ]);
-  });
-
   it("reads a topic with no queue kind as unconfirmed on the tile and every chip, and says why", () => {
     sweep([{ repo: REPO, alerts: [] }]);
     seed("graphql-review-requests", "reviews", [overdue(REPO, 4)]);
@@ -614,7 +579,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           dependencies: UNSWEPT,
           pulls: UNSWEPT,
           issues: UNSWEPT,
-          reviews: linked(1, "/reviews"),
+          reviews: linked(1, "/?kind=PULL+REQUESTS"),
         },
         signals: [{ topic: "reviews", text: "Reviews 1" }],
         signalsRest: {
@@ -630,7 +595,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
 
   describe("the CI chip and tile (Story 2.3)", () => {
     const ACTIONS_LANE = "rest-actions-runs";
-    const CI = "/queue?repo=no42-org%2Ftwiki&topic=ci";
+    const CI = "/?repo=no42-org%2Ftwiki";
     // Forty-five minutes old: stale on the fifteen-minute sweep budget,
     // which tolerates two cadences, and fresh on the Actions lane's own
     // hourly one. Every case here therefore also proves the chip is judged
@@ -886,7 +851,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
                 ` · secret scanning: ${SECRETS_OFF}`,
               caveat: null,
             }),
-            reviews: linked(1, "/reviews"),
+            reviews: linked(1, "/?kind=PULL+REQUESTS"),
           },
           // Not covered is a finding about the repository, so it is a
           // signal; the rest names what no sweep confirmed.
@@ -1008,7 +973,10 @@ describe("buildBoard (AD-32, AD-35)", () => {
           slug: "no42-org/twiki",
           tier: "soon",
           reason: REASON,
-          chips: { ...alertsOnly(UNSWEPT), reviews: linked(1, "/reviews") },
+          chips: {
+            ...alertsOnly(UNSWEPT),
+            reviews: linked(1, "/?kind=PULL+REQUESTS"),
+          },
           signals: [{ topic: "reviews", text: "Reviews 1" }],
           signalsRest: {
             zero: [],
@@ -1032,7 +1000,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
           reason: REASON,
           chips: {
             ...alertsOnly(unswept(ZERO)),
-            reviews: linked(1, "/reviews"),
+            reviews: linked(1, "/?kind=PULL+REQUESTS"),
           },
           signals: [{ topic: "reviews", text: "Reviews 1" }],
           signalsRest: {
@@ -1718,61 +1686,8 @@ describe("buildBoard (AD-32, AD-35)", () => {
   });
 
   describe("the lane-attested chips (AD-11, AD-28)", () => {
-    const minorPr = (number: number) =>
-      normalisePr(
-        makeUpdatePr({
-          number,
-          repo: REPO,
-          title: "Bump left-pad from 1.0.0 to 1.1.0",
-        }),
-      );
     const issue = (number: number) =>
       normaliseIssue(makeRawIssue({ number, repo: REPO }));
-
-    it("reads Dependencies, Issues and Reviews from their lanes' current attestations", () => {
-      // Each chip is a count only once its lane vouched for the set: a
-      // partial issue sweep may have skipped this very repository.
-      sweep([{ repo: REPO, alerts: [] }]);
-      seed("graphql-update-prs", "no42-org", [minorPr(7)]);
-      seed("graphql-issues", "no42-org", [issue(3)], AT, "partial");
-      seed("graphql-review-requests", "reviews", [
-        overdue(REPO, 12),
-        normaliseReviewRequest(
-          makeReviewRequest({ repo: REPO, number: 13, createdAt: daysAgo(1) }),
-        ),
-      ]);
-
-      expect(buildBoard(store, [REPO], NOW, DEPS).rows).toEqual([
-        {
-          slug: "no42-org/twiki",
-          tier: "soon",
-          reason:
-            "update PR #7 left-pad: no CVE to check against KEV, no CVE to score, no advisory, minor bump, no Dependabot fix attempt on record",
-          chips: {
-            security: unswept(ZERO),
-            ci: UNSWEPT,
-            dependencies: linked(
-              1,
-              "/queue?repo=no42-org%2Ftwiki&topic=dependencies",
-            ),
-            pulls: UNSWEPT,
-            issues: UNSWEPT,
-            reviews: linked(2, "/reviews"),
-          },
-          signals: [
-            { topic: "dependencies", text: "Dependencies 1" },
-            { topic: "reviews", text: "Reviews 2" },
-          ],
-          signalsRest: {
-            zero: ["security"],
-            unconfirmed: ["ci", "pulls", "issues"],
-          },
-          release: RELEASE_UNSWEPT,
-          freshness: "fresh",
-          age: "5m ago",
-        },
-      ]);
-    });
 
     describe("the Pull requests chip (#167)", () => {
       /**
@@ -1830,18 +1745,6 @@ describe("buildBoard (AD-32, AD-35)", () => {
        */
       const lift = (repo: RepoRef, number: number) =>
         seed("graphql-review-requests", "reviews", [overdue(repo, number)]);
-
-      it("counts, and links, once this repository's own confirmation is current", () => {
-        sweep([{ repo: REPO, alerts: [] }]);
-        pullSweep([REPO], [{ repo: REPO, number: 7 }]);
-        lift(REPO, 12);
-
-        const row = buildBoard(store, [REPO], NOW, DEPS).rows[0];
-
-        expect(row?.chips.pulls).toEqual(
-          linked(1, "/queue?repo=no42-org%2Ftwiki&topic=pulls"),
-        );
-      });
 
       it("says a measured zero for a repository the search covered and found none in", () => {
         // The confirmation is the whole difference between this `0` and the
@@ -1942,8 +1845,8 @@ describe("buildBoard (AD-32, AD-35)", () => {
             ci: UNSWEPT,
             dependencies: UNSWEPT,
             pulls: UNSWEPT,
-            issues: linked(1, "/queue?repo=no42-org%2Ftwiki&topic=issues"),
-            reviews: linked(1, "/reviews"),
+            issues: linked(1, "/?repo=no42-org%2Ftwiki"),
+            reviews: linked(1, "/?kind=PULL+REQUESTS"),
           },
           signals: [
             { topic: "issues", text: "Issues 1" },
@@ -1982,7 +1885,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             ci: UNSWEPT,
             dependencies: UNSWEPT,
             pulls: UNSWEPT,
-            issues: linked(1, "/queue?repo=no42-org%2Ftwiki&topic=issues"),
+            issues: linked(1, "/?repo=no42-org%2Ftwiki"),
             reviews: UNSWEPT,
           },
           signals: [{ topic: "issues", text: "Issues 1" }],
@@ -2015,7 +1918,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
             dependencies: UNSWEPT,
             pulls: UNSWEPT,
             issues: absent("last confirmed 5d ago"),
-            reviews: linked(1, "/reviews"),
+            reviews: linked(1, "/?kind=PULL+REQUESTS"),
           },
           signals: [{ topic: "reviews", text: "Reviews 1" }],
           signalsRest: {
@@ -2040,9 +1943,7 @@ describe("buildBoard (AD-32, AD-35)", () => {
         lanePolicies: { "graphql-issues": { cadenceMs: 7 * 24 * 60 * 60_000 } },
       }).rows;
 
-      expect(row?.chips.issues).toEqual(
-        linked(1, "/queue?repo=no42-org%2Ftwiki&topic=issues"),
-      );
+      expect(row?.chips.issues).toEqual(linked(1, "/?repo=no42-org%2Ftwiki"));
     });
   });
 
@@ -2542,7 +2443,6 @@ describe("buildBoard (AD-32, AD-35)", () => {
   describe("the Release column (#196)", () => {
     const RELEASE_LANE = "rest-release-readiness";
     const THIRD = { owner: "no42-org", name: "third" };
-    const FOURTH = { owner: "no42-org", name: "fourth" };
     const commit = (sha: string, subject: string) => ({
       sha,
       subject,
@@ -2863,119 +2763,6 @@ describe("buildBoard (AD-32, AD-35)", () => {
             ...DEPS,
             releaseTracked: () => false,
           }),
-        );
-      });
-    });
-
-    it("adds no tile and no queue filter", async () => {
-      sweep([{ repo: REPO, alerts: [soonAlert(REPO, 1)] }]);
-      release([{ repo: REPO, evidence: READY }]);
-
-      expect(
-        buildBoard(store, [REPO], NOW, DEPS).tiles.map((t) => t.topic),
-      ).toEqual(TOPICS_ORDER);
-      const queue = await (
-        await createApp({
-          defaultBranchOf: () => "main",
-          store,
-          watched: [REPO],
-          policy: POLICY,
-          now: () => NOW,
-        }).request("/queue")
-      ).text();
-      const nav = queue.slice(
-        queue.indexOf('<nav class="filters"'),
-        queue.indexOf("</nav>", queue.indexOf('<nav class="filters"')),
-      );
-      expect(nav).toContain("topic=security");
-      expect(nav.toLowerCase()).not.toContain("release");
-    });
-
-    describe("the rendered column", () => {
-      const render = async (releaseTracked: (repo: RepoRef) => boolean) =>
-        (
-          await createApp({
-            defaultBranchOf: () => "main",
-            releaseTracked,
-            store,
-            watched: [REPO, OTHER, THIRD, FOURTH],
-            policy: POLICY,
-            now: () => NOW,
-          }).request("/")
-        ).text();
-      const cell = (chip: string) =>
-        `<td role="cell"><span class="lbl">Release</span>${chip}</td>`;
-
-      beforeEach(() => {
-        sweep([
-          { repo: REPO, alerts: [soonAlert(REPO, 1)] },
-          { repo: OTHER, alerts: [soonAlert(OTHER, 2)] },
-          { repo: THIRD, alerts: [soonAlert(THIRD, 3)] },
-          { repo: FOURTH, alerts: [soonAlert(FOURTH, 4)] },
-        ]);
-        release([
-          { repo: REPO, evidence: READY },
-          { repo: OTHER, evidence: READY },
-          { repo: THIRD, evidence: NOTHING },
-        ]);
-      });
-
-      it("puts a Release header after the topic headers", async () => {
-        const html = await render(() => true);
-
-        expect(html).toContain(
-          '<th class="c" scope="col" role="columnheader">Reviews</th>' +
-            '<th scope="col" role="columnheader">Release</th>' +
-            '<th scope="col" role="columnheader">Last confirmed</th>',
-        );
-      });
-
-      it("reads ready, none, not tracked or unconfirmed, and puts the summary on the why-line", async () => {
-        const html = await render((repo) => repo.name !== OTHER.name);
-
-        expect(html).toContain(
-          cell(
-            '<a class="chip" href="/repo/no42-org/twiki#release" title="1 feature, 1 perf since v1.2.0">ready</a>',
-          ),
-        );
-        expect(html).toContain(cell('<span class="chip zero">none</span>'));
-        // Not tracked is a choice in repos.yaml, not a confirmed nothing:
-        // it must not wear `none`'s class.
-        expect(html).toContain(
-          cell('<span class="chip untracked">not tracked</span>'),
-        );
-        expect(html).toContain(
-          `stuck state unknown · ${SCANNERS_UNSWEPT} · ready to release: 1 feature, 1 perf since v1.2.0`,
-        );
-
-        // FOURTH has no release row: the marker CountChip uses for a topic
-        // no sweep confirmed.
-        expect(html).toContain(
-          cell(
-            '<span class="chip unconfirmed" title="not confirmed by a current release-readiness run">unconfirmed</span>',
-          ),
-        );
-      });
-
-      it("spans the why-line across every column the header shows on desktop", async () => {
-        const html = await render(() => true);
-
-        const head = html.slice(
-          html.indexOf('<table class="board cards"'),
-          html.indexOf("</thead>"),
-        );
-        // Every header but the tablet's signals cell, which desktop hides.
-        const columns = [
-          ...head.matchAll(
-            /<th(?=[ >])(?: class="([^"]*)")?(?: colspan="(\d+)")?/g,
-          ),
-        ]
-          .filter((m) => m[1] !== "signals")
-          .reduce((sum, m) => sum + Number(m[2] ?? 1), 0);
-        expect(columns).toBe(11);
-        // The row header takes the first column; the sentence the rest.
-        expect(html).toContain(
-          `<span class="sr-only">why</span></th><td colspan="${columns - 1}" role="cell">`,
         );
       });
     });

@@ -8,7 +8,8 @@
   },
   "include": [
     "src/**/*.ts",
-    "src/**/*.tsx"
+    "src/**/*.tsx",
+    "src/tricorder/web/overview-client.js"
   ],
   "exclude": [
     "dist",

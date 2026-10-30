@@ -5,16 +5,15 @@
 
 import { watchKey } from "../../core/slug.js";
 import type { Topic } from "../../core/topics.js";
-import { TOPICS } from "../../core/topics.js";
 import type { RepoRef } from "../../core/types.js";
 
 // Every internal path, built here and nowhere else (AD-39).
 //
 // A page that concatenates `/repo/${slug}` by hand is one edit away from a
 // second spelling of the same route, and a query value typed inline is one
-// edit away from a filter the queue does not recognise. So the paths are
-// functions, the repository is emitted through `watchKey` (the one folding
-// every layer agrees on, AD-33), and the topic value comes from TOPICS.
+// edit away from a filter the overview does not recognise. So the paths are
+// functions, and the repository is emitted through `watchKey` (the one folding
+// every layer agrees on, AD-33).
 
 /** The overview. */
 export function overviewPath(): string {
@@ -24,40 +23,6 @@ export function overviewPath(): string {
 /** The per-repository page. The slug is already folded; each segment is encoded. */
 export function repoPath(slug: string): string {
   return `/repo/${slug.split("/").map(encodeURIComponent).join("/")}`;
-}
-
-/**
- * The queue, filtered by topic and optionally by repository.
- *
- * Reviews has no queue filter (it is not in the queue), so asking for its
- * path here is a programming error, not a page state.
- */
-export function queuePath(topic: Topic, repo?: RepoRef): string {
-  const query = TOPICS.find((t) => t.topic === topic)?.query;
-  if (query === undefined || query === null) {
-    throw new Error(`topic ${topic} has no queue filter`);
-  }
-  const params = new URLSearchParams();
-  if (repo !== undefined) params.set("repo", watchKey(repo));
-  params.set("topic", query);
-  return `/queue?${params.toString()}`;
-}
-
-/** The unfiltered queue, where every `clear` link on it leads. */
-export function queueClearPath(): string {
-  return "/queue";
-}
-
-/** The queue narrowed to one repository, every topic. */
-export function queueRepoPath(repo: RepoRef): string {
-  const params = new URLSearchParams();
-  params.set("repo", watchKey(repo));
-  return `/queue?${params.toString()}`;
-}
-
-/** The review-request page. */
-export function reviewsPath(): string {
-  return "/reviews";
 }
 
 /**
@@ -74,7 +39,23 @@ export function absoluteUrl(base: URL, path: string): string {
   return `${base.href.replace(/\/+$/, "")}${path}`;
 }
 
-/** Where a topic's tile or chip leads: the queue filter, or /reviews. */
+/** The overview box a topic falls under. CI and issues have none. */
+const TOPIC_KIND: Partial<Readonly<Record<Topic, string>>> = {
+  security: "SECURITY",
+  dependencies: "PULL REQUESTS",
+  pulls: "PULL REQUESTS",
+  reviews: "PULL REQUESTS",
+};
+
+/** Where a topic's tile or chip leads: the overview, filtered as far as it can be. */
 export function topicPath(topic: Topic, repo?: RepoRef): string {
-  return topic === "reviews" ? reviewsPath() : queuePath(topic, repo);
+  const params = new URLSearchParams();
+  const kind = TOPIC_KIND[topic];
+  if (kind !== undefined) params.set("kind", kind);
+  // Review requests land outside the allowlist, so they stay unnarrowed.
+  if (repo !== undefined && topic !== "reviews") {
+    params.set("repo", watchKey(repo));
+  }
+  const query = params.toString();
+  return query === "" ? overviewPath() : `${overviewPath()}?${query}`;
 }

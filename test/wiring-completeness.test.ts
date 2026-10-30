@@ -11,7 +11,6 @@ import { DEFAULT_RANK_POLICY } from "../src/core/rank.js";
 import type { RepoRef } from "../src/core/types.js";
 import type { GitHubReadPort } from "../src/github/port.js";
 import type { BoardDeps } from "../src/tricorder/attention/board.js";
-import type { QueueDeps } from "../src/tricorder/attention/queue.js";
 import { LANE as COVERAGE_LANE } from "../src/tricorder/collect/coverage.js";
 import { LANE as KEV_LANE } from "../src/tricorder/collect/kev.js";
 import type { ReleaseReadinessDeps } from "../src/tricorder/collect/release-readiness.js";
@@ -23,7 +22,6 @@ import type { StorePort } from "../src/tricorder/store/port.js";
 import {
   type AppDeps,
   boardDeps,
-  queueDeps,
   repoViewDeps,
   resolveAppDeps,
 } from "../src/tricorder/web/app.js";
@@ -422,17 +420,6 @@ describe("the routes' own wiring", () => {
     });
   });
 
-  it("hands the queue every dependency QueueDeps declares", () => {
-    expect(queueDeps(resolved)).toEqual({
-      policy: { cadenceMs: 1_000 },
-      kevPolicy: { cadenceMs: 2_000 },
-      actionsPolicy: { cadenceMs: 4_000 },
-      rankPolicy: { epssBands: [0.5, 0.3, 0.01] },
-      hungAfterMs: 5_000,
-      defaultBranchOf: resolved.defaultBranchOf,
-    });
-  });
-
   it("hands the repository view every dependency RepoViewDeps declares", () => {
     // The resolved branch, not the resolver: this view is handed the answer
     // for the one repository it is about (AD-33).
@@ -455,12 +442,10 @@ describe("the routes' own wiring", () => {
 // that must satisfy each whole contract, and a literal a field can be cut
 // from - which is what each builder returns.
 const wireBoard = (deps: Required<BoardDeps>): Required<BoardDeps> => deps;
-const wireQueue = (deps: Required<QueueDeps>): Required<QueueDeps> => deps;
 const wireRepoView = (deps: Required<RepoViewDeps>): Required<RepoViewDeps> =>
   deps;
 
 const board = boardDeps(resolved);
-const queue = queueDeps(resolved);
 const repoView = repoViewDeps(resolved, "master");
 
 describe("Required<BoardDeps>", () => {
@@ -496,35 +481,6 @@ describe("Required<BoardDeps>", () => {
     wireLater(board);
 
     expect(wireLater({ ...board, addedLater: 1 })).toMatchObject({
-      addedLater: 1,
-    });
-  });
-});
-
-describe("Required<QueueDeps>", () => {
-  it("rejects a literal missing any binding", () => {
-    // `QueueDeps` declares no optional member today, so `Required<>` changes
-    // nothing about it yet and the drop below would fail on the plain type.
-    // The wrapper is what keeps that true the day a member goes optional,
-    // which is how all three of the other types drifted.
-    const { actionsPolicy: _actions, ...noActionsPolicy } = queue;
-    // @ts-expect-error the Actions cadence cannot be dropped from the wiring
-    wireQueue(noActionsPolicy);
-
-    expect(wireQueue(queue)).toBe(queue);
-  });
-
-  it("covers a field added to QueueDeps later", () => {
-    interface LaterQueueDeps extends QueueDeps {
-      addedLater?: number;
-    }
-    const wireLater = (d: Required<LaterQueueDeps>): Required<LaterQueueDeps> =>
-      d;
-
-    // @ts-expect-error a dependency added later must fail until it is bound
-    wireLater(queue);
-
-    expect(wireLater({ ...queue, addedLater: 1 })).toMatchObject({
       addedLater: 1,
     });
   });
@@ -600,7 +556,6 @@ describe("the routes reach their builders through the guarded helpers", () => {
 
   it("hands each builder the helper's result", () => {
     expect(routes).toContain("boardDeps(resolved)");
-    expect(routes).toContain("queueDeps(resolved)");
     expect(routes).toContain("repoViewDeps(resolved,");
   });
 

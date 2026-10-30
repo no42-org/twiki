@@ -50,8 +50,8 @@ import {
 import { buildCollectionHealth, type CollectionHealth } from "./health.js";
 import { laneTopic } from "./lane-topics.js";
 import { repoPath, topicPath } from "./links.js";
-import type { QueueItem } from "./queue.js";
-import { RELEASE_NOT_CONFIRMED } from "./release.js";
+import type { Queue, QueueItem } from "./queue.js";
+import { RELEASE_NOT_CONFIRMED, type ReleaseReading } from "./release.js";
 import {
   type AttentionDeps,
   attentionByRepo,
@@ -345,6 +345,37 @@ export function buildBoard(
   now: Date,
   deps: BoardDeps,
 ): Board {
+  const {
+    items: _items,
+    queue: _queue,
+    release: _release,
+    scopedHealth: _scopedHealth,
+    ...board
+  } = buildBoardWithSources(store, watched, now, deps);
+  return board;
+}
+
+/** What a board was built from, for a page that lists more than it counts. */
+export interface BoardSources {
+  /**
+   * The items the board may count, in chain order: the queue without
+   * de-listed repositories and without alerts coverage withdrew.
+   */
+  items: QueueItem[];
+  /** The one queue everything on the board comes from (AD-32). */
+  queue: Queue;
+  /** Every watched repository's release reading, keyed by slug. */
+  release: Map<string, ReleaseReading>;
+  /** Full runs of lanes that speak for a watched owner, as tile warnings read them. */
+  scopedHealth: CollectionHealth[];
+}
+
+export function buildBoardWithSources(
+  store: StorePort,
+  watched: readonly RepoRef[],
+  now: Date,
+  deps: BoardDeps,
+): Board & BoardSources {
   // One entry per distinct slug: two allowlist lines folding to the same
   // repository are one repository, as they are in every lane (AD-33).
   const repos = new Map<string, RepoRef>();
@@ -437,6 +468,12 @@ export function buildBoard(
   const owners = new Set(
     [...repos.values()].map((repo) => repo.owner.toLowerCase()),
   );
+  const scopedHealth = health.filter(
+    (h) =>
+      h.scope === "full" &&
+      (laneTopic(h.lane)?.installation !== null ||
+        owners.has(h.installation.toLowerCase())),
+  );
   const warnings = new Map<Topic, string[]>();
   for (const h of health) {
     // Every outcome but a clean one and a run still inside its budget: a
@@ -522,6 +559,10 @@ export function buildBoard(
     deps,
     off,
   );
+  const itemKeys = new Set(
+    [...byRepo.values()].flatMap((repo) => repo.items.map((i) => i.key)),
+  );
+  const items = queue.items.filter((item) => itemKeys.has(item.key));
 
   // Nothing has ever been collected. No count on this page would be a
   // finding, so none is offered (AD-28): every tile reads `never collected`,
@@ -549,6 +590,10 @@ export function buildBoard(
       quiet: [],
       unconfirmed: [...repos.keys()],
       unreadable: queue.unreadable,
+      items,
+      queue,
+      release,
+      scopedHealth,
       collected,
       health,
     };
@@ -966,6 +1011,10 @@ export function buildBoard(
     quiet,
     unconfirmed,
     unreadable: queue.unreadable,
+    items,
+    queue,
+    release,
+    scopedHealth,
     collected,
     health,
   };

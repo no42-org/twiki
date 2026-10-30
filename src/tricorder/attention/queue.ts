@@ -119,7 +119,25 @@ export interface QueueItem {
   displaySeverity: Signal<Severity>;
   ranking: Ranking;
   freshness: Freshness;
+  /** How long ago a sweep last confirmed the row, not how old the item is. */
   age: string;
+  /** When the item itself was opened, ISO, or null where nothing says. */
+  openedAt: string | null;
+  /**
+   * The ranking's `stuck` term as a plain answer: a pull request's checks are
+   * failing, or GitHub could not prepare an update. False for other kinds.
+   */
+  stuck: boolean;
+  /** What a Dependabot alert depends on. Null for every other kind. */
+  dependency: AlertDependency | null;
+}
+
+/** The fields of a Dependabot alert that say what its impact is. */
+export interface AlertDependency {
+  relationship: string | null;
+  scope: string | null;
+  /** Null: GitHub reported no fix. Undefined: the row predates the field. */
+  firstPatchedVersion: string | null | undefined;
 }
 
 export interface Queue {
@@ -411,6 +429,13 @@ function alertPass(
       ranking,
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
+      openedAt: alert.createdAt,
+      stuck: false,
+      dependency: {
+        relationship: alert.relationship,
+        scope: alert.scope,
+        firstPatchedVersion: alert.firstPatchedVersion,
+      },
     });
   }
 
@@ -528,6 +553,9 @@ function codeScanningPass(
       // same budget as the Dependabot alerts beside them.
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
+      openedAt: alert.createdAt,
+      stuck: false,
+      dependency: null,
     });
   }
 
@@ -647,6 +675,9 @@ function secretScanningPass(
       // same budget as the alerts beside them.
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
+      openedAt: alert.createdAt,
+      stuck: false,
+      dependency: null,
     });
   }
 
@@ -780,6 +811,9 @@ function updatePrPass(
       ranking: best,
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
+      openedAt: pr.createdAt,
+      stuck: prStuck === true,
+      dependency: null,
     });
   }
 
@@ -1005,6 +1039,9 @@ function pullRequestPass(store: StorePort, now: Date, deps: QueueDeps): Pass {
       ranking,
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
+      openedAt: pr.createdAt,
+      stuck: stuck === true,
+      dependency: null,
     });
   }
 
@@ -1092,6 +1129,9 @@ function issuePass(store: StorePort, now: Date, deps: QueueDeps): Pass {
       ranking,
       freshness: freshness(row.verifiedAt, now, deps.policy),
       age: ageLabel(row.verifiedAt, now),
+      openedAt: issue.createdAt,
+      stuck: false,
+      dependency: null,
     });
   }
 
@@ -1240,6 +1280,9 @@ function ciFailurePass(
       // successful sweep (AD-11).
       freshness: freshness(row.verifiedAt, now, deps.actionsPolicy),
       age: ageLabel(row.verifiedAt, now),
+      openedAt: run.createdAt,
+      stuck: false,
+      dependency: null,
     });
   }
 

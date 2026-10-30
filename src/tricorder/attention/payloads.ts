@@ -53,6 +53,14 @@ export function readAlert(payload: unknown): AlertObservation | null {
   if (!stringOrNull(a.ghsaId)) return null;
   if (!stringOrNull(a.packageName)) return null;
   if (!stringOrNull(a.htmlUrl)) return null;
+  // Rows from before this field stay readable, so absent passes and a wrong
+  // type does not.
+  if (
+    a.firstPatchedVersion !== undefined &&
+    !stringOrNull(a.firstPatchedVersion)
+  ) {
+    return null;
+  }
   if (a.epssPercentage !== null && typeof a.epssPercentage !== "number") {
     return null;
   }

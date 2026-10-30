@@ -8,7 +8,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Octokit } from "@octokit/rest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isDefaultBranchRun } from "../src/core/branch.js";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import { redact } from "../src/core/redact.js";
 import type { ReleaseEvidence } from "../src/core/release-worthy.js";
@@ -3446,14 +3445,6 @@ describe("the per-repository page", () => {
   it("finds a watched repository whatever casing the reader types", async () => {
     const res = await app().request("/repo/No42-Org/TWiki");
     expect(res.status).toBe(200);
-  });
-
-  it("links every repository on the list page to its own page", async () => {
-    // A completed sweep with an open alert, so the repository has a row:
-    // before the first completed sweep the overview lists nothing.
-    seedKevAndAlert({ number: 1 });
-    const html = await (await app().request("/")).text();
-    expect(html).toContain('href="/repo/no42-org/twiki"');
   });
 });
 

@@ -69,6 +69,11 @@ export interface AlertObservation {
   epssPercentile: number | null;
   relationship: string | null;
   scope: string | null;
+  /**
+   * The first fixing version. Null says GitHub reported none. Absent on a row
+   * written before this field existed, which says nothing either way.
+   */
+  firstPatchedVersion?: string | null;
   htmlUrl: string | null;
   createdAt: string | null;
 }
@@ -87,6 +92,7 @@ export function normalise(alert: RawDependabotAlert): ObservationInput {
     epssPercentile: alert.epssPercentile,
     relationship: alert.relationship,
     scope: alert.scope,
+    firstPatchedVersion: alert.firstPatchedVersion,
     htmlUrl: alert.htmlUrl,
     createdAt: alert.createdAt,
   };

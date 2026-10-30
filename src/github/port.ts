@@ -69,6 +69,8 @@ export interface RawDependabotAlert {
   relationship: string | null;
   /** runtime or development, when GitHub reports it. */
   scope: string | null;
+  /** The first version that fixes this, or null when GitHub reports none. */
+  firstPatchedVersion: string | null;
   htmlUrl: string | null;
   /** Null when GitHub did not supply one; never an empty string. */
   createdAt: string | null;
