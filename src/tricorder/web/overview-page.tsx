@@ -37,9 +37,12 @@ const STYLE = `
   .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-height: 32px; margin-bottom: 6px; font-size: 19px; color: ${C.gold}; letter-spacing: .05em; }
   .chip { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; padding: 2px 6px 2px 12px; border-radius: 14px; background: ${C.lilac}; color: ${C.ink}; font-size: 16px; letter-spacing: .04em; overflow-wrap: anywhere; }
   .chip.repo { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; text-transform: none; }
-  .chip .x { display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 50%; background: ${C.ink}; color: ${C.lilac}; font: 700 13px/1 system-ui, sans-serif; }
+  .chip .x { display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 50%; background: ${C.ink}; color: ${C.lilac}; }
+  .chip .x svg { display: block; width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
   #clear { all: unset; cursor: pointer; color: ${C.ice}; font-size: 17px; }
-  .table-wrap { overflow-x: auto; }
+  /* A scroll container clips what paints outside it, so the hover ring and the
+     focus outline need room inside it. */
+  .table-wrap { overflow-x: auto; padding-inline: 4px; margin-inline: -4px; }
   @media (max-width: 599px) { .table-wrap { max-width: calc(100vw - 32px); } }
   table { width: 100%; border-collapse: collapse; font-size: 19px; letter-spacing: .02em; }
   th { text-align: left; padding: 4px 10px 4px 0; font-weight: 400; font-size: 16px; border-bottom: 2px solid ${C.lilac}; }
@@ -50,18 +53,27 @@ const STYLE = `
   td.r { white-space: nowrap; text-transform: none; font: 500 15px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; }
   td.d { text-transform: none; font: 400 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0; color: ${C.text}; min-width: 16rem; overflow-wrap: anywhere; }
   td.i { white-space: nowrap; }
+  /* One box for both cells, because the icon would otherwise set the repository line apart. */
+  .line { display: flex; align-items: center; min-height: 24px; }
   .num { color: ${C.ice}; font: 500 15px ui-monospace, SFMono-Regular, Menlo, monospace; text-decoration: underline; text-underline-offset: 3px; text-transform: none; }
   a.num:hover { color: ${C.text}; }
   span.num { text-decoration: none; }
   td.g { white-space: nowrap; }
   .pill { all: unset; cursor: pointer; display: inline-block; min-width: 72px; text-align: center; padding: 1px 10px; border-radius: 12px; color: ${C.ink}; font-size: 16px; white-space: nowrap; background: ${C.lilac}; }
+  /* Antonio sits low in its line box, so equal padding alone leaves caps below
+     center. Trimming the box to the capitals makes the padding equal around
+     what is visible. */
+  @supports (text-box: trim-both cap alphabetic) {
+    .pill { padding-block: 6px; text-box: trim-both cap alphabetic; }
+    .chip:not(.repo) .label { text-box: trim-both cap alphabetic; }
+  }
   .pill:hover, .pill[aria-pressed="true"] { box-shadow: 0 0 0 2px ${C.text}; }
   .CRITICAL, .FAILING { background: ${C.critical}; }
   .HIGH { background: ${C.high}; }
   .MEDIUM { background: ${C.medium}; }
   .LOW, .UNKNOWN { background: ${C.low}; }
   .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-  .gh { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-right: 6px; vertical-align: middle; color: ${C.muted}; }
+  .gh { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-right: 6px; color: ${C.muted}; }
   .gh:hover { color: ${C.ice}; }
   .rb { all: unset; cursor: pointer; color: ${C.gold}; }
   .rb:hover, .rb[aria-pressed="true"] { text-decoration: underline; text-underline-offset: 3px; }
@@ -171,53 +183,57 @@ const Row: FC<{ row: OverviewRow }> = ({ row }) => (
       />
     </td>
     <td class="r">
-      {row.repoUrl === null ? null : (
-        <a
-          class="gh"
-          href={row.repoUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          title="Open on GitHub"
-        >
-          <span class="vh">Open {row.repoLabel} on GitHub in a new tab</span>
-          <svg
-            viewBox="0 0 16 16"
-            width="16"
-            height="16"
-            fill="currentColor"
-            aria-hidden="true"
+      <span class="line">
+        {row.repoUrl === null ? null : (
+          <a
+            class="gh"
+            href={row.repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open on GitHub"
           >
-            <path d={GITHUB_MARK} />
-          </svg>
-        </a>
-      )}
-      <button
-        type="button"
-        class="rb"
-        data-facet="repo"
-        data-value={row.repo}
-        data-label={row.repoLabel}
-        aria-pressed="false"
-        aria-label={`Filter by repository ${row.repoLabel}`}
-      >
-        {row.repoLabel}
-      </button>
+            <span class="vh">Open {row.repoLabel} on GitHub in a new tab</span>
+            <svg
+              viewBox="0 0 16 16"
+              width="16"
+              height="16"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d={GITHUB_MARK} />
+            </svg>
+          </a>
+        )}
+        <button
+          type="button"
+          class="rb"
+          data-facet="repo"
+          data-value={row.repo}
+          data-label={row.repoLabel}
+          aria-pressed="false"
+          aria-label={`Filter by repository ${row.repoLabel}`}
+        >
+          {row.repoLabel}
+        </button>
+      </span>
     </td>
     <td class="i">
-      {row.url === null ? (
-        <span class="num">{row.id}</span>
-      ) : (
-        <a
-          class="num"
-          href={row.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label={`Open ${row.id} in ${row.repoLabel} on GitHub in a new tab`}
-          title="Open on GitHub"
-        >
-          {row.id}
-        </a>
-      )}
+      <span class="line">
+        {row.url === null ? (
+          <span class="num">{row.id}</span>
+        ) : (
+          <a
+            class="num"
+            href={row.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Open ${row.id} in ${row.repoLabel} on GitHub in a new tab`}
+            title="Open on GitHub"
+          >
+            {row.id}
+          </a>
+        )}
+      </span>
     </td>
     <td class="d">{row.what}</td>
     <td class="g">
