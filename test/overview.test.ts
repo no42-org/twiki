@@ -754,7 +754,7 @@ describe("the overview", () => {
     it("points the page at the hashed asset URLs it serves", async () => {
       const html = await (await app().request("/")).text();
       for (const asset of Object.values(loadAssets())) {
-        expect(html).toContain(asset.href.replace("&", "&amp;"));
+        expect(html).toContain(asset.href);
       }
     });
 
