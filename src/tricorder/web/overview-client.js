@@ -107,7 +107,7 @@ function sortable(row) {
     severity: row.rank,
     state: row.state,
     repo: row.label,
-    id: row.id.replace("#", ""),
+    id: row.id,
     what: row.what,
     age: row.age,
   };

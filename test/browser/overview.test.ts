@@ -255,6 +255,16 @@ describe("the overview in Chromium", () => {
     await page.close();
   });
 
+  it("sorts severity by rank, not by the word", async () => {
+    const page = await open();
+    // Reversed, because descending is also the default order and would pass
+    // with no sort at all.
+    await page.click('[data-sort="severity"]');
+    await page.click('[data-sort="severity"]');
+    expect(await ids(page)).toEqual(["#42", "#3", "#9"]);
+    await page.close();
+  });
+
   it("sorts IDs as numbers", async () => {
     const page = await open();
     await page.click('[data-sort="id"]');

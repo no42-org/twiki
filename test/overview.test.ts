@@ -538,6 +538,10 @@ describe("the overview", () => {
       const html = await (await app().request("/")).text();
       expect(html).toContain('aria-label="Filter by repository twiki"');
       expect(html).toContain('aria-label="Filter by severity HIGH"');
+      // Before the script runs, and for good without it.
+      for (const [pill] of html.matchAll(/<button[^>]*class="pill[^>]*>/g)) {
+        expect(pill).toContain('aria-pressed="false"');
+      }
       for (const [button] of html.matchAll(/<lcars-button[^>]*>/g)) {
         expect(button).toContain('sound="none"');
       }
