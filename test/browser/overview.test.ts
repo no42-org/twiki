@@ -110,8 +110,8 @@ describe("the overview in Chromium", () => {
       cells.map((c) => c.textContent),
     );
   const badges = (page: Page) =>
-    page.$$eval("#filter-bar .chip", (chips) =>
-      chips.map((c) => c.getAttribute("aria-label")),
+    page.$$eval("#filter-bar lcars-chip", (chips) =>
+      chips.map((c) => c.getAttribute("remove-label")),
     );
 
   it("upgrades the LCARS components and asks for nothing elsewhere", async () => {
@@ -162,34 +162,35 @@ describe("the overview in Chromium", () => {
     await page.close();
   });
 
-  it("centers pill and badge capitals by trimming to the cap height", async () => {
-    const page = await open("/?severity=CRITICAL");
-    const trim = await page.evaluate(() =>
-      ["#rows .pill", ".chip .label"].map((selector) => {
-        const style = getComputedStyle(
-          document.querySelector(selector) as Element,
-        );
-        return style.getPropertyValue("text-box-trim");
-      }),
+  it("serves an Antonio that leaves equal room above and below a capital", async () => {
+    const page = await open();
+    const size = 100;
+    const [above, below] = await page.evaluate(async (px) => {
+      const font = `${px}px Antonio`;
+      await document.fonts.load(font);
+      const context = document
+        .createElement("canvas")
+        .getContext("2d") as CanvasRenderingContext2D;
+      context.font = font;
+      const m = context.measureText("H");
+      return [
+        m.fontBoundingBoxAscent - m.actualBoundingBoxAscent,
+        m.fontBoundingBoxDescent - m.actualBoundingBoxDescent,
+      ];
+    }, size);
+    expect(Math.abs((above as number) - (below as number))).toBeLessThanOrEqual(
+      0.04 * size,
     );
-    expect(trim).toEqual(["trim-both", "trim-both"]);
     await page.close();
   });
 
-  it("centers the drawn cross in its circle", async () => {
-    const page = await open("/?severity=CRITICAL");
-    const offset = await page.evaluate(() => {
-      const middle = (selector: string) => {
-        const r = (
-          document.querySelector(selector) as Element
-        ).getBoundingClientRect();
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-      };
-      const circle = middle(".chip .x");
-      const cross = middle(".chip .x svg");
-      return { x: circle.x - cross.x, y: circle.y - cross.y };
-    });
-    expect(offset).toEqual({ x: 0, y: 0 });
+  it("paints severity solid before any filter is applied", async () => {
+    const page = await open();
+    const paint = await page.$eval(
+      '#rows button[data-value="CRITICAL"]',
+      (el) => getComputedStyle(el).backgroundColor,
+    );
+    expect(paint).toBe("rgb(255, 85, 85)");
     await page.close();
   });
 
@@ -228,6 +229,19 @@ describe("the overview in Chromium", () => {
         (el) => getComputedStyle(el).filter,
       ),
     ).toBe("brightness(1.4)");
+    await page.close();
+  });
+
+  it("takes hover from the library's token, not a copied number", async () => {
+    const page = await open();
+    await page.addStyleTag({
+      content: ":root { --lcars-hover-brightness: 1.5; }",
+    });
+    const pill = '#rows button[data-value="CRITICAL"]';
+    await page.hover(pill);
+    expect(await page.$eval(pill, (el) => getComputedStyle(el).filter)).toBe(
+      "brightness(1.5)",
+    );
     await page.close();
   });
 
@@ -277,6 +291,41 @@ describe("the overview in Chromium", () => {
     await page.click('[aria-label="Remove filter CRITICAL"]');
     expect((await ids(page)).sort()).toEqual(["#42", "#9"]);
     expect(await badges(page)).toEqual(["Remove filter twiki"]);
+    await page.close();
+  });
+
+  it("removes a filter from the badge's body as well as its cross", async () => {
+    const page = await open("/?severity=CRITICAL&severity=HIGH");
+    await page.click(
+      '#filter-bar lcars-chip[data-value="CRITICAL"] .chip-toggle',
+    );
+    expect(await badges(page)).toEqual(["Remove filter HIGH"]);
+    expect(new URL(page.url()).search).toBe("?severity=HIGH");
+    await page.close();
+  });
+
+  it("keeps a repository's casing on its badge", async () => {
+    const page = await open("/?repo=no42-org/twiki");
+    const transform = await page.$eval(
+      '#filter-bar lcars-chip[data-remove="repo"] span',
+      (el) => getComputedStyle(el).textTransform,
+    );
+    expect(transform).toBe("none");
+    await page.close();
+  });
+
+  it("wraps a long repository name inside its badge at 400px", async () => {
+    const page = await open("/?repo=no42-org/twiki");
+    await page.setViewportSize({ width: 400, height: 800 });
+    const overflow = await page.evaluate(() => {
+      const span = document.querySelector(
+        '#filter-bar lcars-chip[data-remove="repo"] span',
+      ) as Element;
+      span.textContent = "x".repeat(200);
+      const root = document.documentElement;
+      return root.scrollWidth - root.clientWidth;
+    });
+    expect(overflow).toBe(0);
     await page.close();
   });
 

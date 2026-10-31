@@ -678,6 +678,12 @@ describe("the overview", () => {
       expect(html).toContain('data-lcars-theme="tng"');
     });
 
+    it("leaves centering and the brand's color to the library", async () => {
+      const html = await (await app().request("/")).text();
+      expect(html).not.toContain("text-box");
+      expect(html.match(/\.brand \{[^}]*\}/)?.[0]).not.toContain("color");
+    });
+
     it("escapes what a repository's owners wrote", async () => {
       seedAlerts([makeAlert({ packageName: "<img src=x onerror=1>" })]);
       const html = await (await app().request("/")).text();

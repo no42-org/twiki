@@ -11,9 +11,7 @@ import { overviewTitle } from "./titles.js";
 
 // The LCARS overview. Labels are LCARS caps in Antonio; sentences, repository
 // names and IDs stay in mixed case, because a repository name is an identifier
-// and condensed caps are hard to read at sentence length. The frame's slotted
-// label inherits the corner's own gold unless told otherwise, hence the
-// explicit ink on it.
+// and condensed caps are hard to read at sentence length.
 
 const AGE_STEP_RULES = AGE_STEPS.map(
   (color, i) => `.segs i.on:nth-child(${i + 1}) { background: ${color}; }`,
@@ -22,7 +20,7 @@ const AGE_STEP_RULES = AGE_STEPS.map(
 const STYLE = `
   body { margin: 0; background: ${C.ground}; color: ${C.text}; font-family: Antonio, "Arial Narrow", sans-serif; }
   lcars-frame { --lcars-frame-height: 100dvh; --lcars-sidebar-width: 200px; }
-  .brand { color: ${C.ink}; font-size: 30px; line-height: 1; letter-spacing: .06em; white-space: nowrap; align-self: center; }
+  .brand { font-size: 30px; line-height: 1; letter-spacing: .06em; white-space: nowrap; align-self: center; }
   .nav { display: flex; flex-direction: column; gap: 6px; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 14px; margin-bottom: 16px; }
   .tile { all: unset; box-sizing: border-box; cursor: pointer; padding: 12px 18px; border-radius: 26px 8px 8px 26px; background: ${C.tile}; border-left: 18px solid var(--c); display: grid; gap: 2px; min-width: 0; }
@@ -35,10 +33,9 @@ const STYLE = `
   .tile .note { font: 13px system-ui, sans-serif; text-transform: none; color: ${C.muted}; overflow-wrap: anywhere; }
   .tile[aria-pressed="true"] .split, .tile[aria-pressed="true"] .note { color: ${C.ink}; }
   .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-height: 32px; margin-bottom: 6px; font-size: 19px; color: ${C.gold}; letter-spacing: .05em; }
-  .chip { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; padding: 2px 6px 2px 12px; border-radius: 14px; background: ${C.lilac}; color: ${C.ink}; font-size: 16px; letter-spacing: .04em; overflow-wrap: anywhere; }
-  .chip.repo { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; text-transform: none; }
-  .chip .x { display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 50%; background: ${C.ink}; color: ${C.lilac}; }
-  .chip .x svg { display: block; width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+  lcars-chip { --lcars-font-size-xs: 16px; max-width: 100%; }
+  /* The chip uppercases its slot, and a repository name is an identifier. */
+  lcars-chip.repo span { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; text-transform: none; white-space: normal; overflow-wrap: anywhere; }
   #clear { all: unset; cursor: pointer; color: ${C.ice}; font-size: 17px; }
   /* A scroll container clips what paints outside it, so the focus outline
      needs room inside it. */
@@ -60,16 +57,9 @@ const STYLE = `
   span.num { text-decoration: none; }
   td.g { white-space: nowrap; }
   .pill { all: unset; cursor: pointer; display: inline-block; min-width: 72px; text-align: center; padding: 1px 10px; border-radius: 12px; color: ${C.ink}; font-size: 16px; white-space: nowrap; background: ${C.lilac}; }
-  /* Antonio sits low in its line box, so equal padding alone leaves caps below
-     center. Trimming the box to the capitals makes the padding equal around
-     what is visible. */
-  @supports (text-box: trim-both cap alphabetic) {
-    .pill { padding-block: 6px; text-box: trim-both cap alphabetic; }
-    .chip:not(.repo) .label { text-box: trim-both cap alphabetic; }
-  }
   /* The same states as lcars-button: brighter on hover, brighter and pressed in when active. */
-  .pill:hover, .chip:hover { filter: brightness(1.2); }
-  .pill:active, .chip:active, .pill[aria-pressed="true"] { filter: brightness(1.4); transform: scale(0.98); }
+  .pill:hover { filter: brightness(var(--lcars-hover-brightness)); }
+  .pill:active, .pill[aria-pressed="true"] { filter: brightness(var(--lcars-active-brightness)); transform: scale(var(--lcars-active-scale)); }
   .CRITICAL, .FAILING { background: ${C.critical}; }
   .HIGH { background: ${C.high}; }
   .MEDIUM { background: ${C.medium}; }
@@ -86,7 +76,7 @@ const STYLE = `
   .segs i:last-child { border-radius: 0 7px 7px 0; }
   ${AGE_STEP_RULES}
   .words { font: 400 15px system-ui, sans-serif; text-transform: none; letter-spacing: 0; color: ${C.text}; min-width: 62px; }
-  .tile:focus-visible, .pill:focus-visible, .rb:focus-visible, .chip:focus-visible, #clear:focus-visible, .sort:focus-visible, .num:focus-visible, .gh:focus-visible { outline: 2px solid ${C.ice}; outline-offset: 2px; }
+  .tile:focus-visible, .pill:focus-visible, .rb:focus-visible, #clear:focus-visible, .sort:focus-visible, .num:focus-visible, .gh:focus-visible { outline: 2px solid ${C.ice}; outline-offset: 2px; }
   .empty { padding: 16px 0; font: 16px system-ui, sans-serif; text-transform: none; color: ${C.muted}; }
 `;
 
