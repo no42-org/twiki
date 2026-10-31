@@ -4,6 +4,7 @@
  */
 
 import { safeLog } from "../../core/log.js";
+import type { ReviewDecision } from "../../core/merge.js";
 import { classifyPullRequest } from "../../core/pr-classifier.js";
 import { classifyBump, parseDependency } from "../../core/semver.js";
 import { nodeSubject } from "../../core/subject.js";
@@ -40,6 +41,15 @@ export interface UpdatePrObservation {
    * of its PRs. Unknown ranks above patch and below minor, which is honest.
    */
   bump: BumpLevel | null;
+  /** The branch the pull request is from, or null where the node carried none. */
+  headRef: string | null;
+  /** Null where the node did not state it. Not a claim that it is ready. */
+  isDraft: boolean | null;
+  /**
+   * GitHub's review decision. Null means no review is required. "unknown"
+   * means the row predates this field, and it is never read as green (AD-28).
+   */
+  reviewDecision: ReviewDecision | "unknown";
 }
 
 export interface UpdatePrDeps extends LaneRunDeps {
@@ -93,6 +103,9 @@ export function normalisePr(pr: RawUpdatePr) {
     createdAt: pr.createdAt,
     packageName,
     bump,
+    headRef: pr.headRef,
+    isDraft: pr.isDraft,
+    reviewDecision: pr.reviewDecision,
   };
   return { subject: nodeSubject("dependency_update_pr", pr.nodeId), payload };
 }

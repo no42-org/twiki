@@ -327,6 +327,41 @@ const NODE_FIELDS = `
   repository { name owner { login } }
 `;
 
+/**
+ * The pull-request-only sub-selection: what the merge gate reads off both PR
+ * lanes. Not part of `NODE_FIELDS`, because an Issue node has none of these.
+ */
+const PR_FIELDS = "headRefName isDraft reviewDecision";
+
+/**
+ * Maps the three `PR_FIELDS` off a node. A boundary read, so each is checked
+ * rather than asserted. A value GitHub did not state reads as null for the
+ * draft flag and the head ref. A review decision outside the three GitHub
+ * documents reads as null, which is the "no review required" answer.
+ */
+function pullRequestFields(raw: SearchNodeRaw): {
+  isDraft: boolean | null;
+  reviewDecision: ReviewDecision;
+  headRef: string | null;
+} {
+  const r = raw as {
+    headRefName?: unknown;
+    isDraft?: unknown;
+    reviewDecision?: unknown;
+  };
+  const decision = r.reviewDecision;
+  return {
+    isDraft: typeof r.isDraft === "boolean" ? r.isDraft : null,
+    reviewDecision:
+      decision === "APPROVED" ||
+      decision === "CHANGES_REQUESTED" ||
+      decision === "REVIEW_REQUIRED"
+        ? decision
+        : null,
+    headRef: typeof r.headRefName === "string" ? r.headRefName : null,
+  };
+}
+
 /** The shape every search node here shares, before the caller's mapping. */
 interface SearchNodeRaw {
   id?: string;
@@ -338,6 +373,12 @@ interface SearchNodeRaw {
   repository?: { name?: string; owner?: { login?: string } } | null;
 }
 
+/** The mapped shared fields, before a caller adds its own. */
+type SearchNodeBase = Omit<
+  RawUpdatePr,
+  "isDraft" | "reviewDecision" | "headRef"
+>;
+
 async function runNodeSearch<T>(
   gh: Octokit,
   nodeType: "PullRequest" | "Issue",
@@ -345,7 +386,7 @@ async function runNodeSearch<T>(
   /** Extra node sub-selection, for a caller that needs more than the shared fields. */
   extraFields = "",
   /** Maps a node the shared guard accepted. Defaults to the update-PR shape. */
-  map: (raw: SearchNodeRaw, base: RawUpdatePr) => T = (_raw, base) =>
+  map: (raw: SearchNodeRaw, base: SearchNodeBase) => T = (_raw, base) =>
     base as unknown as T,
 ): Promise<{ items: T[]; unreadable: number; truncated: boolean }> {
   const items: T[] = [];
@@ -726,7 +767,13 @@ export class OctokitGitHub implements GitHubPort {
     let unreadable = 0;
     let truncated = false;
     for (const query of plan.queries) {
-      const page = await runNodeSearch<RawUpdatePr>(gh, "PullRequest", query);
+      const page = await runNodeSearch<RawUpdatePr>(
+        gh,
+        "PullRequest",
+        query,
+        PR_FIELDS,
+        (raw, node) => ({ ...node, ...pullRequestFields(raw) }),
+      );
       prs.push(...page.items);
       unreadable += page.unreadable;
       truncated = truncated || page.truncated;
@@ -800,18 +847,8 @@ export class OctokitGitHub implements GitHubPort {
         gh,
         "PullRequest",
         query,
-        "headRefName",
-        (raw, node) => ({
-          ...node,
-          // A boundary read, so the type is checked rather than asserted:
-          // the schema says non-null, and the queue's stuck term must read
-          // `checks not observed` off a node that disagrees rather than
-          // look up a row keyed by `undefined`.
-          headRef:
-            typeof (raw as { headRefName?: unknown }).headRefName === "string"
-              ? (raw as { headRefName: string }).headRefName
-              : null,
-        }),
+        PR_FIELDS,
+        (raw, node) => ({ ...node, ...pullRequestFields(raw) }),
       );
       prs.push(...page.items);
       unreadable += page.unreadable;

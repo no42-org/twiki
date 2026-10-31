@@ -253,6 +253,9 @@ export const makeUpdatePr = (over: Partial<RawUpdatePr> = {}): RawUpdatePr => ({
   author: "custom-bot[bot]",
   htmlUrl: "https://github.com/no42-org/twiki/pull/1",
   createdAt: "2026-08-17T00:00:00.000Z",
+  headRef: "dependabot/npm_and_yarn/left-pad-1.0.1",
+  isDraft: false,
+  reviewDecision: null,
   ...over,
 });
 
@@ -278,6 +281,8 @@ export const makeOpenPr = (
   htmlUrl: `https://github.com/no42-org/twiki/pull/${over.number ?? 1}`,
   createdAt: "2026-09-10T00:00:00.000Z",
   headRef: "fix-the-thing",
+  isDraft: false,
+  reviewDecision: null,
   ...over,
 });
 

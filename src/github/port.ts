@@ -804,6 +804,12 @@ export interface RawUpdatePr {
   author: string;
   htmlUrl: string;
   createdAt: string;
+  /** `isDraft`; null where the node did not state it. */
+  isDraft: boolean | null;
+  /** `reviewDecision`; null when GitHub reports none (no review required). */
+  reviewDecision: ReviewDecision;
+  /** `headRefName`; null where the node did not carry one. */
+  headRef: string | null;
 }
 
 export interface UpdatePrPage {
@@ -839,12 +845,11 @@ export interface UpdatePrPage {
  * An open pull request that is not a dependency update, as the search
  * returned it (#167).
  *
- * The same node shape as `RawUpdatePr` plus the one field the stuck term
- * needs. Kept as its own interface rather than an alias, because the two
- * lanes disagree about what they are looking at: one collects the pull
- * requests a configured actor opened, the other every pull request no
- * configured actor opened, and a shared name would invite one lane's guard
- * to be reused on the other's rows.
+ * The same node shape as `RawUpdatePr`. Kept as its own interface rather than
+ * an alias, because the two lanes disagree about what they are looking at:
+ * one collects the pull requests a configured actor opened, the other every
+ * pull request no configured actor opened, and a shared name would invite one
+ * lane's guard to be reused on the other's rows.
  */
 export interface RawOpenPullRequest {
   /** GraphQL node id: the PR's stable identity (AD-22). */
@@ -860,14 +865,18 @@ export interface RawOpenPullRequest {
    * `headRefName`: the branch the pull request is from, or null where the
    * node did not carry one.
    *
-   * The one field beyond the shared node shape, and it is here for exactly
-   * one reader: the queue's `stuck` term looks up the retained
-   * `pull_request_workflow_run` row for this ref (#161). Nullable because
-   * this is a boundary read - the schema says non-null, and a payload that
-   * disagrees must leave the term reading `checks not observed` rather than
-   * matching a row keyed by `undefined`.
+   * Read by the queue's `stuck` term, which looks up the retained
+   * `pull_request_workflow_run` row for this ref (#161), and by the merge
+   * gate, which compares it with the live head. Nullable because this is a
+   * boundary read - the schema says non-null, and a payload that disagrees
+   * must leave the term reading `checks not observed` rather than matching a
+   * row keyed by `undefined`.
    */
   headRef: string | null;
+  /** `isDraft`; null where the node did not state it. */
+  isDraft: boolean | null;
+  /** `reviewDecision`; null when GitHub reports none (no review required). */
+  reviewDecision: ReviewDecision;
 }
 
 /**

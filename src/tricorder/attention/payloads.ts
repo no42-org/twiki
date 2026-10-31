@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import type { ReviewDecision } from "../../core/merge.js";
 import type {
   CommitRef,
   FixedAlertRef,
@@ -173,7 +174,32 @@ export function readSecretScanningAlert(
 }
 
 /**
+ * Fills the merge-gate fields on a row written before they existed, or
+ * carrying a value this code does not recognise. Both read as "unknown",
+ * which is never green (AD-28), and neither raises the unreadable count.
+ */
+function mergeFields(p: { isDraft?: unknown; reviewDecision?: unknown }): {
+  isDraft: boolean | null;
+  reviewDecision: ReviewDecision | "unknown";
+} {
+  const d = p.reviewDecision;
+  return {
+    isDraft: typeof p.isDraft === "boolean" ? p.isDraft : null,
+    reviewDecision:
+      d === null ||
+      d === "APPROVED" ||
+      d === "CHANGES_REQUESTED" ||
+      d === "REVIEW_REQUIRED"
+        ? d
+        : "unknown",
+  };
+}
+
+/**
  * The PR shape check, same posture as readAlert: counted, not guessed at.
+ *
+ * `headRef`, `isDraft` and `reviewDecision` arrived later, so a row without
+ * them is still readable and reads as null, null and "unknown".
  */
 export function readPr(payload: unknown): UpdatePrObservation | null {
   const p = payload as UpdatePrObservation | null | undefined;
@@ -190,7 +216,11 @@ export function readPr(payload: unknown): UpdatePrObservation | null {
   ) {
     return null;
   }
-  return p;
+  return {
+    ...p,
+    headRef: typeof p.headRef === "string" ? p.headRef : null,
+    ...mergeFields(p),
+  };
 }
 
 /**
@@ -221,7 +251,7 @@ export function readPullRequest(
   if (typeof p.htmlUrl !== "string") return null;
   if (typeof p.createdAt !== "string") return null;
   if (!stringOrNull(p.headRef)) return null;
-  return p;
+  return { ...p, ...mergeFields(p) };
 }
 
 /**

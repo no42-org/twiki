@@ -1053,6 +1053,10 @@ describe("GraphQL nodes map field for field", () => {
       author: node.author.login,
       htmlUrl: node.url,
       createdAt: node.createdAt,
+      // The recording predates these fields, so the node carries none.
+      headRef: null,
+      isDraft: null,
+      reviewDecision: null,
     });
   });
 
