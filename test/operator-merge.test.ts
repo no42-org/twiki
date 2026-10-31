@@ -5,7 +5,6 @@
 
 import { describe, expect, it } from "vitest";
 import { buildConfig } from "../src/core/config.js";
-import type { MergeResponse } from "../src/core/merge.js";
 import type { LivePullRequest } from "../src/github/port.js";
 import type { AuditSink } from "../src/twiki/audit.js";
 import { operatorMerge } from "../src/twiki/operator-merge.js";
@@ -23,12 +22,11 @@ function setup(
     checks?: FakeRepoData["prChecks"][string];
     live?: Partial<LivePullRequest>;
     declared?: string;
-    rawPrs?: FakeRepoData["rawPrs"];
   } = {},
 ) {
   const declared = over.declared ?? SLUG;
   const data: FakeRepoData = {
-    rawPrs: over.rawPrs ?? [],
+    rawPrs: [],
     prChecks: { [SHA]: over.checks ?? "green" },
     mainChecks: "green",
     latestTag: "v1.2.3",
@@ -156,23 +154,6 @@ describe("operatorMerge", () => {
         at: AT,
       },
     ]);
-  });
-
-  it("does not apply the version rule: a major bump merges when green", async () => {
-    const s = setup({
-      rawPrs: [
-        {
-          number: 7,
-          title: "Bump demo from 1.0.0 to 2.0.0",
-          branch: "dependabot/demo-2.0.0",
-          headSha: SHA,
-          body: "",
-          isSecurity: false,
-          dependency: { name: "demo", from: "1.0.0", to: "2.0.0" },
-        },
-      ],
-    });
-    expect(await operatorMerge(req, s.deps)).toEqual({ outcome: "merged" });
   });
 
   it("maps a 409 to head-changed", async () => {

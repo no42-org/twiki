@@ -16,6 +16,8 @@ import { operatorMergeBlock } from "./gates.js";
 
 export interface OperatorMergeDeps {
   config: Config;
+  // Narrow on purpose: no title or bump is reachable, so the version rule
+  // cannot apply to an operator merge.
   github: Pick<GitHubPort, "livePullRequest" | "prChecks" | "mergePR">;
   audit: AuditSink;
   now: () => string;
