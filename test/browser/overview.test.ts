@@ -327,26 +327,44 @@ describe("the overview in Chromium", () => {
   it("scrolls a long table inside the frame, not the page", async () => {
     const page = await open();
     await page.setViewportSize({ width: 1280, height: 700 });
-    const reach = await page.evaluate(async () => {
+    await page.evaluate(async () => {
       const body = document.getElementById("rows") as Element;
       const row = body.firstElementChild as Element;
       for (let i = 0; i < 60; i++) body.append(row.cloneNode(true));
       await new Promise(requestAnimationFrame);
-      const root = document.documentElement;
-      const main = document
-        .querySelector("lcars-frame")
-        ?.shadowRoot?.querySelector(".slot-main") as Element;
-      main.scrollTop = main.scrollHeight;
-      await new Promise(requestAnimationFrame);
-      return {
-        spare: root.scrollHeight - root.clientHeight,
-        below:
-          (body.lastElementChild as Element).getBoundingClientRect().bottom -
-          main.getBoundingClientRect().bottom,
-      };
     });
-    expect(reach.spare).toBe(0);
-    expect(reach.below).toBeLessThanOrEqual(0);
+    const measure = () =>
+      page.evaluate(() => {
+        const root = document.documentElement;
+        const main = document
+          .querySelector("lcars-frame")
+          ?.shadowRoot?.querySelector("main") as Element;
+        const last = (
+          document.getElementById("rows") as Element
+        ).lastElementChild?.getBoundingClientRect() as DOMRect;
+        return {
+          spare: root.scrollHeight - root.clientHeight,
+          overflowing: main.scrollHeight > main.clientHeight,
+          rowHeight: last.height,
+          below: last.bottom - main.getBoundingClientRect().bottom,
+        };
+      });
+    const before = await measure();
+    expect(before.spare).toBe(0);
+    expect(before.overflowing).toBe(true);
+    expect(before.below).toBeGreaterThan(0);
+
+    await page.hover("#overview-table");
+    await page.mouse.wheel(0, 100_000);
+    await page.waitForFunction(() => {
+      const rows = document.getElementById("rows") as Element;
+      return (
+        (rows.lastElementChild as Element).getBoundingClientRect().bottom < 700
+      );
+    });
+    const after = await measure();
+    expect(after.rowHeight).toBeGreaterThan(0);
+    expect(after.below).toBeLessThanOrEqual(0);
     await page.close();
   });
 
