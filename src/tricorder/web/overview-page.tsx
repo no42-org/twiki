@@ -321,6 +321,8 @@ export const OverviewPage: FC<{ view: Overview; assets: Assets }> = ({
               <Box key={box.group} box={box} />
             ))}
           </div>
+          {/* Empty until a merge answers: a live region must exist first. */}
+          <p class="vh" id="merge-status" aria-live="polite" />
           <div class="bar" id="filter-bar">
             <span>{view.rows.length} ITEMS</span>
           </div>

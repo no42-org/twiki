@@ -1089,6 +1089,10 @@ export class OctokitGitHub implements GitHubPort {
     // installation, never fanned out within a bucket. A fixed width of two is
     // still a width, and this runs once per pull request - it was what kept
     // peak in-flight at 2 after the caller's own fan-out was removed.
+    // This keeps one call serial; it does not make the installation serial.
+    // twiki's operator merge listener issues its requests concurrently with
+    // the tick, on the same adapter, so an operator click can add to whatever
+    // the tick has in flight.
     const checks = await gh.checks.listForRef({
       owner: repo.owner,
       repo: repo.name,

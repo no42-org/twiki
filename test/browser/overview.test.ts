@@ -757,6 +757,43 @@ describe("merging from the overview in Chromium", () => {
     },
   );
 
+  const announcement = (page: Page) =>
+    page.$eval("#merge-status", (region) => ({
+      live: region.getAttribute("aria-live"),
+      text: region.textContent,
+      width: region.getBoundingClientRect().width,
+    }));
+
+  it("announces a merge in the polite live region", async () => {
+    const page = await open();
+    expect(await announcement(page)).toEqual({
+      live: "polite",
+      text: "",
+      width: 1,
+    });
+    await page.click(ENABLED);
+    await page.waitForSelector(ENABLED, { state: "detached" });
+    expect(await announcement(page)).toEqual({
+      live: "polite",
+      text: "no42-org/twiki#12 merged",
+      width: 1,
+    });
+    await page.close();
+  });
+
+  it("announces a refusal with twiki's reason in the live region", async () => {
+    reply = { outcome: "refused", refusal: "head-changed" };
+    const page = await open();
+    await page.click(ENABLED);
+    await page.waitForSelector(`${ENABLED}[aria-disabled="true"]`);
+    expect(await announcement(page)).toEqual({
+      live: "polite",
+      text: "Cannot merge no42-org/twiki#12: New commits pushed",
+      width: 1,
+    });
+    await page.close();
+  });
+
   it("gives keyboard focus to the ID when a merge removes the icon", async () => {
     const page = await open();
     await page.focus(ENABLED);

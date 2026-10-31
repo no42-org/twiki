@@ -155,6 +155,7 @@ function start() {
   const table = document.getElementById("overview-table");
   const bar = document.getElementById("filter-bar");
   const empty = document.getElementById("no-matches");
+  const mergeStatus = document.getElementById("merge-status");
   const rows = [...body.querySelectorAll("tr")].map((tr) => rowFrom(tr));
   const headers = [...document.querySelectorAll("th[data-col]")];
   const columns = headers.map((th) => th.dataset.col);
@@ -274,6 +275,10 @@ function start() {
     button.removeAttribute("aria-busy");
     if (result.merged) markMerged(button);
     else dimIcon(button, result.reason);
+    // The overview spans repositories, so the number alone would not say which.
+    mergeStatus.textContent = result.merged
+      ? `${repo}#${number} merged`
+      : `Cannot merge ${repo}#${number}: ${result.reason}`;
   }
 
   document.addEventListener("click", (event) => {

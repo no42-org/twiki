@@ -486,7 +486,8 @@ export function buildOverview(
     .filter((item) => topicOf(item.kind) === "security")
     .map((item) => securityRow(item, queue, updatePrs, now));
 
-  // The queue only holds repositories on the allowlist.
+  // `items` only holds repositories on the allowlist: the board filters the
+  // queue to them at src/tricorder/attention/board.ts:565.
   const itemAction = (item: QueueItem) =>
     mergeAction({ ...merge, watched: true, facts: item.merge });
   const failing = items
