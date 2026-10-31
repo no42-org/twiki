@@ -4,8 +4,10 @@
  */
 
 import type { FC } from "hono/jsx";
+import { REFUSAL_WORDS } from "../../core/merge.js";
 import type { Assets } from "./assets.js";
 import { AGE_STEPS, LCARS_COLORS as C } from "./lcars-tokens.js";
+import type { MergeAction } from "./merge-action.js";
 import type { Overview, OverviewBox, OverviewRow } from "./overview-view.js";
 import { overviewTitle } from "./titles.js";
 
@@ -64,9 +66,18 @@ const STYLE = `
   .HIGH { background: ${C.high}; }
   .MEDIUM { background: ${C.medium}; }
   .LOW, .UNKNOWN { background: ${C.low}; }
+  .READY, .MERGED { background: ${C.go}; }
   .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .gh { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-right: 6px; color: ${C.muted}; }
   .gh:hover { color: ${C.ice}; }
+  .merge { all: unset; cursor: pointer; display: inline-grid; place-items: center; width: 24px; height: 24px; margin-right: 6px; color: ${C.go}; }
+  .merge:hover { filter: brightness(var(--lcars-hover-brightness)); }
+  .merge:active { filter: brightness(var(--lcars-active-brightness)); transform: scale(var(--lcars-active-scale)); }
+  .merge[aria-disabled="true"], .merge[aria-busy="true"] { color: ${C.muted}; filter: none; transform: none; }
+  .merge[aria-disabled="true"] { cursor: not-allowed; }
+  .merge[aria-busy="true"] { cursor: progress; }
+  /* An ID with no icon beside it starts where the iconed IDs do. */
+  #rows:has(.merge) .num:first-child { margin-left: 30px; }
   .rb { all: unset; cursor: pointer; color: ${C.gold}; }
   .rb:hover, .rb[aria-pressed="true"] { text-decoration: underline; text-underline-offset: 3px; }
   .age { display: inline-flex; align-items: center; gap: 10px; }
@@ -76,7 +87,7 @@ const STYLE = `
   .segs i:last-child { border-radius: 0 7px 7px 0; }
   ${AGE_STEP_RULES}
   .words { font: 400 15px system-ui, sans-serif; text-transform: none; letter-spacing: 0; color: ${C.text}; min-width: 62px; }
-  .tile:focus-visible, .pill:focus-visible, .rb:focus-visible, #clear:focus-visible, .sort:focus-visible, .num:focus-visible, .gh:focus-visible { outline: 2px solid ${C.ice}; outline-offset: 2px; }
+  .tile:focus-visible, .pill:focus-visible, .rb:focus-visible, #clear:focus-visible, .sort:focus-visible, .num:focus-visible, .gh:focus-visible, .merge:focus-visible { outline: 2px solid ${C.ice}; outline-offset: 2px; }
   .empty { padding: 16px 0; font: 16px system-ui, sans-serif; text-transform: none; color: ${C.muted}; }
 `;
 
@@ -97,6 +108,12 @@ const COLUMNS = [
 
 const GITHUB_MARK =
   "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z";
+
+const MERGE_MARK =
+  "M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z";
+
+// For the client, which has no imports: a refused row reads these same words.
+const REFUSAL_WORDS_JSON = JSON.stringify(REFUSAL_WORDS);
 
 const Box: FC<{ box: OverviewBox }> = ({ box }) => (
   <button
@@ -150,6 +167,36 @@ const Age: FC<{ row: OverviewRow }> = ({ row }) => (
   </span>
 );
 
+/** Dimmed with aria-disabled, so a keyboard can still reach the reason. */
+const MergeIcon: FC<{ row: OverviewRow; action: MergeAction }> = ({
+  row,
+  action,
+}) => (
+  <button
+    type="button"
+    class="merge"
+    data-repo={row.repo}
+    data-number={row.id.slice(1)}
+    aria-disabled={action.enabled ? undefined : "true"}
+    aria-label={
+      action.enabled
+        ? `Merge ${row.id} in ${row.repoLabel}`
+        : `Cannot merge ${row.id}: ${action.reason}`
+    }
+    title={action.enabled ? "Merge" : action.reason}
+  >
+    <svg
+      viewBox="0 0 16 16"
+      width="16"
+      height="16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d={MERGE_MARK} />
+    </svg>
+  </button>
+);
+
 const Row: FC<{ row: OverviewRow }> = ({ row }) => (
   <tr
     data-kind={row.group}
@@ -171,7 +218,11 @@ const Row: FC<{ row: OverviewRow }> = ({ row }) => (
       <Pill
         facet="state"
         value={row.state}
-        extra={row.state === "FAILING" ? "FAILING" : undefined}
+        extra={
+          row.state === "FAILING" || row.state === "READY"
+            ? row.state
+            : undefined
+        }
       />
     </td>
     <td class="r">
@@ -211,6 +262,7 @@ const Row: FC<{ row: OverviewRow }> = ({ row }) => (
     </td>
     <td class="i">
       <span class="line">
+        {row.merge === null ? null : <MergeIcon row={row} action={row.merge} />}
         {row.url === null ? (
           <span class="num">{row.id}</span>
         ) : (
@@ -273,7 +325,7 @@ export const OverviewPage: FC<{ view: Overview; assets: Assets }> = ({
             <span>{view.rows.length} ITEMS</span>
           </div>
           <div class="table-wrap">
-            <table id="overview-table">
+            <table id="overview-table" data-refusals={REFUSAL_WORDS_JSON}>
               <thead>
                 <tr>
                   {COLUMNS.map(([col, label]) => (

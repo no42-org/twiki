@@ -21,6 +21,7 @@ export const LCARS_COLORS = {
   high: "#FF9966",
   medium: "#FFCC66",
   low: "#CBBFAE",
+  go: "#66CC99",
   ink: "#000000",
 } as const;
 
@@ -42,6 +43,7 @@ export const LCARS_TEXT_PAIRS: ReadonlyArray<readonly [Color, Color]> = [
   ["gold", "ground"],
   ["lilac", "ground"],
   ["ice", "ground"],
+  ["go", "ground"],
   ["text", "tile"],
   ["muted", "tile"],
   ["text", "tileHover"],
@@ -53,4 +55,5 @@ export const LCARS_TEXT_PAIRS: ReadonlyArray<readonly [Color, Color]> = [
   ["ink", "lilac"],
   ["ink", "ice"],
   ["ink", "gold"],
+  ["ink", "go"],
 ];

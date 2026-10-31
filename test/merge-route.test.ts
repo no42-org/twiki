@@ -21,8 +21,8 @@ import { createApp } from "../src/tricorder/web/app.js";
 import { buildOverview } from "../src/tricorder/web/overview-view.js";
 import { mergeClient, parseMergeUrl } from "../src/tricorder.js";
 
-// Spied on rather than read from the HTML: the page does not draw the merge
-// icon yet, so the argument is the only place the real mode can be seen.
+// Spied on rather than read from the HTML: the argument is the mode itself,
+// where the page only shows what the mode did to an icon.
 vi.mock("../src/tricorder/web/overview-view.js", async (original) => {
   const actual =
     await original<typeof import("../src/tricorder/web/overview-view.js")>();

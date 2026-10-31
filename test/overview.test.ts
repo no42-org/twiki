@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { REFUSAL_WORDS } from "../src/core/merge.js";
 import { DEFAULT_RANK_POLICY, epssRank } from "../src/core/rank.js";
 import type { ReleaseEvidence } from "../src/core/release-worthy.js";
 import { coverageSubject, releaseSubject } from "../src/core/subject.js";
@@ -523,6 +524,67 @@ describe("the overview", () => {
           ageWords: "12 hours",
         },
       ]);
+    });
+
+    describe("the merge icon", () => {
+      const page = async () => {
+        const app = createApp({
+          defaultBranchOf: () => "main",
+          store,
+          watched: WATCHED,
+          policy: POLICY,
+          mode: "enforce",
+          requestMerge: async () => ({ outcome: "merged" }),
+          now: () => NOW,
+        });
+        return (await app.request("/")).text();
+      };
+      const icons = (html: string) =>
+        [...html.matchAll(/<button type="button" class="merge"[^>]*>/g)].map(
+          (m) => m[0],
+        );
+
+      it("names what an enabled icon will do", async () => {
+        seed("graphql-pull-requests", [pr({ ...clear, number: 12 })]);
+        seed("rest-actions-runs", [check("success")]);
+        expect(icons(await page())).toEqual([
+          '<button type="button" class="merge" data-repo="no42-org/twiki" data-number="12" aria-label="Merge #12 in twiki" title="Merge">',
+        ]);
+      });
+
+      it("reaches the reason on a dimmed icon, which stays focusable", async () => {
+        seed("graphql-pull-requests", [pr({ ...clear, number: 12 })]);
+        seed("rest-actions-runs", [check("failure")]);
+        expect(icons(await page())).toEqual([
+          '<button type="button" class="merge" data-repo="no42-org/twiki" data-number="12" aria-disabled="true" aria-label="Cannot merge #12: CI failed" title="CI failed">',
+        ]);
+      });
+
+      it("draws the icon before the ID", async () => {
+        seed("graphql-pull-requests", [pr({ ...clear, number: 12 })]);
+        seed("rest-actions-runs", [check("success")]);
+        const html = await page();
+        const cell = html.match(/<td class="i">.*?<\/td>/s)?.[0] ?? "";
+        expect(cell.indexOf('class="merge"')).toBeGreaterThan(-1);
+        expect(cell.indexOf('class="merge"')).toBeLessThan(
+          cell.indexOf('class="num"'),
+        );
+      });
+
+      it("leaves security and release rows without one, rows and all", async () => {
+        seedAlerts([makeAlert({ number: 1 })]);
+        seedRelease(evidence());
+        const html = await page();
+        expect(html.match(/<tr data-kind=/g)).toHaveLength(2);
+        expect(icons(html)).toEqual([]);
+      });
+
+      it("embeds the refusal words for the client, unchanged", async () => {
+        const attribute = (await page()).match(/data-refusals="([^"]*)"/)?.[1];
+        expect(JSON.parse((attribute ?? "").replaceAll("&quot;", '"'))).toEqual(
+          REFUSAL_WORDS,
+        );
+      });
     });
 
     it("keeps a green draft on a READY row, with its action dimmed", () => {
