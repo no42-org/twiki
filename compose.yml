@@ -133,8 +133,9 @@ services:
       # 127.0.0.1 is load-bearing, not decoration. A bare "8787:8787" publishes
       # on every host interface, and there is NO authentication in front of the
       # dashboard: that would expose every collected alert to anything that can
-      # reach the port. Put your own authenticated proxy in front if you need
-      # more than loopback.
+      # reach the port. A proxy in front does not enable merging: POST /merge
+      # accepts a loopback Host only, so it refuses behind a proxy until the
+      # dashboard has authentication.
       - "127.0.0.1:${TRICORDER_PORT:-8787}:${TRICORDER_PORT:-8787}"
     volumes:
       - ./repos.yaml:/config/repos.yaml:ro
