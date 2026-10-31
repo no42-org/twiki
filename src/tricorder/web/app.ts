@@ -252,6 +252,8 @@ export function createApp(deps: AppDeps): Hono {
       deps.watched,
       now,
       boardDeps(resolved),
+      // Every icon dims until this route can reach twiki.
+      { mode: "shadow", configured: false },
     );
     // Without the doctype browsers render in quirks mode, where the box model
     // and table metrics differ from what the styles were written against.

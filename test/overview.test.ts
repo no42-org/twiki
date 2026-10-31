@@ -23,6 +23,7 @@ import { LANE as ACTIONS_LANE } from "../src/tricorder/collect/workflow-runs.js"
 import { SqliteStore } from "../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../src/tricorder/web/app.js";
 import { loadAssets } from "../src/tricorder/web/assets.js";
+import { mergeAction } from "../src/tricorder/web/merge-action.js";
 import { ageOf, buildOverview } from "../src/tricorder/web/overview-view.js";
 import { makeAlert, makeSecretScanningAlert, makeUpdatePr } from "./fakes.js";
 
@@ -41,6 +42,8 @@ const DEPS = {
   cutRank: epssRank(DEFAULT_NOW_EPSS, DEFAULT_RANK_POLICY.epssBands),
   reviewBudgetDays: 3,
 };
+/** Merging switched on, so a row's action speaks for the row alone. */
+const MERGE = { mode: "enforce", configured: true } as const;
 
 describe("ageOf", () => {
   const ago = (hours: number) =>
@@ -76,6 +79,108 @@ describe("ageOf", () => {
   });
 });
 
+describe("mergeAction", () => {
+  const facts = {
+    checks: "passed",
+    isDraft: false,
+    reviewDecision: "APPROVED",
+  } as const;
+  const open = { ...MERGE, watched: true, facts };
+  const dim = (reason: string) => ({ enabled: false, reason });
+
+  it.each([
+    [
+      "shadow mode, whatever else is wrong",
+      {
+        mode: "shadow",
+        configured: false,
+        watched: false,
+        facts: { ...facts, checks: "failed" },
+      },
+      "Shadow mode",
+    ],
+    [
+      "no merge route, ahead of the allowlist",
+      { ...open, configured: false, watched: false },
+      "Merging not configured",
+    ],
+    [
+      "a repository outside the allowlist, ahead of the facts",
+      { ...open, watched: false, facts: null },
+      "Not in the allowlist",
+    ],
+    ["no facts", { ...open, facts: null }, "Checks not observed"],
+    [
+      "failed checks, ahead of a draft",
+      { ...open, facts: { ...facts, checks: "failed", isDraft: true } },
+      "CI failed",
+    ],
+    [
+      "running checks, ahead of a draft",
+      { ...open, facts: { ...facts, checks: "running", isDraft: true } },
+      "CI running",
+    ],
+    [
+      "no checks, ahead of a draft",
+      { ...open, facts: { ...facts, checks: "none", isDraft: true } },
+      "Checks not observed",
+    ],
+    [
+      "a draft, ahead of a requested change",
+      {
+        ...open,
+        facts: {
+          ...facts,
+          isDraft: true,
+          reviewDecision: "CHANGES_REQUESTED",
+        },
+      },
+      "Draft",
+    ],
+    [
+      "a requested change, ahead of an unknown draft state",
+      {
+        ...open,
+        facts: {
+          ...facts,
+          isDraft: null,
+          reviewDecision: "CHANGES_REQUESTED",
+        },
+      },
+      "Changes requested",
+    ],
+    [
+      "a required review, ahead of an unknown draft state",
+      {
+        ...open,
+        facts: { ...facts, isDraft: null, reviewDecision: "REVIEW_REQUIRED" },
+      },
+      "Review required",
+    ],
+    [
+      "an unknown review decision",
+      { ...open, facts: { ...facts, reviewDecision: "unknown" } },
+      "Review state not observed",
+    ],
+    [
+      "an unknown draft state",
+      { ...open, facts: { ...facts, isDraft: null } },
+      "Review state not observed",
+    ],
+  ] as const)("dims for %s", (_name, input, reason) => {
+    expect(mergeAction(input)).toEqual(dim(reason));
+  });
+
+  it.each(["APPROVED", null] as const)(
+    "enables a green pull request reviewed as %s",
+    (reviewDecision) => {
+      expect(
+        mergeAction({ ...open, facts: { ...facts, reviewDecision } }),
+      ).toEqual({ enabled: true });
+    },
+  );
+});
+
 describe("the overview", () => {
   let dir: string;
   let store: SqliteStore;
@@ -100,7 +205,8 @@ describe("the overview", () => {
   const seedAlerts = (alerts: ReturnType<typeof makeAlert>[]) =>
     seed(ALERTS_LANE, [...alerts.map(normalise), summariseRepo(REPO, alerts)]);
 
-  const build = (watched = WATCHED) => buildOverview(store, watched, NOW, DEPS);
+  const build = (watched = WATCHED) =>
+    buildOverview(store, watched, NOW, DEPS, MERGE);
 
   const evidence = (over: Partial<ReleaseEvidence> = {}): ReleaseEvidence => ({
     tag: "v1.3.0",
@@ -158,6 +264,7 @@ describe("the overview", () => {
           id: "#3",
           url: "https://github.com/no42-org/twiki/security/dependabot/1",
           what: "left-pad (CVE-2026-0001). Direct runtime dependency. KEV status unknown. Fix in 2.4.1.",
+          merge: null,
           ageHours: 72,
           ageStep: 2,
           ageWords: "3 days",
@@ -235,10 +342,16 @@ describe("the overview", () => {
         },
       ]);
       expect(
-        buildOverview(store, WATCHED, NOW, {
-          ...DEPS,
-          coveragePolicy: { cadenceMs: 86_400_000 },
-        }).rows,
+        buildOverview(
+          store,
+          WATCHED,
+          NOW,
+          {
+            ...DEPS,
+            coveragePolicy: { cadenceMs: 86_400_000 },
+          },
+          MERGE,
+        ).rows,
       ).toEqual([]);
     });
 
@@ -270,8 +383,14 @@ describe("the overview", () => {
         ...over,
       },
     });
-    const check = (conclusion: string) => ({
-      subject: { type: "pull_request_workflow_run", key: "WFR_3" },
+    const check = (
+      conclusion: string | null,
+      over: Record<string, unknown> = {},
+    ) => ({
+      subject: {
+        type: "pull_request_workflow_run",
+        key: `WFR_${over.runNumber ?? 3}`,
+      },
       payload: {
         repo: "no42-org/twiki",
         workflowId: 1,
@@ -283,8 +402,51 @@ describe("the overview", () => {
         event: "pull_request",
         htmlUrl: "https://github.com/no42-org/twiki/actions/runs/3",
         createdAt: "2026-08-17T10:00:00.000Z",
+        ...over,
       },
     });
+    /** Nothing in the way but the checks. */
+    const clear = { isDraft: false, reviewDecision: null };
+    const seedReview = (number: number, repo = "no42-org/twiki") =>
+      seed(
+        "graphql-review-requests",
+        [
+          {
+            subject: { type: "review_request", key: `RR_${number}` },
+            payload: {
+              repo,
+              number,
+              title: "Wire the thing",
+              author: "a-contributor",
+              htmlUrl: `https://github.com/${repo}/pull/${number}`,
+              createdAt: "2026-08-15T12:00:00.000Z",
+              requestedReviewers: ["indigo423"],
+            },
+          },
+        ],
+        "ok",
+        AT,
+        "reviews",
+      );
+    /** An update pull request on the `feature` ref, which GitHub could not update. */
+    const seedStuckUpdate = () => {
+      seed("graphql-update-prs", [
+        normalisePr(makeUpdatePr({ number: 1, headRef: "feature" })),
+      ]);
+      seed("rest-dependabot-status", [
+        {
+          subject: {
+            type: "dependabot_update_status",
+            key: "no42-org/twiki#21",
+          },
+          payload: {
+            repo: "no42-org/twiki",
+            alertNumber: 21,
+            update: { pullRequestNumber: 1, error: "update_not_possible" },
+          },
+        },
+      ]);
+    };
 
     it("lists a failing pull request as the whole row", () => {
       seed("graphql-pull-requests", [pr()]);
@@ -303,6 +465,7 @@ describe("the overview", () => {
           id: "#7",
           url: "https://github.com/no42-org/twiki/pull/7",
           what: "Fix the thing. Checks failing.",
+          merge: { enabled: false, reason: "CI failed" },
           ageHours: 12,
           ageStep: 1,
           ageWords: "12 hours",
@@ -310,10 +473,168 @@ describe("the overview", () => {
       ]);
     });
 
-    it("leaves out a pull request whose checks pass", () => {
-      seed("graphql-pull-requests", [pr()]);
+    it("lists a green pull request nobody asked about as the whole READY row", () => {
+      seed("graphql-pull-requests", [pr(clear)]);
       seed("rest-actions-runs", [check("success")]);
+
+      expect(build().rows).toEqual([
+        {
+          key: "PR_7",
+          group: "PULL REQUESTS",
+          severity: null,
+          severityRank: null,
+          state: "READY",
+          repo: "no42-org/twiki",
+          repoLabel: "twiki",
+          repoUrl: "https://github.com/no42-org/twiki",
+          id: "#7",
+          url: "https://github.com/no42-org/twiki/pull/7",
+          what: "Fix the thing. Checks passed.",
+          merge: { enabled: true },
+          ageHours: 12,
+          ageStep: 1,
+          ageWords: "12 hours",
+        },
+      ]);
+    });
+
+    it("lists a green update pull request as the whole READY row", () => {
+      seed("graphql-update-prs", [
+        normalisePr(makeUpdatePr({ number: 1, headRef: "feature" })),
+      ]);
+      seed("rest-actions-runs", [check("success")]);
+
+      expect(build().rows).toEqual([
+        {
+          key: "PR_1",
+          group: "PULL REQUESTS",
+          severity: null,
+          severityRank: null,
+          state: "READY",
+          repo: "no42-org/twiki",
+          repoLabel: "twiki",
+          repoUrl: "https://github.com/no42-org/twiki",
+          id: "#1",
+          url: "https://github.com/no42-org/twiki/pull/1",
+          what: "Update left-pad. Checks passed.",
+          merge: { enabled: true },
+          ageHours: 12,
+          ageStep: 1,
+          ageWords: "12 hours",
+        },
+      ]);
+    });
+
+    it("keeps a green draft on a READY row, with its action dimmed", () => {
+      seed("graphql-pull-requests", [pr({ ...clear, isDraft: true })]);
+      seed("rest-actions-runs", [check("success")]);
+      expect(build().rows.map((r) => [r.state, r.merge])).toEqual([
+        ["READY", { enabled: false, reason: "Draft" }],
+      ]);
+    });
+
+    it("lists a green pull request that wants your review as one enabled REVIEW row", () => {
+      seed("graphql-pull-requests", [pr(clear)]);
+      seed("rest-actions-runs", [check("success")]);
+      seedReview(7, "No42-Org/twiki");
+      expect(build().rows.map((r) => [r.state, r.id, r.merge])).toEqual([
+        ["REVIEW", "#7", { enabled: true }],
+      ]);
+    });
+
+    it("dims a review row with no pull request behind it", () => {
+      seedReview(9);
+      expect(build().rows.map((r) => [r.state, r.id, r.merge])).toEqual([
+        ["REVIEW", "#9", { enabled: false, reason: "Checks not observed" }],
+      ]);
+    });
+
+    it.each([
+      ["running checks", [check(null, { status: "in_progress" })]],
+      ["a cancelled run", [check("cancelled")]],
+      ["no checks", []],
+    ])("gives no READY row to a pull request with %s", (_name, runs) => {
+      seed("graphql-pull-requests", [pr(clear)]);
+      seed("rest-actions-runs", runs);
       expect(build().rows).toEqual([]);
+    });
+
+    it("dims a failing pull request that wants your review, on its one row", () => {
+      seed("graphql-pull-requests", [pr(clear)]);
+      seed("rest-actions-runs", [check("failure")]);
+      seedReview(7);
+      expect(build().rows.map((r) => [r.state, r.merge])).toEqual([
+        ["FAILING", { enabled: false, reason: "CI failed" }],
+      ]);
+    });
+
+    it("keeps a stuck update with passing checks FAILING and enabled, and says it is stuck", () => {
+      seedStuckUpdate();
+      seed("rest-actions-runs", [check("success")]);
+      expect(build().rows.map((r) => [r.state, r.what, r.merge])).toEqual([
+        [
+          "FAILING",
+          "Update left-pad is stuck: KEV status unknown, EPSS unknown, severity unknown, patch bump, GitHub could not prepare this update.",
+          { enabled: true },
+        ],
+      ]);
+    });
+
+    it("dims a stuck update whose checks failed", () => {
+      seedStuckUpdate();
+      seed("rest-actions-runs", [check("failure")]);
+      expect(build().rows.map((r) => [r.state, r.merge])).toEqual([
+        ["FAILING", { enabled: false, reason: "CI failed" }],
+      ]);
+    });
+
+    it("orders READY after FAILING and REVIEW, and counts all three", () => {
+      seed("graphql-pull-requests", [
+        pr({ ...clear, number: 1, headRef: "green" }),
+        pr({ ...clear, number: 2, headRef: "asked" }),
+        pr({ ...clear, number: 3, headRef: "red" }),
+      ]);
+      seed("rest-actions-runs", [
+        check("success", { runNumber: 1, headBranch: "green" }),
+        check("success", { runNumber: 2, headBranch: "asked" }),
+        check("failure", { runNumber: 3, headBranch: "red" }),
+      ]);
+      seedReview(2);
+
+      const { rows, boxes } = build();
+      expect(rows.map((r) => [r.state, r.id])).toEqual([
+        ["FAILING", "#3"],
+        ["REVIEW", "#2"],
+        ["READY", "#1"],
+      ]);
+      expect(boxes[1]).toMatchObject({
+        count: 3,
+        breakdown: "1 FAILING / 1 REVIEW / 1 READY",
+      });
+    });
+
+    it.each([
+      [{ mode: "shadow", configured: true }, "Shadow mode"],
+      [{ mode: "enforce", configured: false }, "Merging not configured"],
+    ] as const)("hands %j to every pull request row", (merge, reason) => {
+      seed("graphql-pull-requests", [
+        pr({ ...clear, number: 1, headRef: "green" }),
+        pr({ ...clear, number: 2, headRef: "asked" }),
+        pr({ ...clear, number: 3, headRef: "red" }),
+      ]);
+      seed("rest-actions-runs", [
+        check("success", { runNumber: 1, headBranch: "green" }),
+        check("success", { runNumber: 2, headBranch: "asked" }),
+        check("failure", { runNumber: 3, headBranch: "red" }),
+      ]);
+      seedReview(2);
+
+      const dim = { enabled: false, reason };
+      expect(
+        buildOverview(store, WATCHED, NOW, DEPS, merge).rows.map(
+          (r) => r.merge,
+        ),
+      ).toEqual([dim, dim, dim]);
     });
 
     it("lists a failing pull request that wants your review once", () => {
@@ -379,6 +700,7 @@ describe("the overview", () => {
           id: "#9",
           url: "https://github.com/someone/else/pull/9",
           what: "Wire the thing. Your review requested.",
+          merge: { enabled: false, reason: "Not in the allowlist" },
           ageHours: 48,
           ageStep: 2,
           ageWords: "2 days",
@@ -404,6 +726,7 @@ describe("the overview", () => {
           id: "v1.3.0",
           url: "https://github.com/no42-org/twiki/compare/v1.3.0...HEAD",
           what: "2 changes since v1.3.0: 1 feat, 1 fix.",
+          merge: null,
           ageHours: 120,
           ageStep: 3,
           ageWords: "5 days",
@@ -645,10 +968,16 @@ describe("the overview", () => {
     it("judges a lane on its own cadence", () => {
       seedAllClean();
       seed("rest-org-coverage", [], "ok", "2026-08-17T06:00:00.000Z");
-      const daily = buildOverview(store, WATCHED, NOW, {
-        ...DEPS,
-        lanePolicies: { "rest-org-coverage": { cadenceMs: 86_400_000 } },
-      });
+      const daily = buildOverview(
+        store,
+        WATCHED,
+        NOW,
+        {
+          ...DEPS,
+          lanePolicies: { "rest-org-coverage": { cadenceMs: 86_400_000 } },
+        },
+        MERGE,
+      );
       expect(daily.health.allCurrent).toBe(true);
       expect(build().health.allCurrent).toBe(false);
     });

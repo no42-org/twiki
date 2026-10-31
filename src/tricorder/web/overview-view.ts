@@ -7,7 +7,7 @@ import { safeUrl } from "../../core/safe-url.js";
 import { worstSeverity } from "../../core/severity.js";
 import { foldSlug } from "../../core/slug.js";
 import { topicOf } from "../../core/topics.js";
-import type { RepoRef } from "../../core/types.js";
+import type { Mode, RepoRef } from "../../core/types.js";
 import {
   type BoardDeps,
   buildBoardWithSources,
@@ -18,6 +18,7 @@ import type { CollectionHealth } from "../attention/health.js";
 import type { Queue, QueueItem } from "../attention/queue.js";
 import type { ReleaseReading } from "../attention/release.js";
 import type { StorePort } from "../store/port.js";
+import { type MergeAction, mergeAction } from "./merge-action.js";
 import { buildReviewView } from "./review-view.js";
 
 // The overview's view model: three boxes and one table, built from the same
@@ -68,6 +69,8 @@ export interface OverviewRow {
   /** Where the ID leads, or null when no safe URL is known. */
   url: string | null;
   what: string;
+  /** The row's merge icon. Null on rows that are not pull requests. */
+  merge: MergeAction | null;
   /** Whole hours since the item opened, or null when unknown. */
   ageHours: number | null;
   /** 1 to 5, or 0 when the age is unknown. */
@@ -224,27 +227,44 @@ function securityRow(
     id: `#${item.number}`,
     url: item.htmlUrl,
     what: securityWhat(item, queue),
+    merge: null,
     ...ageOf(item.openedAt, now),
   };
 }
 
-function failingRow(item: QueueItem, now: Date): OverviewRow {
+function pullRow(
+  item: QueueItem,
+  state: string,
+  what: string,
+  merge: MergeAction,
+  now: Date,
+): OverviewRow {
   return {
     key: item.key,
     group: "PULL REQUESTS",
     severity: null,
     severityRank: null,
-    state: "FAILING",
+    state,
     ...repoParts(item.repo),
     repoLabel: nameOf(item.repo),
     id: `#${item.number}`,
     url: item.htmlUrl,
-    what:
-      item.kind === "update_pr"
-        ? `Update ${item.packageName ?? "of a dependency"} is stuck: ${item.explanation}.`
-        : `${item.title ?? "Pull request"}. Checks failing.`,
+    what,
+    merge,
     ...ageOf(item.openedAt, now),
   };
+}
+
+function failingWhat(item: QueueItem): string {
+  return item.kind === "update_pr"
+    ? `Update ${item.packageName ?? "of a dependency"} is stuck: ${item.explanation}.`
+    : `${item.title ?? "Pull request"}. Checks failing.`;
+}
+
+function readyWhat(item: QueueItem): string {
+  return item.kind === "update_pr"
+    ? `Update ${item.packageName ?? "of a dependency"}. Checks passed.`
+    : `${item.title ?? "Pull request"}. Checks passed.`;
 }
 
 function releaseRow(
@@ -289,6 +309,7 @@ function releaseRow(
         ? `${plural(changes, "change")} ${since}: ${kinds.join(", ")}.`
         : null,
     ]),
+    merge: null,
     ...ageOf(tagDate, now),
   };
 }
@@ -454,6 +475,7 @@ export function buildOverview(
   watched: readonly RepoRef[],
   now: Date,
   deps: OverviewDeps,
+  merge: { mode: Mode; configured: boolean },
 ): Overview {
   const board = buildBoardWithSources(store, watched, now, deps);
   const reviews = buildReviewView(store, watched, now, deps.policy);
@@ -464,9 +486,14 @@ export function buildOverview(
     .filter((item) => topicOf(item.kind) === "security")
     .map((item) => securityRow(item, queue, updatePrs, now));
 
+  // The queue only holds repositories on the allowlist.
+  const itemAction = (item: QueueItem) =>
+    mergeAction({ ...merge, watched: true, facts: item.merge });
   const failing = items
     .filter((item) => item.stuck)
-    .map((item) => failingRow(item, now));
+    .map((item) =>
+      pullRow(item, "FAILING", failingWhat(item), itemAction(item), now),
+    );
   // One pull request, one row: a failing one that also waits on your review
   // says so in its sentence rather than counting twice.
   const failingByPull = new Map(
@@ -477,6 +504,13 @@ export function buildOverview(
     if (row !== undefined) row.what = `${row.what} Your review requested.`;
     return row === undefined;
   });
+  const pullKey = (repo: string, number: number) =>
+    `${foldSlug(repo)}#${number}`;
+  const pullsByKey = new Map(
+    items
+      .filter((item) => item.merge !== null)
+      .map((item) => [pullKey(item.repo, item.number), item]),
+  );
   const asked = unasked.map(
     (r): OverviewRow => ({
       key: `review:${r.key}`,
@@ -491,10 +525,28 @@ export function buildOverview(
       id: `#${r.number}`,
       url: r.htmlUrl,
       what: `${r.title}. Your review requested.`,
+      // A request outside the allowlist has no queue item.
+      merge: mergeAction({
+        ...merge,
+        watched: r.watched,
+        facts: pullsByKey.get(pullKey(r.repo, r.number))?.merge ?? null,
+      }),
       ...ageOf(r.createdAt, now),
     }),
   );
-  const pulls = [...failing, ...asked];
+  // Also one row per pull request: a request is the stronger ask.
+  const requested = new Set(reviews.rows.map((r) => pullKey(r.repo, r.number)));
+  const ready = items
+    .filter(
+      (item) =>
+        !item.stuck &&
+        item.merge?.checks === "passed" &&
+        !requested.has(pullKey(item.repo, item.number)),
+    )
+    .map((item) =>
+      pullRow(item, "READY", readyWhat(item), itemAction(item), now),
+    );
+  const pulls = [...failing, ...asked, ...ready];
 
   const repos = new Map(
     watched.map((r) => [foldSlug(`${r.owner}/${r.name}`), r]),
@@ -546,7 +598,7 @@ export function buildOverview(
     boxFrom(
       "PULL REQUESTS",
       pulls,
-      tally(pulls, (r) => r.state, ["FAILING", "REVIEW"]),
+      tally(pulls, (r) => r.state, ["FAILING", "REVIEW", "READY"]),
       [
         tileSource(tileOf("pulls")),
         tileSource(tileOf("dependencies")),
