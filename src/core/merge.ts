@@ -28,6 +28,26 @@ export type ReviewDecision =
   | "REVIEW_REQUIRED"
   | null;
 
+/** A review decision as read: "unknown" where the data did not state it. */
+export type ReviewDecisionRead = ReviewDecision | "unknown";
+
+/**
+ * Reads GitHub's reviewDecision from a boundary value. Only an explicit null
+ * means "no review required". A missing field or an unrecognised string is
+ * "unknown", which is never green (AD-28).
+ */
+export function readReviewDecision(value: unknown): ReviewDecisionRead {
+  if (
+    value === null ||
+    value === "APPROVED" ||
+    value === "CHANGES_REQUESTED" ||
+    value === "REVIEW_REQUIRED"
+  ) {
+    return value;
+  }
+  return "unknown";
+}
+
 export interface MergeRequest {
   repo: string;
   number: number;

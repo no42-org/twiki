@@ -826,6 +826,24 @@ describe("update PRs in the queue (CAP-3)", () => {
     expect(prs[0]?.advisory).toBe("CVE-2021-44228");
   });
 
+  it("does not count an update PR stored before the merge fields as unreadable", () => {
+    // Keys set to undefined drop out of the stored JSON, which is the shape
+    // of a row written before headRef, isDraft and reviewDecision existed.
+    seedPr("PR_old", {
+      number: 10,
+      headRef: undefined,
+      isDraft: undefined,
+      reviewDecision: undefined,
+    });
+
+    const queue = buildQueue(store, NOW, DEPS);
+
+    expect(queue.unreadable).toBe(0);
+    expect(queue.items.map((i) => [i.kind, i.number])).toEqual([
+      ["update_pr", 10],
+    ]);
+  });
+
   it("says nothing about the build on a PR that inherited an advisory", () => {
     // The candidate-bearing branch builds its own RankInput, and nothing
     // else pinned what it passes for `broken`. A `null` there ranks UNKNOWN,
@@ -1864,6 +1882,16 @@ describe("plain pull requests in the queue (#167)", () => {
     expect(items[0]?.explanation).toBe("checks not observed");
     expect(items[0]?.ranking.key).toEqual([0, 0, 0, 0, 0, 0]);
     expect(tier(items[0]?.ranking as Ranking, CUT)).toBe("quiet");
+  });
+
+  it("does not count a plain pull request stored before the merge fields as unreadable", () => {
+    // `pr()` writes no isDraft or reviewDecision, as a pre-change row.
+    seed(PR_LANE, [pr()]);
+
+    const queue = buildQueue(store, NOW, DEPS);
+
+    expect(queue.unreadable).toBe(0);
+    expect(queue.items).toHaveLength(1);
   });
 
   it("says the same for a pull request whose head ref the node did not carry", () => {

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { ReviewDecision } from "../core/merge.js";
+import type { ReviewDecisionRead } from "../core/merge.js";
 import type { CommitRef, FixedAlertRef } from "../core/release-worthy.js";
 import type {
   CheckStatus,
@@ -705,7 +705,7 @@ export interface LivePullRequest {
   state: "OPEN" | "CLOSED" | "MERGED";
   isDraft: boolean;
   headSha: string;
-  reviewDecision: ReviewDecision;
+  reviewDecision: ReviewDecisionRead;
 }
 
 /** Mutating — executor only, enforce mode only. */
@@ -806,8 +806,8 @@ export interface RawUpdatePr {
   createdAt: string;
   /** `isDraft`; null where the node did not state it. */
   isDraft: boolean | null;
-  /** `reviewDecision`; null when GitHub reports none (no review required). */
-  reviewDecision: ReviewDecision;
+  /** `reviewDecision`; null is "no review required", "unknown" is unread. */
+  reviewDecision: ReviewDecisionRead;
   /** `headRefName`; null where the node did not carry one. */
   headRef: string | null;
 }
@@ -875,8 +875,8 @@ export interface RawOpenPullRequest {
   headRef: string | null;
   /** `isDraft`; null where the node did not state it. */
   isDraft: boolean | null;
-  /** `reviewDecision`; null when GitHub reports none (no review required). */
-  reviewDecision: ReviewDecision;
+  /** `reviewDecision`; null is "no review required", "unknown" is unread. */
+  reviewDecision: ReviewDecisionRead;
 }
 
 /**

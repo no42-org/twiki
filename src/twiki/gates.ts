@@ -52,7 +52,7 @@ export function mergeBlock(pr: PullRequest, policy: RepoPolicy): MergeBlock {
 /**
  * Gate for a merge the operator asked for. The human is the policy decision,
  * so bump level and the minor setting do not apply. State, draft, checks and
- * review do. A null review decision means the repository requires no review
+ * review do. An unknown review decision blocks. A null review decision means the repository requires no review
  * and does not block.
  */
 export function operatorMergeBlock(
@@ -66,7 +66,9 @@ export function operatorMergeBlock(
   if (checks === "pending") return "ci-running";
   if (checks === "none") return "no-checks";
   if (live.reviewDecision === "CHANGES_REQUESTED") return "changes-requested";
+  // Unknown is never green (AD-28): an unread decision blocks like a required one.
   if (live.reviewDecision === "REVIEW_REQUIRED") return "review-required";
+  if (live.reviewDecision === "unknown") return "review-required";
   return null;
 }
 

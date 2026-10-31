@@ -4,7 +4,7 @@
  */
 
 import { safeLog } from "../../core/log.js";
-import type { ReviewDecision } from "../../core/merge.js";
+import type { ReviewDecisionRead } from "../../core/merge.js";
 import { classifyPullRequest } from "../../core/pr-classifier.js";
 import { classifyBump, parseDependency } from "../../core/semver.js";
 import { nodeSubject } from "../../core/subject.js";
@@ -49,7 +49,7 @@ export interface UpdatePrObservation {
    * GitHub's review decision. Null means no review is required. "unknown"
    * means the row predates this field, and it is never read as green (AD-28).
    */
-  reviewDecision: ReviewDecision | "unknown";
+  reviewDecision: ReviewDecisionRead;
 }
 
 export interface UpdatePrDeps extends LaneRunDeps {

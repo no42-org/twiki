@@ -186,6 +186,16 @@ describe("operatorMergeBlock", () => {
         "green",
       ),
     ).toBe("review-required");
+    expect(
+      operatorMergeBlock({ ...open, reviewDecision: "unknown" }, "green"),
+    ).toBe("review-required");
+    expect(operatorMergeBlock({ ...open, isDraft: true }, "red")).toBe("draft");
+    expect(
+      operatorMergeBlock(
+        { ...open, reviewDecision: "CHANGES_REQUESTED" },
+        "red",
+      ),
+    ).toBe("ci-failed");
     expect(operatorMergeBlock(open, "red")).toBe("ci-failed");
     expect(operatorMergeBlock(open, "pending")).toBe("ci-running");
     expect(operatorMergeBlock(open, "none")).toBe("no-checks");

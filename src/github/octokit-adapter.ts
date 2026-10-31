@@ -5,7 +5,7 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
-import type { ReviewDecision } from "../core/merge.js";
+import { type ReviewDecisionRead, readReviewDecision } from "../core/merge.js";
 import { NOT_APPLICABLE } from "../core/rank.js";
 import { redact } from "../core/redact.js";
 import type { CommitRef, FixedAlertRef } from "../core/release-worthy.js";
@@ -336,12 +336,13 @@ const PR_FIELDS = "headRefName isDraft reviewDecision";
 /**
  * Maps the three `PR_FIELDS` off a node. A boundary read, so each is checked
  * rather than asserted. A value GitHub did not state reads as null for the
- * draft flag and the head ref. A review decision outside the three GitHub
- * documents reads as null, which is the "no review required" answer.
+ * draft flag and the head ref. A review decision that is missing or outside
+ * the three GitHub documents reads as "unknown"; only an explicit null is
+ * "no review required".
  */
 function pullRequestFields(raw: SearchNodeRaw): {
   isDraft: boolean | null;
-  reviewDecision: ReviewDecision;
+  reviewDecision: ReviewDecisionRead;
   headRef: string | null;
 } {
   const r = raw as {
@@ -349,15 +350,9 @@ function pullRequestFields(raw: SearchNodeRaw): {
     isDraft?: unknown;
     reviewDecision?: unknown;
   };
-  const decision = r.reviewDecision;
   return {
     isDraft: typeof r.isDraft === "boolean" ? r.isDraft : null,
-    reviewDecision:
-      decision === "APPROVED" ||
-      decision === "CHANGES_REQUESTED" ||
-      decision === "REVIEW_REQUIRED"
-        ? decision
-        : null,
+    reviewDecision: readReviewDecision(r.reviewDecision),
     headRef: typeof r.headRefName === "string" ? r.headRefName : null,
   };
 }
@@ -2271,7 +2266,7 @@ export class OctokitGitHub implements GitHubPort {
           state: LivePullRequest["state"];
           isDraft: boolean;
           headRefOid: string;
-          reviewDecision: ReviewDecision;
+          reviewDecision: unknown;
         } | null;
       } | null;
     } = await gh.graphql(
@@ -2292,7 +2287,7 @@ export class OctokitGitHub implements GitHubPort {
       state: pr.state,
       isDraft: pr.isDraft,
       headSha: pr.headRefOid,
-      reviewDecision: pr.reviewDecision,
+      reviewDecision: readReviewDecision(pr.reviewDecision),
     };
   }
 

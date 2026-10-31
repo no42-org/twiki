@@ -1056,7 +1056,7 @@ describe("GraphQL nodes map field for field", () => {
       // The recording predates these fields, so the node carries none.
       headRef: null,
       isDraft: null,
-      reviewDecision: null,
+      reviewDecision: "unknown",
     });
   });
 
@@ -1796,6 +1796,31 @@ describe("livePullRequest", () => {
       isDraft: false,
       headSha: "abc",
       reviewDecision: null,
+    });
+  });
+
+  it.each([
+    ["an unrecognised string", { reviewDecision: "SHRUG" }],
+    ["a missing field", {}],
+  ])("reads %s as unknown, never null", async (_name, extra) => {
+    const adapter = adapterFor(
+      graphqlStub({
+        repository: {
+          pullRequest: {
+            state: "OPEN",
+            isDraft: false,
+            headRefOid: "abc",
+            ...extra,
+          },
+        },
+      }),
+      "organization",
+    );
+    expect(await adapter.livePullRequest(REPO, 7)).toEqual({
+      state: "OPEN",
+      isDraft: false,
+      headSha: "abc",
+      reviewDecision: "unknown",
     });
   });
 

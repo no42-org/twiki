@@ -86,6 +86,20 @@ describe("reviewDecision, isDraft and headRefName: the GraphQL mapper", () => {
     expect(page.prs).toEqual([EXPECTED]);
   });
 
+  it.each([
+    ["an unrecognised string", { reviewDecision: "SHRUG" }],
+    ["a missing field", { reviewDecision: undefined }],
+  ])("reads %s as unknown on both lanes, never null", async (_name, over) => {
+    const update = stubGh([node(over)]);
+    const plain = stubGh([node(over)]);
+    expect(
+      (await update.adapter.listOpenUpdatePRs(REPOS, ["app/dependabot"])).prs,
+    ).toEqual([{ ...EXPECTED, reviewDecision: "unknown" }]);
+    expect(
+      (await plain.adapter.listOpenPullRequests(REPOS, ["app/dependabot"])).prs,
+    ).toEqual([{ ...EXPECTED, reviewDecision: "unknown" }]);
+  });
+
   it("reads a null reviewDecision as null and a missing draft flag as null", async () => {
     const { adapter } = stubGh([
       node({

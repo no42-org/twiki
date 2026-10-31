@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { ReviewDecision } from "../../core/merge.js";
+import {
+  type ReviewDecisionRead,
+  readReviewDecision,
+} from "../../core/merge.js";
 import type {
   CommitRef,
   FixedAlertRef,
@@ -180,18 +183,11 @@ export function readSecretScanningAlert(
  */
 function mergeFields(p: { isDraft?: unknown; reviewDecision?: unknown }): {
   isDraft: boolean | null;
-  reviewDecision: ReviewDecision | "unknown";
+  reviewDecision: ReviewDecisionRead;
 } {
-  const d = p.reviewDecision;
   return {
     isDraft: typeof p.isDraft === "boolean" ? p.isDraft : null,
-    reviewDecision:
-      d === null ||
-      d === "APPROVED" ||
-      d === "CHANGES_REQUESTED" ||
-      d === "REVIEW_REQUIRED"
-        ? d
-        : "unknown",
+    reviewDecision: readReviewDecision(p.reviewDecision),
   };
 }
 
