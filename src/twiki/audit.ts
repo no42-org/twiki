@@ -4,6 +4,7 @@
  */
 
 import { appendFileSync } from "node:fs";
+import type { MergeResponse } from "../core/merge.js";
 import type { RunResult } from "./result.js";
 
 // Append-only JSONL audit log of decisions and actions. Non-authoritative —
@@ -12,6 +13,16 @@ import type { RunResult } from "./result.js";
 
 export interface AuditSink {
   record(result: RunResult, at: string): void;
+  /** One line per merge the operator asked for, whatever the outcome. */
+  recordOperatorMerge(
+    entry: {
+      repo: string;
+      number: number;
+      response: MergeResponse;
+      headSha: string | null;
+    },
+    at: string,
+  ): void;
 }
 
 export class JsonlAudit implements AuditSink {
@@ -38,8 +49,23 @@ export class JsonlAudit implements AuditSink {
       // Audit is best-effort and must never break a run.
     }
   }
+
+  recordOperatorMerge(
+    entry: Parameters<AuditSink["recordOperatorMerge"]>[0],
+    at: string,
+  ): void {
+    try {
+      appendFileSync(
+        this.path,
+        `${JSON.stringify({ at, kind: "operator-merge", ...entry })}\n`,
+      );
+    } catch {
+      // Best-effort, as record(): a failed audit write must not undo a merge.
+    }
+  }
 }
 
 export class NullAudit implements AuditSink {
   record(): void {}
+  recordOperatorMerge(): void {}
 }
