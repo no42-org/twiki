@@ -84,10 +84,6 @@ export function formatState(filters, sort) {
   return text === "" ? "" : `?${text}`;
 }
 
-/** Drawn, because a text × sits wherever the font puts it. A constant. */
-const CROSS =
-  '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg>';
-
 function rowFrom(element) {
   const data = element.dataset;
   return {
@@ -138,22 +134,23 @@ function start() {
   let { filters, sort } = parseState(location.search, known, columns);
 
   function badge(facet, value) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = facet === "repo" ? "chip repo" : "chip";
-    button.dataset.remove = facet;
-    button.dataset.value = value;
+    const chip = document.createElement("lcars-chip");
+    if (facet === "repo") chip.className = "repo";
+    chip.dataset.remove = facet;
+    chip.dataset.value = value;
+    chip.setAttribute("color", "lilac");
+    chip.setAttribute("removable", "");
+    chip.setAttribute("pressed", "");
     const label = labels.get(`${facet}:${value}`) ?? value;
-    button.setAttribute("aria-label", `Remove filter ${label}`);
+    chip.setAttribute("remove-label", `Remove filter ${label}`);
+    // The chip's body also removes, and its slot is the only way to name it.
+    const prefix = document.createElement("span");
+    prefix.className = "vh";
+    prefix.textContent = "Remove filter ";
     const text = document.createElement("span");
-    text.className = "label";
     text.textContent = label;
-    const cross = document.createElement("span");
-    cross.className = "x";
-    cross.setAttribute("aria-hidden", "true");
-    cross.innerHTML = CROSS;
-    button.append(text, cross);
-    return button;
+    chip.append(prefix, text);
+    return chip;
   }
 
   function render() {
@@ -205,8 +202,6 @@ function start() {
     if (target === null) return;
     if (target.id === "clear") {
       filters = emptyFilters();
-    } else if (target.dataset.remove !== undefined) {
-      filters[target.dataset.remove].delete(target.dataset.value);
     } else if (target.dataset.facet !== undefined) {
       const set = filters[target.dataset.facet];
       const { value } = target.dataset;
@@ -219,6 +214,20 @@ function start() {
     }
     render();
   });
+
+  // The chip's body is a toggle of its own, but a badge only ever goes away.
+  // Every badge is rebuilt, so focus moves to the one that took this one's place.
+  const removeBadge = async ({ target }) => {
+    const index = [...bar.querySelectorAll("lcars-chip")].indexOf(target);
+    filters[target.dataset.remove].delete(target.dataset.value);
+    render();
+    const chips = bar.querySelectorAll("lcars-chip");
+    const next = chips[index] ?? chips[index - 1];
+    await next?.updateComplete;
+    next?.focus();
+  };
+  bar.addEventListener("lcars-remove", removeBadge);
+  bar.addEventListener("lcars-toggle", removeBadge);
 
   render();
 }
