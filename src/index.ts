@@ -14,6 +14,11 @@ import { createGitHubFromEnv } from "./github/octokit-adapter.js";
 import { advisorFromEnv } from "./twiki/advisor.js";
 import { JsonlAudit } from "./twiki/audit.js";
 import {
+  createMergeApp,
+  mergeListenerFrom,
+  startMergeServer,
+} from "./twiki/merge-server.js";
+import {
   ConsoleNotifier,
   dedupePathFor,
   MatrixNotifier,
@@ -81,6 +86,24 @@ async function main(): Promise<void> {
       `repos=${config.repos.length} ` +
       `(${env.TWIKI_ONCE ? "single run" : "polling"})`,
   );
+
+  // Operator merges from gitricorder's overview. A bad port fails startup,
+  // like any other bad setting. A listener that cannot bind only logs, so the
+  // tick loop keeps running.
+  const listener = env.TWIKI_ONCE ? null : mergeListenerFrom(env);
+  if (listener) {
+    const log = (msg: string) => console.error(`[twiki] ${msg}`);
+    startMergeServer(
+      createMergeApp({
+        config,
+        github: deps.github,
+        audit: deps.audit,
+        now: deps.now,
+        log,
+      }),
+      { ...listener, log },
+    );
+  }
 
   await schedule(config, deps, {
     once: Boolean(env.TWIKI_ONCE),

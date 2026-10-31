@@ -13,8 +13,11 @@
 name: twiki
 
 services:
-  # The write side. Unchanged by gitricorder's arrival: no database, no
-  # published port, no HTTP listener. It runs the image's default command.
+  # The write side. No database and no published port. It runs the image's
+  # default command. Its one HTTP listener (operator merges) is bound inside
+  # the Compose network only: there is deliberately no `ports:` entry, and it
+  # has no authentication, so publishing it would let anything that reaches
+  # the port merge a pull request.
   twiki:
     image: ${IMAGE:-ghcr.io/no42-org/twiki}:${TAG:-latest}
     restart: unless-stopped
@@ -33,6 +36,10 @@ services:
       TWIKI_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/twiki.pem
       TWIKI_AUDIT_PATH: /state/audit.jsonl
       TWIKI_STATE_DIR: /state
+      # Bind every interface INSIDE the container so tricorder-web can reach
+      # it as http://twiki:8788. Nothing outside the Compose network can.
+      TWIKI_MERGE_HOST: 0.0.0.0
+      TWIKI_MERGE_PORT: 8788
       # Named so `make up` fails legibly rather than the container starting and
       # misbehaving later. ANTHROPIC_API_KEY is not named here: it is needed
       # only when TWIKI_ADVISOR=claude, which compose cannot express, so twiki
@@ -119,6 +126,9 @@ services:
       # port unreachable, because the mapping arrives from outside the netns.
       TRICORDER_HOST: 0.0.0.0
       TRICORDER_PORT: ${TRICORDER_PORT:-8787}
+      # Where the overview's merge button reaches twiki. The service name
+      # resolves on the Compose default network both services share.
+      TWIKI_MERGE_URL: http://twiki:8788
     ports:
       # 127.0.0.1 is load-bearing, not decoration. A bare "8787:8787" publishes
       # on every host interface, and there is NO authentication in front of the
