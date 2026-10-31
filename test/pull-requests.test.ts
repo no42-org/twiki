@@ -95,6 +95,8 @@ describe("the plain pull-request lane (#167)", () => {
       htmlUrl: "https://github.com/no42-org/twiki/pull/7",
       createdAt: "2026-09-10T00:00:00.000Z",
       headRef: "fix-the-thing",
+      isDraft: false,
+      reviewDecision: null,
     });
   });
 
@@ -445,6 +447,8 @@ describe("the plain pull-request search (port contract)", () => {
         htmlUrl: "https://github.com/no42-org/twiki/pull/1",
         createdAt: "2026-09-10T00:00:00.000Z",
         headRef: "fix-the-thing",
+        isDraft: null,
+        reviewDecision: "unknown",
       },
     ]);
   });

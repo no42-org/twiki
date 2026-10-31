@@ -7,12 +7,17 @@ import {
   type Config,
   isAllowlisted,
   loadConfig,
+  modeFromEnv,
   remediationFromEnv,
 } from "./core/config.js";
-import type { Mode } from "./core/types.js";
 import { createGitHubFromEnv } from "./github/octokit-adapter.js";
 import { advisorFromEnv } from "./twiki/advisor.js";
 import { JsonlAudit } from "./twiki/audit.js";
+import {
+  createMergeApp,
+  mergeListenerFrom,
+  startMergeServer,
+} from "./twiki/merge-server.js";
 import {
   ConsoleNotifier,
   dedupePathFor,
@@ -72,8 +77,11 @@ function buildDeps(config: Config, env = process.env): RunDeps {
 async function main(): Promise<void> {
   const env = process.env;
   const configPath = env.TWIKI_CONFIG ?? "repos.yaml";
-  const modeOverride = env.TWIKI_MODE as Mode | undefined;
-  const config = loadConfig(configPath, modeOverride, remediationFromEnv(env));
+  const config = loadConfig(
+    configPath,
+    modeFromEnv(env),
+    remediationFromEnv(env),
+  );
   const deps = buildDeps(config, env);
 
   console.error(
@@ -81,6 +89,24 @@ async function main(): Promise<void> {
       `repos=${config.repos.length} ` +
       `(${env.TWIKI_ONCE ? "single run" : "polling"})`,
   );
+
+  // Operator merges from gitricorder's overview. A bad port fails startup,
+  // like any other bad setting. A listener that cannot bind only logs, so the
+  // tick loop keeps running.
+  const listener = env.TWIKI_ONCE ? null : mergeListenerFrom(env);
+  if (listener) {
+    const log = (msg: string) => console.error(`[twiki] ${msg}`);
+    startMergeServer(
+      createMergeApp({
+        config,
+        github: deps.github,
+        audit: deps.audit,
+        now: deps.now,
+        log,
+      }),
+      { ...listener, log },
+    );
+  }
 
   await schedule(config, deps, {
     once: Boolean(env.TWIKI_ONCE),

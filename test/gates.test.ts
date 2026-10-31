@@ -4,12 +4,15 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { type MergeRefusal, REFUSAL_WORDS } from "../src/core/merge.js";
 import { DEFAULT_POLICY } from "../src/core/types.js";
 import {
   canRebase,
   canRerunCi,
   isFailing,
   mergeBlock,
+  operatorMergeBlock,
+  settledBlock,
   withinMergePolicy,
 } from "../src/twiki/gates.js";
 import { makeBump, makePr, makeRun } from "./fakes.js";
@@ -156,5 +159,80 @@ describe("canRebase", () => {
         DEFAULT_POLICY,
       ),
     ).toBe(false);
+  });
+});
+
+describe("operatorMergeBlock", () => {
+  const open = {
+    state: "OPEN",
+    isDraft: false,
+    headSha: "a",
+    reviewDecision: "APPROVED",
+  } as const;
+
+  it("settles MERGED and CLOSED without checks, and nothing else", () => {
+    expect(settledBlock({ ...open, state: "MERGED" })).toBe("already-merged");
+    expect(settledBlock({ ...open, state: "CLOSED" })).toBe("closed");
+    expect(settledBlock(open)).toBeNull();
+  });
+
+  it("walks the whole table", () => {
+    expect(operatorMergeBlock(open, "green")).toBeNull();
+    expect(
+      operatorMergeBlock({ ...open, reviewDecision: null }, "green"),
+    ).toBeNull();
+    expect(
+      operatorMergeBlock(
+        { ...open, reviewDecision: "CHANGES_REQUESTED" },
+        "green",
+      ),
+    ).toBe("changes-requested");
+    expect(
+      operatorMergeBlock(
+        { ...open, reviewDecision: "REVIEW_REQUIRED" },
+        "green",
+      ),
+    ).toBe("review-required");
+    expect(
+      operatorMergeBlock({ ...open, reviewDecision: "unknown" }, "green"),
+    ).toBe("review-required");
+    expect(operatorMergeBlock({ ...open, isDraft: true }, "red")).toBe("draft");
+    expect(
+      operatorMergeBlock(
+        { ...open, reviewDecision: "CHANGES_REQUESTED" },
+        "red",
+      ),
+    ).toBe("ci-failed");
+    expect(operatorMergeBlock(open, "red")).toBe("ci-failed");
+    expect(operatorMergeBlock(open, "pending")).toBe("ci-running");
+    expect(operatorMergeBlock(open, "none")).toBe("no-checks");
+    expect(operatorMergeBlock({ ...open, isDraft: true }, "green")).toBe(
+      "draft",
+    );
+    expect(operatorMergeBlock({ ...open, state: "CLOSED" }, "green")).toBe(
+      "closed",
+    );
+    expect(operatorMergeBlock({ ...open, state: "MERGED" }, "red")).toBe(
+      "already-merged",
+    );
+  });
+});
+
+describe("REFUSAL_WORDS", () => {
+  it("names every refusal exactly", () => {
+    expect(REFUSAL_WORDS).toEqual({
+      "shadow-mode": "Shadow mode",
+      "not-allowlisted": "Not in the allowlist",
+      closed: "Closed",
+      draft: "Draft",
+      "ci-failed": "CI failed",
+      "ci-running": "CI running",
+      "no-checks": "Checks not observed",
+      "changes-requested": "Changes requested",
+      "review-required": "Review required",
+      "head-changed": "New commits pushed",
+      "not-mergeable": "GitHub refused the merge",
+      unreachable: "twiki is not reachable",
+    } satisfies Record<MergeRefusal, string>);
   });
 });

@@ -4,6 +4,7 @@
  */
 
 import { safeLog } from "../../core/log.js";
+import type { ReviewDecisionRead } from "../../core/merge.js";
 import { classifyPullRequest } from "../../core/pr-classifier.js";
 import { watchKey } from "../../core/slug.js";
 import { nodeSubject, pullRequestsSubject } from "../../core/subject.js";
@@ -57,6 +58,13 @@ export interface PullRequestObservation {
    * request whose head ref we cannot name.
    */
   headRef: string | null;
+  /** Null where the node did not state it. Not a claim that it is ready. */
+  isDraft: boolean | null;
+  /**
+   * GitHub's review decision. Null means no review is required. "unknown"
+   * means the row predates this field, and it is never read as green (AD-28).
+   */
+  reviewDecision: ReviewDecisionRead;
 }
 
 /**
@@ -105,6 +113,8 @@ export function normalisePullRequest(pr: RawOpenPullRequest): ObservationInput {
     htmlUrl: pr.htmlUrl,
     createdAt: pr.createdAt,
     headRef: pr.headRef,
+    isDraft: pr.isDraft,
+    reviewDecision: pr.reviewDecision,
   };
   return { subject: nodeSubject("pull_request", pr.nodeId), payload };
 }

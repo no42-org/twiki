@@ -49,7 +49,7 @@ The declaration is what the read side will sort workflow runs by, and against th
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `TWIKI_CONFIG` | Path to the config file | `repos.yaml` |
-| `TWIKI_MODE` | `shadow` or `enforce` (overrides config) | from config |
+| `TWIKI_MODE` | `shadow` or `enforce` (overrides config). Strict: a blank or miscased value stops `twiki` and `web` at startup | from config |
 | `TWIKI_ONCE` | Run a single tick and exit (for external cron) | unset (polls) |
 | `TWIKI_POLL_MINUTES` | Poll interval when not `ONCE` | `60` |
 | `TWIKI_CI_REMEDIATION` | CI remediation (`on`/`off`); `off` keeps diagnostics, no writes | `on` |
@@ -57,6 +57,9 @@ The declaration is what the read side will sort workflow runs by, and against th
 | `TWIKI_GITHUB_APP_ID` | GitHub App ID | — (required) |
 | `TWIKI_GITHUB_APP_PRIVATE_KEY` | App private key (PEM, inline) | — |
 | `TWIKI_GITHUB_APP_PRIVATE_KEY_PATH` | App private key file path | — |
+| `TWIKI_MERGE_URL` | Set on `web`. Where the overview's merge icon reaches twiki, for example `http://twiki:8788` | unset (icon dimmed, `Merging not configured`) |
+| `TWIKI_MERGE_PORT` | Set on `twiki`. Port of the operator merge listener | unset (no listener) |
+| `TWIKI_MERGE_HOST` | Set on `twiki`. Address the merge listener binds | `127.0.0.1` |
 | `TWIKI_ADVISOR` | `claude` asks the LLM advisor; `rules` merges on the gates alone, without reading changelogs | `claude` |
 | `ANTHROPIC_API_KEY` | Advisor LLM key (read by the SDK) | — (required when `TWIKI_ADVISOR=claude`) |
 | `TWIKI_MODEL` | Advisor model | `claude-sonnet-4-6` |
@@ -139,6 +142,19 @@ Filters and sort live in the query string, so a view can be bookmarked, and the 
 A box with no confirmed sweep behind it says `UNCONFIRMED` rather than a zero, and the footer names any lane that is not current.
 The LCARS bundle and the client script are served by the web process, so the page calls no other host.
 
+`web` is read-only toward GitHub and the database: it holds no key and its database handle cannot write.
+That does not cover merging.
+Every pull request row has a merge icon, enabled or dimmed with the reason.
+With `TWIKI_MERGE_URL` set, `web` forwards a click on an enabled icon to twiki.
+The page reads retained Actions runs while twiki reads the head commit's checks and statuses, so a repository on external status-only CI shows `Checks not observed`.
+twiki repeats the allowlist and mode checks, gates the pull request again and merges with its own squash, pinned to the head sha it gated.
+In `shadow` mode twiki answers `shadow-mode` and merges nothing.
+`POST /merge` on `web` accepts a loopback `Host` only, with a same-origin `Origin`.
+Behind a proxy the Host is not loopback, so merging is refused until the dashboard has authentication.
+Keep the dashboard on `127.0.0.1`.
+twiki's merge listener has no authentication either.
+Set `TWIKI_MERGE_PORT`, bind `TWIKI_MERGE_HOST=0.0.0.0` only inside the Compose network, and never publish its port.
+
 `/repo/owner/name` keeps a per-repository page. It is the only place open issues show, and the only place listing default-branch CI failures. The overview does not link to it, but a red default branch is named in its footer, which also turns the lower corner to `RED MAIN`.
 
 Rows follow the ranking chain within each group.
@@ -154,6 +170,7 @@ A repository opted out with `release: false` in `repos.yaml` is not tracked.
 
 gitricorder uses **its own App**, separate from twiki's.
 This is the point, not an inconvenience: twiki's App can merge and re-run, and the dashboard must hold no such capability.
+Merging from the overview does not change that: `web` asks twiki, and twiki's App does the merging (see [gitricorder](#gitricorder-the-dashboard)).
 Sharing one credential would hand the read side the ability to write.
 
 Create a new GitHub App and grant **read-only** on exactly these, nothing more:

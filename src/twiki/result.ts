@@ -13,7 +13,18 @@ export interface PrOutcome {
   number: number;
   title: string;
   security: boolean;
-  status: "merged" | "would-merge" | "flagged-major" | "blocked" | "held";
+  /**
+   * `already-merged`: GitHub refused the merge because something else landed
+   * it first, usually an operator click. Kept apart from `merged` so the
+   * record never claims a merge this tick did not perform.
+   */
+  status:
+    | "merged"
+    | "already-merged"
+    | "would-merge"
+    | "flagged-major"
+    | "blocked"
+    | "held";
   detail: string;
   /** Failing checks behind a `ci-not-green` block, for the digest. */
   failingChecks?: FailingCheck[];

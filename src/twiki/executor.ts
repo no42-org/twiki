@@ -14,6 +14,7 @@ import {
 } from "../core/types.js";
 import type { GitHubPort } from "../github/port.js";
 import { canRebase, canRerunCi, mergeBlock } from "./gates.js";
+import { statusOf } from "./operator-merge.js";
 import type { Plan, RepoPlan } from "./plan.js";
 import type {
   PrOutcome,
@@ -295,7 +296,21 @@ async function evaluatePr(
   }
 
   if (enforce) {
-    await github.mergePR(pr.repo, pr.number);
+    try {
+      await github.mergePR(pr.repo, pr.number);
+    } catch (err) {
+      // The operator merge listener runs beside this loop, so a click can land
+      // this pull request after the facts were gathered. GitHub answers 405,
+      // which also means "not mergeable", so only a re-read can tell them apart.
+      if (statusOf(err) !== 405) throw err;
+      const live = await github.livePullRequest(pr.repo, pr.number);
+      if (live.state !== "MERGED") throw err;
+      return {
+        ...base,
+        status: "already-merged",
+        detail: "merged before this tick reached it, not by this tick",
+      };
+    }
     return { ...base, status: "merged", detail: decision.reason };
   }
   return { ...base, status: "would-merge", detail: decision.reason };

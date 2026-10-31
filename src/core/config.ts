@@ -284,6 +284,20 @@ export function buildConfig(
   };
 }
 
+/**
+ * The TWIKI_MODE override, or undefined when unset.
+ *
+ * Exact, with no trimming or case folding, because twiki compares the value
+ * as it stands: forgiving "enforce " here would offer a merge twiki refuses.
+ */
+export function modeFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): Mode | undefined {
+  const raw = env.TWIKI_MODE;
+  if (raw === undefined || raw === "shadow" || raw === "enforce") return raw;
+  throw new Error(`TWIKI_MODE must be shadow or enforce, got "${raw}"`);
+}
+
 /** Parse the remediation settings from environment variables. */
 export function remediationFromEnv(
   env: NodeJS.ProcessEnv = process.env,

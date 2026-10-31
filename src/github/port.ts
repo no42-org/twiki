@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import type { ReviewDecisionRead } from "../core/merge.js";
 import type { CommitRef, FixedAlertRef } from "../core/release-worthy.js";
 import type {
   CheckStatus,
@@ -699,9 +700,20 @@ export interface GitHubReadPort
   extends GitHubRepoReadPort,
     GitHubAccountReadPort {}
 
+/** A pull request read live, never from the store. */
+export interface LivePullRequest {
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  headSha: string;
+  reviewDecision: ReviewDecisionRead;
+}
+
 /** Mutating — executor only, enforce mode only. */
 export interface GitHubWritePort {
-  mergePR(repo: RepoRef, prNumber: number): Promise<void>;
+  /** Read one pull request now. The operator merge gates on this. */
+  livePullRequest(repo: RepoRef, number: number): Promise<LivePullRequest>;
+  /** With `sha`, GitHub refuses the merge if the head has moved. */
+  mergePR(repo: RepoRef, prNumber: number, sha?: string): Promise<void>;
   /** Re-run only the failed jobs of a workflow run (bounded by run_attempt). */
   rerunFailedJobs(repo: RepoRef, runId: number): Promise<void>;
   /** Ask Dependabot to rebase a PR by posting `@dependabot rebase`. */
@@ -792,6 +804,12 @@ export interface RawUpdatePr {
   author: string;
   htmlUrl: string;
   createdAt: string;
+  /** `isDraft`; null where the node did not state it. */
+  isDraft: boolean | null;
+  /** `reviewDecision`; null is "no review required", "unknown" is unread. */
+  reviewDecision: ReviewDecisionRead;
+  /** `headRefName`; null where the node did not carry one. */
+  headRef: string | null;
 }
 
 export interface UpdatePrPage {
@@ -827,12 +845,11 @@ export interface UpdatePrPage {
  * An open pull request that is not a dependency update, as the search
  * returned it (#167).
  *
- * The same node shape as `RawUpdatePr` plus the one field the stuck term
- * needs. Kept as its own interface rather than an alias, because the two
- * lanes disagree about what they are looking at: one collects the pull
- * requests a configured actor opened, the other every pull request no
- * configured actor opened, and a shared name would invite one lane's guard
- * to be reused on the other's rows.
+ * The same node shape as `RawUpdatePr`. Kept as its own interface rather than
+ * an alias, because the two lanes disagree about what they are looking at:
+ * one collects the pull requests a configured actor opened, the other every
+ * pull request no configured actor opened, and a shared name would invite one
+ * lane's guard to be reused on the other's rows.
  */
 export interface RawOpenPullRequest {
   /** GraphQL node id: the PR's stable identity (AD-22). */
@@ -848,14 +865,18 @@ export interface RawOpenPullRequest {
    * `headRefName`: the branch the pull request is from, or null where the
    * node did not carry one.
    *
-   * The one field beyond the shared node shape, and it is here for exactly
-   * one reader: the queue's `stuck` term looks up the retained
-   * `pull_request_workflow_run` row for this ref (#161). Nullable because
-   * this is a boundary read - the schema says non-null, and a payload that
-   * disagrees must leave the term reading `checks not observed` rather than
-   * matching a row keyed by `undefined`.
+   * Read by the queue's `stuck` term, which looks up the retained
+   * `pull_request_workflow_run` row for this ref (#161), and by the merge
+   * gate, which compares it with the live head. Nullable because this is a
+   * boundary read - the schema says non-null, and a payload that disagrees
+   * must leave the term reading `checks not observed` rather than matching a
+   * row keyed by `undefined`.
    */
   headRef: string | null;
+  /** `isDraft`; null where the node did not state it. */
+  isDraft: boolean | null;
+  /** `reviewDecision`; null is "no review required", "unknown" is unread. */
+  reviewDecision: ReviewDecisionRead;
 }
 
 /**

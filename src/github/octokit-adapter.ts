@@ -5,6 +5,7 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { type ReviewDecisionRead, readReviewDecision } from "../core/merge.js";
 import { NOT_APPLICABLE } from "../core/rank.js";
 import { redact } from "../core/redact.js";
 import type { CommitRef, FixedAlertRef } from "../core/release-worthy.js";
@@ -37,6 +38,7 @@ import type {
   InstallationRef,
   InstallationRepo,
   IssuePage,
+  LivePullRequest,
   OrgAlertPage,
   PullRequestPage,
   RawCodeScanningAlert,
@@ -325,6 +327,36 @@ const NODE_FIELDS = `
   repository { name owner { login } }
 `;
 
+/**
+ * The pull-request-only sub-selection: what the merge gate reads off both PR
+ * lanes. Not part of `NODE_FIELDS`, because an Issue node has none of these.
+ */
+const PR_FIELDS = "headRefName isDraft reviewDecision";
+
+/**
+ * Maps the three `PR_FIELDS` off a node. A boundary read, so each is checked
+ * rather than asserted. A value GitHub did not state reads as null for the
+ * draft flag and the head ref. A review decision that is missing or outside
+ * the three GitHub documents reads as "unknown"; only an explicit null is
+ * "no review required".
+ */
+function pullRequestFields(raw: SearchNodeRaw): {
+  isDraft: boolean | null;
+  reviewDecision: ReviewDecisionRead;
+  headRef: string | null;
+} {
+  const r = raw as {
+    headRefName?: unknown;
+    isDraft?: unknown;
+    reviewDecision?: unknown;
+  };
+  return {
+    isDraft: typeof r.isDraft === "boolean" ? r.isDraft : null,
+    reviewDecision: readReviewDecision(r.reviewDecision),
+    headRef: typeof r.headRefName === "string" ? r.headRefName : null,
+  };
+}
+
 /** The shape every search node here shares, before the caller's mapping. */
 interface SearchNodeRaw {
   id?: string;
@@ -336,6 +368,12 @@ interface SearchNodeRaw {
   repository?: { name?: string; owner?: { login?: string } } | null;
 }
 
+/** The mapped shared fields, before a caller adds its own. */
+type SearchNodeBase = Omit<
+  RawUpdatePr,
+  "isDraft" | "reviewDecision" | "headRef"
+>;
+
 async function runNodeSearch<T>(
   gh: Octokit,
   nodeType: "PullRequest" | "Issue",
@@ -343,7 +381,7 @@ async function runNodeSearch<T>(
   /** Extra node sub-selection, for a caller that needs more than the shared fields. */
   extraFields = "",
   /** Maps a node the shared guard accepted. Defaults to the update-PR shape. */
-  map: (raw: SearchNodeRaw, base: RawUpdatePr) => T = (_raw, base) =>
+  map: (raw: SearchNodeRaw, base: SearchNodeBase) => T = (_raw, base) =>
     base as unknown as T,
 ): Promise<{ items: T[]; unreadable: number; truncated: boolean }> {
   const items: T[] = [];
@@ -724,7 +762,13 @@ export class OctokitGitHub implements GitHubPort {
     let unreadable = 0;
     let truncated = false;
     for (const query of plan.queries) {
-      const page = await runNodeSearch<RawUpdatePr>(gh, "PullRequest", query);
+      const page = await runNodeSearch<RawUpdatePr>(
+        gh,
+        "PullRequest",
+        query,
+        PR_FIELDS,
+        (raw, node) => ({ ...node, ...pullRequestFields(raw) }),
+      );
       prs.push(...page.items);
       unreadable += page.unreadable;
       truncated = truncated || page.truncated;
@@ -798,18 +842,8 @@ export class OctokitGitHub implements GitHubPort {
         gh,
         "PullRequest",
         query,
-        "headRefName",
-        (raw, node) => ({
-          ...node,
-          // A boundary read, so the type is checked rather than asserted:
-          // the schema says non-null, and the queue's stuck term must read
-          // `checks not observed` off a node that disagrees rather than
-          // look up a row keyed by `undefined`.
-          headRef:
-            typeof (raw as { headRefName?: unknown }).headRefName === "string"
-              ? (raw as { headRefName: string }).headRefName
-              : null,
-        }),
+        PR_FIELDS,
+        (raw, node) => ({ ...node, ...pullRequestFields(raw) }),
       );
       prs.push(...page.items);
       unreadable += page.unreadable;
@@ -1055,6 +1089,10 @@ export class OctokitGitHub implements GitHubPort {
     // installation, never fanned out within a bucket. A fixed width of two is
     // still a width, and this runs once per pull request - it was what kept
     // peak in-flight at 2 after the caller's own fan-out was removed.
+    // This keeps one call serial; it does not make the installation serial.
+    // twiki's operator merge listener issues its requests concurrently with
+    // the tick, on the same adapter, so an operator click can add to whatever
+    // the tick has in flight.
     const checks = await gh.checks.listForRef({
       owner: repo.owner,
       repo: repo.name,
@@ -2221,13 +2259,50 @@ export class OctokitGitHub implements GitHubPort {
     return { limit: core?.limit ?? 0, remaining: core?.remaining ?? 0 };
   }
 
-  async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
+  async livePullRequest(
+    repo: RepoRef,
+    number: number,
+  ): Promise<LivePullRequest> {
+    const gh = await this.client(repo);
+    const res: {
+      repository?: {
+        pullRequest?: {
+          state: LivePullRequest["state"];
+          isDraft: boolean;
+          headRefOid: string;
+          reviewDecision: unknown;
+        } | null;
+      } | null;
+    } = await gh.graphql(
+      `query ($owner: String!, $name: String!, $n: Int!) {
+         repository(owner: $owner, name: $name) {
+           pullRequest(number: $n) { state isDraft headRefOid reviewDecision }
+         }
+       }`,
+      { owner: repo.owner, name: repo.name, n: number },
+    );
+    const pr = res.repository?.pullRequest;
+    if (!pr) {
+      throw new Error(
+        `live read of ${repoSlug(repo)}#${number} found no pull request`,
+      );
+    }
+    return {
+      state: pr.state,
+      isDraft: pr.isDraft,
+      headSha: pr.headRefOid,
+      reviewDecision: readReviewDecision(pr.reviewDecision),
+    };
+  }
+
+  async mergePR(repo: RepoRef, prNumber: number, sha?: string): Promise<void> {
     const gh = await this.client(repo);
     await gh.pulls.merge({
       owner: repo.owner,
       repo: repo.name,
       pull_number: prNumber,
       merge_method: "squash",
+      ...(sha ? { sha } : {}),
     });
   }
 

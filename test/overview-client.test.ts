@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { REFUSAL_WORDS } from "../src/core/merge.js";
 import {
   compareRows,
   emptyFilters,
@@ -12,6 +13,7 @@ import {
   nextSort,
   parseState,
   passes,
+  readMergeReply,
 } from "../src/tricorder/web/overview-client.js";
 
 const row = (over: Record<string, unknown> = {}) => ({
@@ -156,5 +158,51 @@ describe("the overview's query string", () => {
     expect(
       parseState("?sort=age&dir=sideways", KNOWN, COLUMNS).sort,
     ).toBeNull();
+  });
+});
+
+describe("the answer to a merge click", () => {
+  const read = (reply: unknown) => readMergeReply(reply, REFUSAL_WORDS);
+  const answer = (body: unknown, status = 200) => ({
+    status,
+    ok: status < 300,
+    body,
+  });
+  const refused = (reason: string) => ({ merged: false, reason });
+  const FAILED = refused("The merge request failed");
+
+  it.each(["merged", "already-merged"])("reads %s as merged", (outcome) => {
+    expect(read(answer({ outcome }))).toEqual({ merged: true });
+  });
+
+  it("reads a refusal in the embedded words", () => {
+    expect(
+      read(answer({ outcome: "refused", refusal: "head-changed" })),
+    ).toEqual(refused("New commits pushed"));
+  });
+
+  it("reads a request that got no answer as twiki being out of reach", () => {
+    expect(read(null)).toEqual(refused("twiki is not reachable"));
+  });
+
+  it("reads a bare 403 as the loopback limit", () => {
+    expect(read(answer(null, 403))).toEqual(
+      refused("Merging is limited to this machine"),
+    );
+  });
+
+  it.each([
+    ["a bare 415", answer(null, 415)],
+    ["a 400 with an error", answer({ error: "body must be JSON" }, 400)],
+    ["a 500 that claims success", answer({ outcome: "merged" }, 500)],
+    ["a 200 that is not JSON", answer(null)],
+    ["an outcome nobody defined", answer({ outcome: "maybe" })],
+    ["a refusal with no words", answer({ outcome: "refused", refusal: "new" })],
+    [
+      "a refusal naming an inherited key",
+      answer({ outcome: "refused", refusal: "constructor" }),
+    ],
+  ])("reads %s as a refusal, not a merge", (_name, reply) => {
+    expect(read(reply)).toEqual(FAILED);
   });
 });

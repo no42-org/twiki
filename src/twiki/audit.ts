@@ -4,14 +4,31 @@
  */
 
 import { appendFileSync } from "node:fs";
+import type { MergeResponse } from "../core/merge.js";
 import type { RunResult } from "./result.js";
 
 // Append-only JSONL audit log of decisions and actions. Non-authoritative —
 // every decision is re-derived from GitHub each tick (D4); this is for humans
 // to inspect what happened, not a source of truth the agent reads back.
 
+/**
+ * One operator merge. `error` replaces `response` when the merge attempt threw:
+ * nothing was answered, and the merge may still have landed.
+ */
+export type OperatorMergeEntry = {
+  repo: string;
+  number: number;
+  headSha: string | null;
+} & ({ response: MergeResponse } | { error: string });
+
 export interface AuditSink {
   record(result: RunResult, at: string): void;
+  /**
+   * One line per merge the operator asked for, whatever the outcome. The
+   * exception is a read that throws before any merge was tried: that is logged
+   * only, because nothing can have happened.
+   */
+  recordOperatorMerge(entry: OperatorMergeEntry, at: string): void;
 }
 
 export class JsonlAudit implements AuditSink {
@@ -38,8 +55,20 @@ export class JsonlAudit implements AuditSink {
       // Audit is best-effort and must never break a run.
     }
   }
+
+  recordOperatorMerge(entry: OperatorMergeEntry, at: string): void {
+    try {
+      appendFileSync(
+        this.path,
+        `${JSON.stringify({ at, kind: "operator-merge", ...entry })}\n`,
+      );
+    } catch {
+      // Best-effort, as record(): a failed audit write must not undo a merge.
+    }
+  }
 }
 
 export class NullAudit implements AuditSink {
   record(): void {}
+  recordOperatorMerge(): void {}
 }

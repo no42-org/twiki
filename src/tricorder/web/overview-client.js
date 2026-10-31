@@ -3,10 +3,12 @@
  * SPDX-License-Identifier: MIT
  */
 
-// The overview's filters and sort. The server renders every row, so this only
-// hides and reorders what is already in the page: with it switched off the
-// table is complete and unfiltered. No imports, because the browser loads this
-// file exactly as written. The pure half is exported for the unit suite.
+// The overview's filters, sort and merge clicks. The server renders every row,
+// so filtering and sorting only hide and reorder what is already in the page:
+// with this switched off the table is complete and unfiltered, and nothing can
+// be merged. A merge click is the one thing here that asks the server to act.
+// No imports, because the browser loads this file exactly as written. The pure
+// half is exported for the unit suite.
 
 /** The four filter facets, in badge order. Each is also a query parameter. */
 export const FACETS = ["kind", "severity", "state", "repo"];
@@ -84,6 +86,41 @@ export function formatState(filters, sort) {
   return text === "" ? "" : `?${text}`;
 }
 
+/**
+ * What a reply to POST /merge means for its row. `reply` is null when no answer
+ * came, and its `body` null when the answer was not JSON. Only a reply that says
+ * so reads as merged: anything else is a refusal, in `words` where it has any.
+ */
+export function readMergeReply(reply, words) {
+  if (reply === null) return { merged: false, reason: words.unreachable };
+  if (reply.status === 403) {
+    return { merged: false, reason: "Merging is limited to this machine" };
+  }
+  const outcome = reply.ok ? reply.body?.outcome : undefined;
+  if (outcome === "merged" || outcome === "already-merged") {
+    return { merged: true };
+  }
+  const word = outcome === "refused" ? words[reply.body.refusal] : undefined;
+  return {
+    merged: false,
+    reason: typeof word === "string" ? word : "The merge request failed",
+  };
+}
+
+async function postMerge(repo, number) {
+  try {
+    const response = await fetch("/merge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo, number }),
+    });
+    const body = await response.json().catch(() => null);
+    return { status: response.status, ok: response.ok, body };
+  } catch {
+    return null;
+  }
+}
+
 function rowFrom(element) {
   const data = element.dataset;
   return {
@@ -118,6 +155,7 @@ function start() {
   const table = document.getElementById("overview-table");
   const bar = document.getElementById("filter-bar");
   const empty = document.getElementById("no-matches");
+  const mergeStatus = document.getElementById("merge-status");
   const rows = [...body.querySelectorAll("tr")].map((tr) => rowFrom(tr));
   const headers = [...document.querySelectorAll("th[data-col]")];
   const columns = headers.map((th) => th.dataset.col);
@@ -131,6 +169,7 @@ function start() {
       button.dataset.label ?? button.dataset.value,
     );
   }
+  const refusalWords = JSON.parse(table.dataset.refusals);
   let { filters, sort } = parseState(location.search, known, columns);
 
   function badge(facet, value) {
@@ -197,9 +236,58 @@ function start() {
     history.replaceState(null, "", `${location.pathname}${query}`);
   }
 
+  function markMerged(button) {
+    const row = rows.find(({ element }) => element.contains(button));
+    const focused = document.activeElement === button;
+    const pill = row.element.querySelector('[data-facet="state"]');
+    row.state = "MERGED";
+    row.element.dataset.state = "MERGED";
+    pill.dataset.value = "MERGED";
+    pill.className = "pill MERGED";
+    pill.setAttribute("aria-label", "Filter by state MERGED");
+    pill.textContent = "MERGED";
+    button.remove();
+    render();
+    // After the render, because moving a row drops its focus.
+    if (focused) row.element.querySelector(".num").focus();
+  }
+
+  function dimIcon(button, reason) {
+    button.setAttribute("aria-disabled", "true");
+    button.title = reason;
+    button.setAttribute(
+      "aria-label",
+      `Cannot merge #${button.dataset.number}: ${reason}`,
+    );
+  }
+
+  async function merge(button) {
+    if (
+      button.getAttribute("aria-disabled") === "true" ||
+      button.getAttribute("aria-busy") === "true"
+    ) {
+      return;
+    }
+    button.setAttribute("aria-busy", "true");
+    const { repo, number } = button.dataset;
+    const reply = await postMerge(repo, Number(number));
+    const result = readMergeReply(reply, refusalWords);
+    button.removeAttribute("aria-busy");
+    if (result.merged) markMerged(button);
+    else dimIcon(button, result.reason);
+    // The overview spans repositories, so the number alone would not say which.
+    mergeStatus.textContent = result.merged
+      ? `${repo}#${number} merged`
+      : `Cannot merge ${repo}#${number}: ${result.reason}`;
+  }
+
   document.addEventListener("click", (event) => {
     const target = event.target.closest("button");
     if (target === null) return;
+    if (target.classList.contains("merge")) {
+      merge(target);
+      return;
+    }
     if (target.id === "clear") {
       filters = emptyFilters();
     } else if (target.dataset.facet !== undefined) {

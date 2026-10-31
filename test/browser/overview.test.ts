@@ -8,7 +8,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Browser, chromium, type Page } from "playwright";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { MergeRequest, MergeResponse } from "../../src/core/merge.js";
 import {
   LANE as ALERTS_LANE,
   normalise,
@@ -16,6 +17,7 @@ import {
 } from "../../src/tricorder/collect/dependabot-alerts.js";
 import { SqliteStore } from "../../src/tricorder/store/sqlite-store.js";
 import { createApp } from "../../src/tricorder/web/app.js";
+import { LCARS_COLORS } from "../../src/tricorder/web/lcars-tokens.js";
 import { startServer } from "../../src/tricorder/web/server.js";
 import { makeAlert } from "../fakes.js";
 
@@ -526,6 +528,415 @@ describe("the overview in Chromium", () => {
   });
 
   it("shows the full table with scripts off", async () => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await page.goto(base);
+    expect((await page.content()).match(/<tr data-kind=/g)).toHaveLength(3);
+    await context.close();
+  });
+});
+
+const rgb = (hex: string) => {
+  const [r, g, b] = [1, 3, 5].map((i) =>
+    Number.parseInt(hex.slice(i, i + 2), 16),
+  );
+  return `rgb(${r}, ${g}, ${b})`;
+};
+
+// A second app, so the three-row table above keeps its expectations: this one
+// runs enforce, with a pull request that can merge and one that cannot.
+describe("merging from the overview in Chromium", () => {
+  const ENABLED = '.merge[data-number="12"]';
+  const DIMMED = '.merge[data-number="13"]';
+
+  let dir: string;
+  let store: SqliteStore;
+  let server: ReturnType<typeof startServer>;
+  let browser: Browser;
+  let base: string;
+  let requests: MergeRequest[];
+  /** What the fake answers, once `hold` lets it. */
+  let reply: MergeResponse;
+  let hold: Promise<void>;
+
+  const pull = (number: number, headRef: string) => ({
+    subject: { type: "pull_request", key: `PR_${number}` },
+    payload: {
+      repo: "no42-org/twiki",
+      number,
+      title: `Change ${number}`,
+      author: "a-contributor",
+      htmlUrl: `https://github.com/no42-org/twiki/pull/${number}`,
+      createdAt: "2026-09-08T00:00:00.000Z",
+      headRef,
+      isDraft: false,
+      reviewDecision: null,
+    },
+  });
+  const run = (runNumber: number, headBranch: string, conclusion: string) => ({
+    subject: { type: "pull_request_workflow_run", key: `WFR_${runNumber}` },
+    payload: {
+      repo: "no42-org/twiki",
+      workflowId: 1,
+      workflowName: "CI",
+      runNumber,
+      status: "completed",
+      conclusion,
+      headBranch,
+      event: "pull_request",
+      htmlUrl: `https://github.com/no42-org/twiki/actions/runs/${runNumber}`,
+      createdAt: "2026-09-08T10:00:00.000Z",
+    },
+  });
+  const seed = (lane: string, observations: unknown[]) => {
+    const id = store.beginRun({
+      lane,
+      installation: "no42-org",
+      scope: "full",
+      startedAt: AT,
+    });
+    store.recordObservations(id, AT, observations as never[]);
+    store.finishRun(id, "ok", AT);
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), "overview-merge-browser-"));
+    store = SqliteStore.openForWrite(join(dir, "m.db"));
+    const alerts = [makeAlert({ number: 9, repo: REPO, severity: "high" })];
+    seed(ALERTS_LANE, [...alerts.map(normalise), summariseRepo(REPO, alerts)]);
+    seed("graphql-pull-requests", [pull(12, "green"), pull(13, "red")]);
+    seed("rest-actions-runs", [
+      run(1, "green", "success"),
+      run(2, "red", "failure"),
+    ]);
+
+    server = startServer(
+      createApp({
+        defaultBranchOf: () => "main",
+        store,
+        watched: [REPO],
+        policy: { cadenceMs: 15 * 60_000 },
+        mode: "enforce",
+        requestMerge: async (request) => {
+          requests.push(request);
+          await hold;
+          return reply;
+        },
+        now: () => NOW,
+      }),
+      { port: 0, log: () => {} },
+    );
+    await new Promise((resolve) => server.once("listening", resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    browser = await chromium.launch();
+  });
+
+  afterAll(async () => {
+    await browser?.close();
+    await new Promise((resolve) => server.close(resolve));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    requests = [];
+    reply = { outcome: "merged" };
+    hold = Promise.resolve();
+  });
+
+  const open = async (path = "/"): Promise<Page> => {
+    const page = await browser.newPage({
+      viewport: { width: 1280, height: 800 },
+    });
+    await page.goto(`${base}${path}`);
+    await page.waitForFunction(
+      () => customElements.get("lcars-frame") !== undefined,
+    );
+    return page;
+  };
+  const stateOf = (page: Page, number: number) =>
+    page.$eval(`tr[data-id="#${number}"]`, (tr) => {
+      const pill = tr.querySelector('[data-facet="state"]') as HTMLElement;
+      return {
+        row: (tr as HTMLElement).dataset.state,
+        text: pill.textContent,
+        value: pill.dataset.value,
+        label: pill.getAttribute("aria-label"),
+      };
+    });
+  const icon = (page: Page, selector: string) =>
+    page.$eval(selector, (el) => ({
+      disabled: el.getAttribute("aria-disabled"),
+      title: el.getAttribute("title"),
+      label: el.getAttribute("aria-label"),
+    }));
+
+  it("paints an enabled icon green and a dimmed one muted", async () => {
+    const page = await open();
+    const color = (selector: string) =>
+      page.$eval(selector, (el) => getComputedStyle(el).color);
+    expect(await color(ENABLED)).toBe(rgb(LCARS_COLORS.go));
+    expect(await color(DIMMED)).toBe(rgb(LCARS_COLORS.muted));
+    await page.close();
+  });
+
+  it("paints a READY pill in the icon's green under black ink", async () => {
+    const page = await open();
+    expect(
+      await page.$eval('tr[data-id="#12"] [data-facet="state"]', (el) => {
+        const s = getComputedStyle(el);
+        return [s.backgroundColor, s.color];
+      }),
+    ).toEqual([rgb(LCARS_COLORS.go), rgb(LCARS_COLORS.ink)]);
+    await page.close();
+  });
+
+  it("leaves a dimmed icon reachable by keyboard", async () => {
+    const page = await open();
+    expect(
+      await page.$eval(DIMMED, (el) => "disabled" in el && el.disabled),
+    ).toBe(false);
+    await page.focus(DIMMED);
+    expect(
+      await page.evaluate(() => document.activeElement?.getAttribute("title")),
+    ).toBe("CI failed");
+    await page.close();
+  });
+
+  it("sends one POST with the repository and number on a merge click", async () => {
+    const page = await open();
+    await page.click(ENABLED);
+    await page.waitForSelector(ENABLED, { state: "detached" });
+    expect(requests).toEqual([{ repo: "no42-org/twiki", number: 12 }]);
+    await page.close();
+  });
+
+  it("ignores a merge double-click while the first is in flight", async () => {
+    let release = () => {};
+    hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    const page = await open();
+    const posts: string[] = [];
+    page.on("request", (r) => {
+      if (r.method() === "POST") posts.push(r.url());
+    });
+    await page.dblclick(ENABLED);
+    await page.waitForFunction(
+      (selector) =>
+        document.querySelector(selector)?.getAttribute("aria-busy") === "true",
+      ENABLED,
+    );
+    release();
+    await page.waitForSelector(ENABLED, { state: "detached" });
+    expect(posts).toEqual([`${base}/merge`]);
+    expect(requests).toHaveLength(1);
+    await page.close();
+  });
+
+  it.each<MergeResponse>([
+    { outcome: "merged" },
+    { outcome: "already-merged" },
+  ])(
+    "turns the row to MERGED on $outcome and keeps its What",
+    async (answer) => {
+      reply = answer;
+      const page = await open();
+      const what = await page.textContent('tr[data-id="#12"] td.d');
+      await page.click(ENABLED);
+      await page.waitForSelector(ENABLED, { state: "detached" });
+      expect(await stateOf(page, 12)).toEqual({
+        row: "MERGED",
+        text: "MERGED",
+        value: "MERGED",
+        label: "Filter by state MERGED",
+      });
+      expect(await page.textContent('tr[data-id="#12"] td.d')).toBe(what);
+      expect(what).toBe("Change 12. Checks passed.");
+      await page.close();
+    },
+  );
+
+  const announcement = (page: Page) =>
+    page.$eval("#merge-status", (region) => ({
+      live: region.getAttribute("aria-live"),
+      text: region.textContent,
+      width: region.getBoundingClientRect().width,
+    }));
+
+  it("announces a merge in the polite live region", async () => {
+    const page = await open();
+    expect(await announcement(page)).toEqual({
+      live: "polite",
+      text: "",
+      width: 1,
+    });
+    await page.click(ENABLED);
+    await page.waitForSelector(ENABLED, { state: "detached" });
+    expect(await announcement(page)).toEqual({
+      live: "polite",
+      text: "no42-org/twiki#12 merged",
+      width: 1,
+    });
+    await page.close();
+  });
+
+  it("announces a refusal with twiki's reason in the live region", async () => {
+    reply = { outcome: "refused", refusal: "head-changed" };
+    const page = await open();
+    await page.click(ENABLED);
+    await page.waitForSelector(`${ENABLED}[aria-disabled="true"]`);
+    expect(await announcement(page)).toEqual({
+      live: "polite",
+      text: "Cannot merge no42-org/twiki#12: New commits pushed",
+      width: 1,
+    });
+    await page.close();
+  });
+
+  it("gives keyboard focus to the ID when a merge removes the icon", async () => {
+    const page = await open();
+    await page.focus(ENABLED);
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(ENABLED, { state: "detached" });
+    expect(await page.evaluate(() => document.activeElement?.textContent)).toBe(
+      "#12",
+    );
+    await page.close();
+  });
+
+  it("keeps an applied STATE filter true when a row merges", async () => {
+    const page = await open("/?state=READY");
+    await page.click(ENABLED);
+    await page.waitForSelector(ENABLED, { state: "detached" });
+    expect(await page.isVisible("#no-matches")).toBe(true);
+    await page.close();
+  });
+
+  it("dims the icon with twiki's reason on a refusal", async () => {
+    reply = { outcome: "refused", refusal: "head-changed" };
+    const page = await open();
+    await page.click(ENABLED);
+    await page.waitForSelector(`${ENABLED}[aria-disabled="true"]`);
+    expect(await icon(page, ENABLED)).toEqual({
+      disabled: "true",
+      title: "New commits pushed",
+      label: "Cannot merge #12: New commits pushed",
+    });
+    expect(await stateOf(page, 12)).toMatchObject({ row: "READY" });
+
+    // Forced, because Playwright will not click what aria-disabled marks.
+    await page.click(ENABLED, { force: true });
+    await page.evaluate(() => fetch("/healthz"));
+    expect(requests).toHaveLength(1);
+    await page.close();
+  });
+
+  it("reads a bare 403 as the loopback limit", async () => {
+    const page = await open();
+    await page.route("**/merge", (route) =>
+      route.fulfill({
+        status: 403,
+        contentType: "text/plain",
+        body: "Forbidden",
+      }),
+    );
+    await page.click(ENABLED);
+    await page.waitForSelector(`${ENABLED}[aria-disabled="true"]`);
+    expect(await icon(page, ENABLED)).toEqual({
+      disabled: "true",
+      title: "Merging is limited to this machine",
+      label: "Cannot merge #12: Merging is limited to this machine",
+    });
+    await page.close();
+  });
+
+  it("reads a failed request as twiki being out of reach", async () => {
+    const page = await open();
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.route("**/merge", (route) => route.abort());
+    await page.click(ENABLED);
+    await page.waitForSelector(`${ENABLED}[aria-disabled="true"]`);
+    expect(await icon(page, ENABLED)).toEqual({
+      disabled: "true",
+      title: "twiki is not reachable",
+      label: "Cannot merge #12: twiki is not reachable",
+    });
+    expect(errors).toEqual([]);
+    await page.close();
+  });
+
+  it("sends nothing for a merge click on a dimmed icon", async () => {
+    const page = await open();
+    const posts: string[] = [];
+    page.on("request", (r) => {
+      if (r.method() === "POST") posts.push(r.url());
+    });
+    await page.click(DIMMED, { force: true });
+    // Round-trips the page, so a stray fetch would have left by now.
+    await page.evaluate(() => fetch("/healthz"));
+    expect(posts).toEqual([]);
+    expect(requests).toEqual([]);
+    await page.close();
+  });
+
+  it("adds no filter or sort on a merge click", async () => {
+    const page = await open();
+    await page.click(ENABLED);
+    await page.waitForSelector(ENABLED, { state: "detached" });
+    expect(new URL(page.url()).search).toBe("");
+    expect(await page.$$("#filter-bar lcars-chip")).toEqual([]);
+    expect(await page.$$("th[aria-sort]")).toEqual([]);
+    await page.close();
+  });
+
+  it("keeps the ID's text and its numeric sort", async () => {
+    const page = await open();
+    await page.click('[data-sort="id"]');
+    expect(
+      await page.$$eval("#rows tr td.i", (cells) =>
+        cells.map((c) => c.textContent),
+      ),
+    ).toEqual(["#9", "#12", "#13"]);
+    await page.close();
+  });
+
+  it("lines the icon up with its ID", async () => {
+    const page = await open();
+    const [merge, id] = await page.evaluate(() =>
+      ['tr[data-id="#12"] .merge', 'tr[data-id="#12"] .num'].map((selector) => {
+        const r = (
+          document.querySelector(selector) as Element
+        ).getBoundingClientRect();
+        return r.y + r.height / 2;
+      }),
+    );
+    expect(merge).toBeCloseTo(id as number, 0);
+    await page.close();
+  });
+
+  it("starts every ID in the column at one x, icon or not", async () => {
+    const page = await open();
+    const lefts = await page.$$eval("#rows .num", (ids) =>
+      ids.map((el) => el.getBoundingClientRect().left),
+    );
+    expect(new Set(lefts).size).toBe(1);
+    await page.close();
+  });
+
+  it("keeps the page from scrolling sideways at 400px", async () => {
+    const page = await open();
+    await page.setViewportSize({ width: 400, height: 800 });
+    const [scroll, client] = await page.evaluate(() => [
+      document.documentElement.scrollWidth,
+      document.documentElement.clientWidth,
+    ]);
+    expect(scroll).toBeLessThanOrEqual(client as number);
+    await page.close();
+  });
+
+  it("renders every row with scripts off", async () => {
     const context = await browser.newContext({ javaScriptEnabled: false });
     const page = await context.newPage();
     await page.goto(base);

@@ -53,7 +53,9 @@ const store = null as unknown as StorePort;
 const github = null as unknown as GitHubReadPort;
 
 const config = buildConfig({
-  mode: "shadow",
+  // Not the default, so a mode hardcoded in the wiring fails rather than
+  // passing by coincidence.
+  mode: "enforce",
   repos: [{ repo: "no42-org/legacy", defaultBranch: "master" }],
   bots: [],
   reviewers: [],
@@ -67,11 +69,19 @@ const attention = {
   baseUrl: null,
 };
 
+const requestMerge = async () => ({ outcome: "merged" }) as const;
+
 describe("the web role's wiring", () => {
   it("supplies every field AppDeps declares, with the configured values", () => {
     const now = () => new Date("2026-09-08T00:00:00.000Z");
 
-    const deps = buildWebDeps({ store, config, attention, now });
+    const deps = buildWebDeps({
+      store,
+      config,
+      attention,
+      requestMerge,
+      now,
+    });
 
     // The whole structure, not the field somebody happened to worry about.
     // The `:latest` guard was tested and correct while the two tags written
@@ -82,10 +92,12 @@ describe("the web role's wiring", () => {
       "defaultBranchOf",
       "hungAfterMs",
       "lanePolicies",
+      "mode",
       "now",
       "policy",
       "rankPolicy",
       "releaseTracked",
+      "requestMerge",
       "reviewBudgetDays",
       "store",
       "watched",
@@ -113,6 +125,10 @@ describe("the web role's wiring", () => {
       hungAfterMs: ACTIONS_CADENCE_MS * 2,
       defaultBranchOf: deps.defaultBranchOf,
       releaseTracked: deps.releaseTracked,
+      // The loaded config's mode, which already holds TWIKI_MODE, so the page
+      // sees the mode twiki sees.
+      mode: "enforce",
+      requestMerge,
       now,
     });
 
@@ -139,6 +155,7 @@ describe("the web role's wiring", () => {
       store,
       config: optedOut,
       attention,
+      requestMerge: null,
       now: () => new Date(),
     });
 
@@ -172,6 +189,8 @@ const webDeps = {
   defaultBranchOf: () => "main",
   hungAfterMs: ACTIONS_CADENCE_MS * 2,
   releaseTracked: () => true,
+  mode: "shadow" as const,
+  requestMerge: null,
   now: () => new Date(),
 };
 
@@ -211,6 +230,17 @@ describe("Required<AppDeps>", () => {
     const { releaseTracked: _tracked, ...noReleaseTracked } = webDeps;
     // @ts-expect-error the release opt-out cannot be dropped from the wiring
     wireWeb(noReleaseTracked);
+
+    // TWIKI_MODE. Dropped, an enforcing estate would dim every merge icon as
+    // shadow mode and refuse every click.
+    const { mode: _mode, ...noMode } = webDeps;
+    // @ts-expect-error the mode cannot be dropped from the wiring
+    wireWeb(noMode);
+
+    // TWIKI_MERGE_URL. Dropped, the button would read as not configured.
+    const { requestMerge: _merge, ...noRequestMerge } = webDeps;
+    // @ts-expect-error the merge client cannot be dropped from the wiring
+    wireWeb(noRequestMerge);
 
     expect(wireWeb(webDeps)).toBe(webDeps);
   });
@@ -353,6 +383,8 @@ const appDeps: AppDeps = {
   hungAfterMs: 5_000,
   defaultBranchOf: (repo) => (repo.name === "legacy" ? "master" : "main"),
   releaseTracked: (repo) => repo.name !== "legacy",
+  mode: "enforce",
+  requestMerge: async () => ({ outcome: "merged" }),
   now: () => new Date("2026-09-09T00:00:00.000Z"),
 };
 
@@ -377,6 +409,8 @@ describe("the routes' own wiring", () => {
       defaultBranchOf: resolved.defaultBranchOf,
       // The caller's own function, passed through untouched.
       releaseTracked: appDeps.releaseTracked,
+      mode: "enforce",
+      requestMerge: appDeps.requestMerge,
     });
     expect(
       resolved.defaultBranchOf({ owner: "no42-org", name: "legacy" }),
@@ -402,6 +436,9 @@ describe("the routes' own wiring", () => {
     // `{}` and not undefined: the field is required at the builders now, and
     // the health table reads a lane absent from it as judged on `policy`.
     expect(bare.lanePolicies).toEqual({});
+    // Nothing can merge until the wiring says otherwise.
+    expect(bare.mode).toBe("shadow");
+    expect(bare.requestMerge).toBeNull();
   });
 
   it("hands the overview every dependency BoardDeps declares", () => {

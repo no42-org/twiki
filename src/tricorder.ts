@@ -4,12 +4,20 @@
  */
 
 import { pathToFileURL } from "node:url";
+import { z } from "zod";
 import {
   type Config,
   loadConfig,
+  modeFromEnv,
   resolveDefaultBranch,
   resolveReleaseTracked,
 } from "./core/config.js";
+import {
+  type MergeRefusal,
+  type MergeRequest,
+  type MergeResponse,
+  REFUSAL_WORDS,
+} from "./core/merge.js";
 import {
   assertRankPolicy,
   DEFAULT_RANK_POLICY,
@@ -519,6 +527,80 @@ export function parseBaseUrl(raw: string | undefined): URL | null {
 }
 
 /**
+ * Where twiki's merge listener is, without a trailing slash, or null when
+ * unset, which leaves merging off.
+ *
+ * No error quotes the value. It may hold credentials, even one too malformed
+ * to parse, and these messages go to the container log.
+ */
+export function parseMergeUrl(raw: string | undefined): string | null {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("TWIKI_MERGE_URL is not a URL");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("TWIKI_MERGE_URL must be http or https");
+  }
+  // /merge is joined to it, so a query or fragment would swallow the path.
+  if (url.search !== "" || url.hash !== "" || url.username || url.password) {
+    throw new Error(
+      "TWIKI_MERGE_URL must not carry a query, fragment or credentials",
+    );
+  }
+  return url.href.replace(/\/+$/, "");
+}
+
+// Long enough for twiki's live reads and the merge. A request that times out
+// may still have merged.
+const MERGE_TIMEOUT_MS = 20_000;
+
+const MERGE_RESPONSE = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("merged") }),
+  z.object({ outcome: z.literal("already-merged") }),
+  z.object({
+    outcome: z.literal("refused"),
+    // Taken from the words table, which the type holds complete, so a new
+    // refusal needs no second list here.
+    refusal: z.enum(Object.keys(REFUSAL_WORDS) as [MergeRefusal]),
+  }),
+]);
+
+/**
+ * The client for twiki's merge listener, or null without a URL.
+ *
+ * Every failure rejects, and the caller shows them all as `unreachable`, so
+ * this log line is the only record of which one it was.
+ */
+export function mergeClient(
+  baseUrl: string | null,
+  log: (msg: string) => void,
+): Required<AppDeps>["requestMerge"] {
+  if (baseUrl === null) return null;
+  return async (request: MergeRequest): Promise<MergeResponse> => {
+    try {
+      const res = await fetch(`${baseUrl}/merge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+        signal: AbortSignal.timeout(MERGE_TIMEOUT_MS),
+      });
+      if (!res.ok) throw new Error(`twiki answered ${res.status}`);
+      const reply = MERGE_RESPONSE.safeParse(await res.json());
+      if (!reply.success) throw new Error("twiki sent an unknown reply");
+      return reply.data;
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      log(`merge of ${request.repo}#${request.number} failed: ${why}`);
+      throw err;
+    }
+  };
+}
+
+/**
  * Days a review request may wait before its repository is at least `soon`
  * (AD-29). A positive whole number of days, or the default when unset.
  */
@@ -653,9 +735,10 @@ export function buildWebDeps(input: {
   store: StorePort;
   config: Config;
   attention: ReturnType<typeof parseAttentionEnv>;
+  requestMerge: Required<AppDeps>["requestMerge"];
   now: () => Date;
 }): Required<AppDeps> {
-  const { store, config, attention, now } = input;
+  const { store, config, attention, requestMerge, now } = input;
   return {
     store,
     // repos.yaml is the entire universe (AD-10), so its entries ARE the
@@ -688,6 +771,9 @@ export function buildWebDeps(input: {
     // The same accessor the release-readiness lane is wired with, so the
     // board says `not tracked` for exactly the repositories it skips.
     releaseTracked: (repo) => resolveReleaseTracked(config, repo),
+    // Holds TWIKI_MODE when set, so the page sees the mode twiki sees.
+    mode: config.mode,
+    requestMerge,
     now,
   };
 }
@@ -727,13 +813,28 @@ async function main(): Promise<void> {
 
   if (role === "web") {
     const attention = attentionEnvOrExit();
+    let modeOverride: ReturnType<typeof modeFromEnv>;
+    let mergeUrl: string | null;
+    try {
+      modeOverride = modeFromEnv(env);
+      mergeUrl = parseMergeUrl(env.TWIKI_MERGE_URL);
+    } catch (err) {
+      log(err instanceof Error ? err.message : String(err));
+      process.exit(2);
+    }
     // Read-only, and refuses a schema this build does not understand rather
     // than serving misread rows (AD-26).
     const store = SqliteStore.openForRead(dbPath);
-    const config = loadConfig(configPath);
+    const config = loadConfig(configPath, modeOverride);
 
     const app = createApp(
-      buildWebDeps({ store, config, attention, now: () => new Date() }),
+      buildWebDeps({
+        store,
+        config,
+        attention,
+        requestMerge: mergeClient(mergeUrl, log),
+        now: () => new Date(),
+      }),
     );
 
     const server = startServer(app, {
