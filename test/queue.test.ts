@@ -19,6 +19,7 @@ import {
   buildQueue,
   type DefaultBranchRun,
   newerRun,
+  type QueueItem,
 } from "../src/tricorder/attention/queue.js";
 import { normalise as normaliseScan } from "../src/tricorder/collect/code-scanning.js";
 import { normalise } from "../src/tricorder/collect/dependabot-alerts.js";
@@ -171,6 +172,7 @@ describe("the ranked queue (CAP-6)", () => {
           openedAt: "2026-08-01T00:00:00.000Z",
           stuck: false,
           dependency: null,
+          merge: null,
         },
       ]);
       expect(tier(queue.items[0]?.ranking as Ranking, CUT)).toBe("soon");
@@ -354,6 +356,7 @@ describe("the ranked queue (CAP-6)", () => {
           openedAt: "2026-08-01T00:00:00.000Z",
           stuck: false,
           dependency: null,
+          merge: null,
         },
       ]);
       expect(tier(queue.items[0]?.ranking as Ranking, CUT)).toBe("now");
@@ -1413,6 +1416,7 @@ describe("CI failures in the queue (Story 2.3)", () => {
         openedAt: "2026-08-17T10:00:00.000Z",
         stuck: false,
         dependency: null,
+        merge: null,
       },
     ]);
     expect(items[0]?.ranking.terms).toEqual([
@@ -1802,6 +1806,7 @@ describe("plain pull requests in the queue (#167)", () => {
         openedAt: "2026-08-17T00:00:00.000Z",
         stuck: true,
         dependency: null,
+        merge: { checks: "failed", isDraft: null, reviewDecision: "unknown" },
       },
     ]);
     // Verified against the chain rather than re-derived: `stuck: true` ranks
@@ -2041,6 +2046,236 @@ describe("plain pull requests in the queue (#167)", () => {
 
     expect(queue.items.filter((i) => i.kind === "pull_request")).toEqual([]);
     expect(queue.unreadable).toBe(1);
+  });
+
+  describe("merge facts on pull request items", () => {
+    /** One stored update pull request on `dependabot/x`. */
+    const updatePr = (over: Record<string, unknown> = {}) => ({
+      subject: { type: "dependency_update_pr", key: `UP_${over.number ?? 1}` },
+      payload: {
+        repo: "no42-org/twiki",
+        number: 1,
+        title: "Bump x from 1.0.0 to 1.0.1",
+        author: "dependabot[bot]",
+        htmlUrl: "https://github.com/no42-org/twiki/pull/1",
+        createdAt: "2026-08-17T00:00:00.000Z",
+        packageName: "x",
+        bump: "patch",
+        headRef: "dependabot/x",
+        isDraft: false,
+        reviewDecision: "APPROVED",
+        ...over,
+      },
+    });
+
+    const statusError = (error: string | null) => ({
+      subject: {
+        type: "dependabot_update_status",
+        key: "no42-org/twiki#21",
+      },
+      payload: {
+        repo: "no42-org/twiki",
+        alertNumber: 21,
+        update: { pullRequestNumber: 1, error },
+      },
+    });
+
+    const mergeOf = (key: string) =>
+      buildQueue(store, NOW, DEPS).items.find((i) => i.key === key)?.merge;
+
+    /** A run that has not concluded, created `hoursAgo` before NOW. */
+    const unfinished = (runNumber: number, hoursAgo: number) => ({
+      runNumber,
+      status: "in_progress",
+      conclusion: null,
+      createdAt: new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString(),
+    });
+
+    it("reads a pull request with one passing run as passed", () => {
+      seed(PR_LANE, [
+        pr({ isDraft: true, reviewDecision: "CHANGES_REQUESTED" }),
+      ]);
+      seed("rest-actions-runs", [check({ conclusion: "success" })]);
+
+      expect(mergeOf("PR_7")).toEqual({
+        checks: "passed",
+        isDraft: true,
+        reviewDecision: "CHANGES_REQUESTED",
+      });
+    });
+
+    it.each([
+      ["a failed run", { conclusion: "failure" }, "failed"],
+      ["a hung run", unfinished(3, 3), "failed"],
+      ["a running run", unfinished(3, 1), "running"],
+      ["a cancelled run", { conclusion: "cancelled" }, "none"],
+      ["a skipped run", { conclusion: "skipped" }, "none"],
+      [
+        "a completed run with no conclusion",
+        { status: "completed", conclusion: null },
+        "none",
+      ],
+    ])("reads %s as %j", (_name, run, checks) => {
+      seed(PR_LANE, [pr()]);
+      seed("rest-actions-runs", [check(run)]);
+
+      expect(mergeOf("PR_7")).toEqual({
+        checks,
+        isDraft: null,
+        reviewDecision: "unknown",
+      });
+    });
+
+    it.each([
+      ["a pass beside a failure", [{ conclusion: "failure" }], "failed"],
+      ["a pass beside a run in flight", [unfinished(4, 1)], "running"],
+      ["a pass beside a cancelled run", [{ conclusion: "cancelled" }], "none"],
+      ["two passes", [{ conclusion: "success" }], "passed"],
+    ])("judges the worst run: %s", (_name, others, checks) => {
+      seed(PR_LANE, [pr()]);
+      seed("rest-actions-runs", [
+        check({ conclusion: "success" }),
+        ...others.map((o) => check({ runNumber: 4, workflowId: 2, ...o })),
+      ]);
+
+      expect(mergeOf("PR_7")?.checks).toBe(checks);
+    });
+
+    it("reads a failure beside a run in flight as failed", () => {
+      seed(PR_LANE, [pr()]);
+      seed("rest-actions-runs", [check(), check(unfinished(4, 1))]);
+
+      expect(mergeOf("PR_7")?.checks).toBe("failed");
+    });
+
+    it("reads no retained run as none", () => {
+      seed(PR_LANE, [pr({ isDraft: false, reviewDecision: null })]);
+
+      expect(mergeOf("PR_7")).toEqual({
+        checks: "none",
+        isDraft: false,
+        reviewDecision: null,
+      });
+    });
+
+    it("reads a null head ref as none, even with a passing run stored", () => {
+      seed(PR_LANE, [pr({ headRef: null })]);
+      seed("rest-actions-runs", [check({ conclusion: "success" })]);
+
+      expect(mergeOf("PR_7")?.checks).toBe("none");
+    });
+
+    it("reads an update pull request's own fields and its run", () => {
+      seed("graphql-update-prs", [updatePr()]);
+      seed("rest-actions-runs", [
+        check({ conclusion: "success", headBranch: "dependabot/x" }),
+      ]);
+
+      expect(mergeOf("UP_1")).toEqual({
+        checks: "passed",
+        isDraft: false,
+        reviewDecision: "APPROVED",
+      });
+    });
+
+    it("reads a null head ref on an update pull request as none", () => {
+      seed("graphql-update-prs", [updatePr({ headRef: null })]);
+
+      expect(mergeOf("UP_1")).toEqual({
+        checks: "none",
+        isDraft: false,
+        reviewDecision: "APPROVED",
+      });
+    });
+
+    it("keeps an update pull request stuck on a Dependabot error with green checks", () => {
+      seed("graphql-update-prs", [updatePr()]);
+      seed("graphql-update-status", [statusError("could not prepare")]);
+      seed("rest-actions-runs", [
+        check({ conclusion: "success", headBranch: "dependabot/x" }),
+      ]);
+
+      const item = buildQueue(store, NOW, DEPS).items[0];
+
+      expect(item?.stuck).toBe(true);
+      expect(item?.merge?.checks).toBe("passed");
+    });
+
+    it("feeds no check into an update pull request's ranking", () => {
+      seed("graphql-update-prs", [updatePr()]);
+      seed("graphql-update-status", [statusError(null)]);
+      const { merge: before, ...withoutCheck } = buildQueue(store, NOW, DEPS)
+        .items[0] as QueueItem;
+
+      seed("rest-actions-runs", [check({ headBranch: "dependabot/x" })]);
+      const { merge: after, ...withFailure } = buildQueue(store, NOW, DEPS)
+        .items[0] as QueueItem;
+
+      // A red run moves the merge fact and nothing else on the item.
+      expect(before?.checks).toBe("none");
+      expect(after?.checks).toBe("failed");
+      expect(withFailure).toEqual(withoutCheck);
+      expect(withFailure.stuck).toBe(false);
+    });
+
+    it("attributes nothing where two pull requests claim one head ref", () => {
+      seed(PR_LANE, [pr(), pr({ number: 8 })]);
+      seed("rest-actions-runs", [check({ conclusion: "success" })]);
+
+      expect(mergeOf("PR_7")?.checks).toBe("none");
+      expect(mergeOf("PR_8")?.checks).toBe("none");
+    });
+
+    it("attributes nothing where two update pull requests claim one head ref", () => {
+      seed("graphql-update-prs", [updatePr(), updatePr({ number: 2 })]);
+      seed("rest-actions-runs", [
+        check({ conclusion: "success", headBranch: "dependabot/x" }),
+      ]);
+
+      expect(mergeOf("UP_1")?.checks).toBe("none");
+      expect(mergeOf("UP_2")?.checks).toBe("none");
+    });
+
+    it("counts one closed update pull request out of the claim on a ref", () => {
+      seed("graphql-update-prs", [updatePr(), updatePr({ number: 2 })]);
+      seed("rest-actions-runs", [
+        check({ conclusion: "success", headBranch: "dependabot/x" }),
+      ]);
+      const r = store.beginRun({
+        lane: "graphql-update-prs",
+        installation: "no42-org",
+        scope: "full",
+        startedAt: AT,
+      });
+      store.recordTombstones(r, AT, [
+        { type: "dependency_update_pr", key: "UP_2" },
+      ]);
+      store.finishRun(r, "ok", AT);
+
+      expect(mergeOf("UP_1")?.checks).toBe("passed");
+    });
+
+    it("is null on every kind that is not a pull request", () => {
+      seed("rest-alerts", [normalise(makeAlert({ number: 21 }))]);
+      seed("graphql-issues", [
+        {
+          subject: { type: "issue", key: "I_1" },
+          payload: {
+            repo: "no42-org/twiki",
+            number: 1,
+            title: "Something",
+            htmlUrl: "https://github.com/no42-org/twiki/issues/1",
+          },
+        },
+      ]);
+
+      const { items } = buildQueue(store, NOW, DEPS);
+
+      expect(items.map((i) => [i.kind, i.merge]).sort()).toEqual([
+        ["alert", null],
+        ["issue", null],
+      ]);
+    });
   });
 
   describe("never twice: one pull request, one item", () => {

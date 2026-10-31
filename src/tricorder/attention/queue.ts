@@ -4,6 +4,7 @@
  */
 
 import { isDefaultBranchRef, isDefaultBranchRun } from "../../core/branch.js";
+import type { ReviewDecisionRead } from "../../core/merge.js";
 import {
   compareRankings,
   NOT_APPLICABLE,
@@ -24,6 +25,7 @@ import {
 } from "../../core/topics.js";
 import type { RepoRef } from "../../core/types.js";
 import { VALIDITY_INACTIVE } from "../../core/validity.js";
+import type { PullRequestObservation } from "../collect/pull-requests.js";
 import type { UpdateStatusObservation } from "../collect/update-status.js";
 import type { WorkflowRunObservation } from "../collect/workflow-runs.js";
 import type { CurrentValue, StorePort } from "../store/port.js";
@@ -130,6 +132,22 @@ export interface QueueItem {
   stuck: boolean;
   /** What a Dependabot alert depends on. Null for every other kind. */
   dependency: AlertDependency | null;
+  /** What the overview reads to judge a merge. Null unless a pull request. */
+  merge: MergeFacts | null;
+}
+
+/**
+ * The facts about a pull request that decide whether it looks mergeable.
+ *
+ * `checks` is `none` for every reading that is not a statement about the
+ * build: nothing retained, a ref we cannot attribute, and a run that settled
+ * on no result. Those read differently in the `stuck` term's words and alike
+ * here, because none of them is green (AD-28).
+ */
+export interface MergeFacts {
+  checks: "passed" | "failed" | "running" | "none";
+  isDraft: boolean | null;
+  reviewDecision: ReviewDecisionRead;
 }
 
 /** The fields of a Dependabot alert that say what its impact is. */
@@ -436,6 +454,7 @@ function alertPass(
         scope: alert.scope,
         firstPatchedVersion: alert.firstPatchedVersion,
       },
+      merge: null,
     });
   }
 
@@ -556,6 +575,7 @@ function codeScanningPass(
       openedAt: alert.createdAt,
       stuck: false,
       dependency: null,
+      merge: null,
     });
   }
 
@@ -678,6 +698,7 @@ function secretScanningPass(
       openedAt: alert.createdAt,
       stuck: false,
       dependency: null,
+      merge: null,
     });
   }
 
@@ -702,15 +723,19 @@ function updatePrPass(
   { linksByPr }: StatusIndex,
 ): Pass {
   const items: QueueItem[] = [];
-  let unreadable = 0;
 
-  for (const row of store.currentByType("dependency_update_pr")) {
-    if (row.state !== "present") continue;
-    const pr = readPr(row.payload);
-    if (pr === null) {
-      unreadable++;
-      continue;
-    }
+  // Read once, for the same two readers as in `pullRequestPass`.
+  const readable = [...store.currentByType("dependency_update_pr")]
+    .filter((row) => row.state === "present")
+    .map((row) => ({ row, pr: readPr(row.payload) }));
+  const unreadable = readable.filter((r) => r.pr === null).length;
+  const checksOf = attributedChecks(
+    store,
+    readable.flatMap((r) => (r.pr === null ? [] : [r.pr])),
+  );
+
+  for (const { row, pr } of readable) {
+    if (pr === null) continue;
 
     // The precise join first: a status row naming this PR's number is
     // GitHub's own statement of which alert the PR fixes, so when one exists
@@ -814,6 +839,9 @@ function updatePrPass(
       openedAt: pr.createdAt,
       stuck: prStuck === true,
       dependency: null,
+      // Read only here. An update pull request's rank stays on what it fixes,
+      // so these checks reach neither its `stuck` term nor its explanation.
+      merge: mergeFacts(pr, checksOf(pr), now, deps.hungAfterMs),
     });
   }
 
@@ -854,6 +882,51 @@ function checksByHeadRef(
     byRef.set(key, list);
   }
   return byRef;
+}
+
+/** The two facts a pull request is looked up by. */
+type HeadRefOf = Pick<PullRequestObservation, "repo" | "headRef">;
+
+/**
+ * Which retained checks belong to which of `prs`, the open pull requests of
+ * one kind.
+ *
+ * A check row is keyed by the base repository slug and a BARE head ref
+ * (#161), and nothing in the run payload names the head repository, so two
+ * forks opening `patch-1` against this repository are one key here. That
+ * was a display limit at the retention key; here it would attribute one
+ * contributor's red build to another's pull request and rank it `soon`
+ * under their name.
+ *
+ * Refused rather than guessed: where a ref stands for more than one open
+ * pull request, neither gets the verdict, so both read as nothing observed,
+ * which is exactly what is true - we cannot say which run belongs to which.
+ * Closing it properly needs a head-repository field on the run mapper, which
+ * is a port change.
+ *
+ * A pull request with no head ref matches no entry either, which is what
+ * makes nothing observed the answer rather than a lookup on `undefined`.
+ */
+function attributedChecks(
+  store: StorePort,
+  prs: readonly HeadRefOf[],
+): (pr: HeadRefOf) => WorkflowRunObservation[] | undefined {
+  const checks = checksByHeadRef(store);
+  const keyOf = (pr: HeadRefOf): string | null =>
+    pr.headRef === null ? null : `${foldSlug(pr.repo)}|${pr.headRef}`;
+
+  const prsPerRef = new Map<string, number>();
+  for (const pr of prs) {
+    const key = keyOf(pr);
+    if (key === null) continue;
+    prsPerRef.set(key, (prsPerRef.get(key) ?? 0) + 1);
+  }
+
+  return (pr) => {
+    const key = keyOf(pr);
+    if (key === null || (prsPerRef.get(key) ?? 0) > 1) return undefined;
+    return checks.get(key);
+  };
 }
 
 /**
@@ -941,6 +1014,39 @@ function checkTerm(
 }
 
 /**
+ * The same retained checks as a merge fact, in `checkTerm`'s precedence.
+ *
+ * `passed` is the fall-through only once every run has said `passed`, so a
+ * run that settled on no result beside a green one keeps the pull request
+ * out of it, as it keeps `checkTerm` from `checks passed`.
+ */
+function checkFacts(
+  runs: readonly WorkflowRunObservation[] | undefined,
+  now: Date,
+  hungAfterMs: number,
+): MergeFacts["checks"] {
+  if (runs === undefined || runs.length === 0) return "none";
+  const verdicts = runs.map((run) => runVerdict(run, now, hungAfterMs));
+  if (verdicts.some(isBrokenVerdict)) return "failed";
+  if (runs.some(stillRunning)) return "running";
+  return verdicts.every((verdict) => verdict === "passed") ? "passed" : "none";
+}
+
+/** One pull request's merge facts, from its row and its attributed checks. */
+function mergeFacts(
+  pr: Pick<MergeFacts, "isDraft" | "reviewDecision">,
+  runs: readonly WorkflowRunObservation[] | undefined,
+  now: Date,
+  hungAfterMs: number,
+): MergeFacts {
+  return {
+    checks: checkFacts(runs, now, hungAfterMs),
+    isDraft: pr.isDraft,
+    reviewDecision: pr.reviewDecision,
+  };
+}
+
+/**
  * The plain pull requests (#167): open, and opened by nobody the config
  * names as a dependency-update bot.
  *
@@ -953,52 +1059,24 @@ function checkTerm(
  */
 function pullRequestPass(store: StorePort, now: Date, deps: QueueDeps): Pass {
   const items: QueueItem[] = [];
-  const checks = checksByHeadRef(store);
 
   // Read once, because two things below need the whole set: the item loop,
-  // and the count of open pull requests per head ref that decides whether a
-  // check row may be attributed at all.
+  // and the attribution of check rows, which counts the open pull requests
+  // per head ref.
   const readable = [...store.currentByType("pull_request")]
     .filter((row) => row.state === "present")
     .map((row) => ({ row, pr: readPullRequest(row.payload) }));
   const unreadable = readable.filter((r) => r.pr === null).length;
-
-  // How many OPEN pull requests each ref key stands for.
-  //
-  // A check row is keyed by the base repository slug and a BARE head ref
-  // (#161), and nothing in the run payload names the head repository, so two
-  // forks opening `patch-1` against this repository are one key here. That
-  // was a display limit at the retention key; here it would attribute one
-  // contributor's red build to another's pull request and rank it `soon`
-  // under their name.
-  //
-  // Refused rather than guessed: where a ref stands for more than one open
-  // pull request, neither gets the verdict and both read `checks not
-  // observed`, which is exactly what is true - we cannot say which run
-  // belongs to which. Closing it properly needs a head-repository field on
-  // the run mapper, which is a port change.
-  const prsPerRef = new Map<string, number>();
-  for (const { pr } of readable) {
-    if (pr === null || pr.headRef === null) continue;
-    const key = `${foldSlug(pr.repo)}|${pr.headRef}`;
-    prsPerRef.set(key, (prsPerRef.get(key) ?? 0) + 1);
-  }
+  const checksOf = attributedChecks(
+    store,
+    readable.flatMap((r) => (r.pr === null ? [] : [r.pr])),
+  );
 
   for (const { row, pr } of readable) {
     if (pr === null) continue;
 
-    const slug = foldSlug(pr.repo);
-    const refKey = pr.headRef === null ? null : `${slug}|${pr.headRef}`;
-    // A pull request with no head ref matches no entry, which is what makes
-    // `checks not observed` the answer rather than a lookup on `undefined`;
-    // so does one whose ref another open pull request also claims.
-    const { stuck, words } = checkTerm(
-      refKey === null || (prsPerRef.get(refKey) ?? 0) > 1
-        ? undefined
-        : checks.get(refKey),
-      now,
-      deps.hungAfterMs,
-    );
+    const runs = checksOf(pr);
+    const { stuck, words } = checkTerm(runs, now, deps.hungAfterMs);
     const ranking = rank(
       {
         broken: NOT_APPLICABLE,
@@ -1042,6 +1120,7 @@ function pullRequestPass(store: StorePort, now: Date, deps: QueueDeps): Pass {
       openedAt: pr.createdAt,
       stuck: stuck === true,
       dependency: null,
+      merge: mergeFacts(pr, runs, now, deps.hungAfterMs),
     });
   }
 
@@ -1132,6 +1211,7 @@ function issuePass(store: StorePort, now: Date, deps: QueueDeps): Pass {
       openedAt: issue.createdAt,
       stuck: false,
       dependency: null,
+      merge: null,
     });
   }
 
@@ -1283,6 +1363,7 @@ function ciFailurePass(
       openedAt: run.createdAt,
       stuck: false,
       dependency: null,
+      merge: null,
     });
   }
 
