@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import type { ReviewDecision } from "../core/merge.js";
 import type { CommitRef, FixedAlertRef } from "../core/release-worthy.js";
 import type {
   CheckStatus,
@@ -699,9 +700,20 @@ export interface GitHubReadPort
   extends GitHubRepoReadPort,
     GitHubAccountReadPort {}
 
+/** A pull request read live, never from the store. */
+export interface LivePullRequest {
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  headSha: string;
+  reviewDecision: ReviewDecision;
+}
+
 /** Mutating — executor only, enforce mode only. */
 export interface GitHubWritePort {
-  mergePR(repo: RepoRef, prNumber: number): Promise<void>;
+  /** Read one pull request now. The operator merge gates on this. */
+  livePullRequest(repo: RepoRef, number: number): Promise<LivePullRequest>;
+  /** With `sha`, GitHub refuses the merge if the head has moved. */
+  mergePR(repo: RepoRef, prNumber: number, sha?: string): Promise<void>;
   /** Re-run only the failed jobs of a workflow run (bounded by run_attempt). */
   rerunFailedJobs(repo: RepoRef, runId: number): Promise<void>;
   /** Ask Dependabot to rebase a PR by posting `@dependabot rebase`. */

@@ -3,7 +3,14 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { PullRequest, RepoPolicy, WorkflowRunRef } from "../core/types.js";
+import type { MergeRefusal } from "../core/merge.js";
+import type {
+  CheckStatus,
+  PullRequest,
+  RepoPolicy,
+  WorkflowRunRef,
+} from "../core/types.js";
+import type { LivePullRequest } from "../github/port.js";
 
 // The deterministic safety gates. These are pure functions with no I/O and no
 // dependency on the LLM. The executor re-validates them immediately before any
@@ -39,6 +46,27 @@ export function mergeBlock(pr: PullRequest, policy: RepoPolicy): MergeBlock {
   if (pr.checks === "none") return "no-checks";
   if (pr.checks !== "green") return "ci-not-green";
   if (!withinMergePolicy(pr, policy)) return "above-minor";
+  return null;
+}
+
+/**
+ * Gate for a merge the operator asked for. The human is the policy decision,
+ * so bump level and the minor setting do not apply. State, draft, checks and
+ * review do. A null review decision means the repository requires no review
+ * and does not block.
+ */
+export function operatorMergeBlock(
+  live: LivePullRequest,
+  checks: CheckStatus,
+): MergeRefusal | "already-merged" | null {
+  if (live.state === "MERGED") return "already-merged";
+  if (live.state === "CLOSED") return "closed";
+  if (live.isDraft) return "draft";
+  if (checks === "red") return "ci-failed";
+  if (checks === "pending") return "ci-running";
+  if (checks === "none") return "no-checks";
+  if (live.reviewDecision === "CHANGES_REQUESTED") return "changes-requested";
+  if (live.reviewDecision === "REVIEW_REQUIRED") return "review-required";
   return null;
 }
 

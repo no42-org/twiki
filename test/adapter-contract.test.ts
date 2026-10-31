@@ -1769,3 +1769,67 @@ describe("fixed dependabot alerts", () => {
     ).rejects.toThrow(/fixed alert listing for o\/r failed: boom/);
   });
 });
+
+const REPO = { owner: "o", name: "r" };
+
+describe("livePullRequest", () => {
+  it("maps the node and renames headRefOid to headSha", async () => {
+    const adapter = adapterFor(
+      graphqlStub({
+        repository: {
+          pullRequest: {
+            state: "OPEN",
+            isDraft: false,
+            headRefOid: "abc",
+            reviewDecision: null,
+          },
+        },
+      }),
+      "organization",
+    );
+    expect(await adapter.livePullRequest(REPO, 7)).toEqual({
+      state: "OPEN",
+      isDraft: false,
+      headSha: "abc",
+      reviewDecision: null,
+    });
+  });
+
+  it("throws a named error when the pull request is missing", async () => {
+    const adapter = adapterFor(
+      graphqlStub({ repository: { pullRequest: null } }),
+      "organization",
+    );
+    await expect(adapter.livePullRequest(REPO, 7)).rejects.toThrow(
+      /live read of o\/r#7 found no pull request/,
+    );
+  });
+});
+
+describe("mergePR", () => {
+  const merging = () => {
+    const calls: Record<string, unknown>[] = [];
+    const gh = {
+      pulls: {
+        merge: async (a: Record<string, unknown>) => void calls.push(a),
+      },
+    } as unknown as Octokit;
+    return { calls, adapter: adapterFor(gh, "organization") };
+  };
+
+  it("passes sha only when given", async () => {
+    const { calls, adapter } = merging();
+    await adapter.mergePR(REPO, 7);
+    await adapter.mergePR(REPO, 7, "abc");
+    expect(calls).toEqual([
+      { owner: "o", repo: "r", pull_number: 7, merge_method: "squash" },
+      {
+        owner: "o",
+        repo: "r",
+        pull_number: 7,
+        merge_method: "squash",
+        sha: "abc",
+      },
+    ]);
+  });
+});

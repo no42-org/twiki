@@ -34,6 +34,7 @@ import type {
   GitHubPort,
   GitHubReadPort,
   IssuePage,
+  LivePullRequest,
   OrgAlertPage,
   PullRequestPage,
   RawCodeScanningAlert,
@@ -962,10 +963,25 @@ export class FakeGitHub extends FakeGitHubReadPort implements GitHubPort {
   failRerunOn = new Map<number, Error>();
   failRebaseOn = new Map<number, Error>();
 
-  async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
+  /** Answers for livePullRequest, keyed `owner/name#number`. */
+  live = new Map<string, LivePullRequest>();
+  /** The sha each merge was pinned to, parallel to `merged`. */
+  mergedAt: (string | undefined)[] = [];
+
+  async livePullRequest(
+    repo: RepoRef,
+    number: number,
+  ): Promise<LivePullRequest> {
+    const key = `${repoSlug(repo)}#${number}`;
+    const found = this.live.get(key);
+    if (!found) throw new Error(`no live pull request seeded for ${key}`);
+    return found;
+  }
+  async mergePR(repo: RepoRef, prNumber: number, sha?: string): Promise<void> {
     const fail = this.failMergeOn.get(prNumber);
     if (fail) throw fail;
     this.merged.push({ repo: repoSlug(repo), number: prNumber });
+    this.mergedAt.push(sha);
   }
   async rerunFailedJobs(repo: RepoRef, runId: number): Promise<void> {
     const fail = this.failRerunOn.get(runId);

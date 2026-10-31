@@ -5,6 +5,7 @@
 
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import type { ReviewDecision } from "../core/merge.js";
 import { NOT_APPLICABLE } from "../core/rank.js";
 import { redact } from "../core/redact.js";
 import type { CommitRef, FixedAlertRef } from "../core/release-worthy.js";
@@ -37,6 +38,7 @@ import type {
   InstallationRef,
   InstallationRepo,
   IssuePage,
+  LivePullRequest,
   OrgAlertPage,
   PullRequestPage,
   RawCodeScanningAlert,
@@ -2221,13 +2223,50 @@ export class OctokitGitHub implements GitHubPort {
     return { limit: core?.limit ?? 0, remaining: core?.remaining ?? 0 };
   }
 
-  async mergePR(repo: RepoRef, prNumber: number): Promise<void> {
+  async livePullRequest(
+    repo: RepoRef,
+    number: number,
+  ): Promise<LivePullRequest> {
+    const gh = await this.client(repo);
+    const res: {
+      repository?: {
+        pullRequest?: {
+          state: LivePullRequest["state"];
+          isDraft: boolean;
+          headRefOid: string;
+          reviewDecision: ReviewDecision;
+        } | null;
+      } | null;
+    } = await gh.graphql(
+      `query ($owner: String!, $name: String!, $n: Int!) {
+         repository(owner: $owner, name: $name) {
+           pullRequest(number: $n) { state isDraft headRefOid reviewDecision }
+         }
+       }`,
+      { owner: repo.owner, name: repo.name, n: number },
+    );
+    const pr = res.repository?.pullRequest;
+    if (!pr) {
+      throw new Error(
+        `live read of ${repoSlug(repo)}#${number} found no pull request`,
+      );
+    }
+    return {
+      state: pr.state,
+      isDraft: pr.isDraft,
+      headSha: pr.headRefOid,
+      reviewDecision: pr.reviewDecision,
+    };
+  }
+
+  async mergePR(repo: RepoRef, prNumber: number, sha?: string): Promise<void> {
     const gh = await this.client(repo);
     await gh.pulls.merge({
       owner: repo.owner,
       repo: repo.name,
       pull_number: prNumber,
       merge_method: "squash",
+      ...(sha ? { sha } : {}),
     });
   }
 
