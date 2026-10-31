@@ -7,9 +7,9 @@ import {
   type Config,
   isAllowlisted,
   loadConfig,
+  modeFromEnv,
   remediationFromEnv,
 } from "./core/config.js";
-import type { Mode } from "./core/types.js";
 import { createGitHubFromEnv } from "./github/octokit-adapter.js";
 import { advisorFromEnv } from "./twiki/advisor.js";
 import { JsonlAudit } from "./twiki/audit.js";
@@ -77,8 +77,11 @@ function buildDeps(config: Config, env = process.env): RunDeps {
 async function main(): Promise<void> {
   const env = process.env;
   const configPath = env.TWIKI_CONFIG ?? "repos.yaml";
-  const modeOverride = env.TWIKI_MODE as Mode | undefined;
-  const config = loadConfig(configPath, modeOverride, remediationFromEnv(env));
+  const config = loadConfig(
+    configPath,
+    modeFromEnv(env),
+    remediationFromEnv(env),
+  );
   const deps = buildDeps(config, env);
 
   console.error(

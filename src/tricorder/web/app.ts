@@ -26,6 +26,7 @@ import { RepoPage, UnknownRepoPage } from "./components.js";
 import { OverviewPage } from "./overview-page.js";
 import { buildOverview } from "./overview-view.js";
 import { buildRepoView, type RepoViewDeps } from "./repo-view.js";
+import { isLoopback } from "./server.js";
 
 // Routes read through StorePort only: no SQL, no table name, no predicate
 // composed here (AD-27). No GitHub call happens on the request path (AD-3).
@@ -108,6 +109,23 @@ const MERGE_BODY = z.object({
 const JSON_CONTENT_TYPE = /^application\/json\s*(;|$)/i;
 
 /**
+ * Whether the Host header names loopback, on any port, so an SSH tunnel works.
+ *
+ * A rebound attacker's page is same-origin to the browser, with a matching
+ * Origin and Host, so only the name gives it away. There is deliberately no
+ * exception for a configured name: the dashboard stays on loopback until it
+ * has authentication.
+ */
+function isLoopbackHost(host: string | undefined): boolean {
+  if (host === undefined) return false;
+  try {
+    return isLoopback(new URL(`http://${host}`).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether the browser says this request came from a page on this host.
  *
  * Written here because Hono's `csrf` does not cover this route. It only looks
@@ -115,9 +133,9 @@ const JSON_CONTENT_TYPE = /^application\/json\s*(;|$)/i;
  * (checked against hono 4.13.13).
  *
  * Fails closed: a browser always sends Origin on a POST, so a missing one is
- * not a browser on this page, and an opaque `null` does not parse. The host
- * alone is compared, because behind a TLS proxy the page is https while this
- * listener sees http.
+ * not a browser on this page, and an opaque `null` does not parse. Host comes
+ * from the same browser, so this says nothing about DNS rebinding: see
+ * `isLoopbackHost`, which runs first.
  */
 function isSameOrigin(
   origin: string | undefined,
@@ -365,7 +383,8 @@ export function createApp(deps: AppDeps): Hono {
   // spare it a call and give the same answer in the same order.
   app.post("/merge", async (c) => {
     c.header("Cache-Control", "no-store");
-    if (!isSameOrigin(c.req.header("origin"), c.req.header("host"))) {
+    const host = c.req.header("host");
+    if (!isLoopbackHost(host) || !isSameOrigin(c.req.header("origin"), host)) {
       return c.text("Forbidden", 403);
     }
     if (!JSON_CONTENT_TYPE.test(c.req.header("content-type") ?? "")) {

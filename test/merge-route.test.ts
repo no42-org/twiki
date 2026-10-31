@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -109,16 +110,43 @@ describe("POST /merge", () => {
     ]);
   });
 
-  it("compares the origin's host with Host, not with the request URL", async () => {
-    // Behind a TLS proxy that keeps Host, the origin is https and the node
-    // listener sees http. Comparing against the URL would refuse every click.
+  it.each([
+    ["localhost", "localhost:8787"],
+    ["an SSH tunnel's local port", "127.0.0.1:18787"],
+    ["IPv6 loopback", "[::1]:8787"],
+  ])("takes a same-origin post on %s", async (_name, host) => {
     const res = await post(appWith(fakeMerge()), {
-      Host: "dash.example",
-      Origin: "https://dash.example",
+      Host: host,
+      Origin: `http://${host}`,
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(MERGED);
   });
+
+  // DNS rebinding: a page on an attacker's name, re-resolved to loopback. The
+  // browser calls that same-origin and sends a matching Origin and Host, so
+  // only the name itself can give it away.
+  it.each([
+    ["a rebound name", "evil.example:8787", "http://evil.example:8787"],
+    ["a name without a port", "dash.example", "https://dash.example"],
+    [
+      "a name that starts like loopback",
+      "127.0.0.1.evil.example:8787",
+      "http://127.0.0.1.evil.example:8787",
+    ],
+  ])(
+    "refuses %s with 403, matching Origin or not",
+    async (_name, host, origin) => {
+      const requestMerge = fakeMerge();
+      const res = await post(appWith(requestMerge), {
+        Host: host,
+        Origin: origin,
+      });
+
+      expect(res.status).toBe(403);
+      expect(requestMerge).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["a foreign origin", { Origin: "https://evil.example" }],
@@ -398,6 +426,33 @@ describe("TWIKI_MODE", () => {
   });
 });
 
+describe("twiki's entrypoint", () => {
+  // Spawned, because an entrypoint cannot be imported (AD-5). The cases above
+  // cover the helper. This covers that twiki calls it.
+  it("fails on a bad TWIKI_MODE, naming it", () => {
+    const run = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "src/index.ts"],
+      {
+        encoding: "utf8",
+        // A config that cannot load, so a regression stops there rather
+        // than reaching GitHub.
+        env: {
+          ...process.env,
+          TWIKI_MODE: "Enforce",
+          TWIKI_CONFIG: "/nonexistent/repos.yaml",
+          TWIKI_ONCE: "1",
+        },
+      },
+    );
+
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain(
+      'TWIKI_MODE must be shadow or enforce, got "Enforce"',
+    );
+  });
+});
+
 describe("TWIKI_MERGE_URL", () => {
   it("is null when unset or blank", () => {
     expect(parseMergeUrl(undefined)).toBeNull();
@@ -411,12 +466,40 @@ describe("TWIKI_MERGE_URL", () => {
 
   it("refuses what is not an http URL, naming the variable", () => {
     expect(() => parseMergeUrl("nonsense")).toThrow(
-      "TWIKI_MERGE_URL is not a URL: nonsense",
+      "TWIKI_MERGE_URL is not a URL",
     );
     // Parses, with `twiki:` as the scheme. The likeliest typo there is.
     expect(() => parseMergeUrl("twiki:8788")).toThrow(
-      "TWIKI_MERGE_URL must be http or https: twiki:8788",
+      "TWIKI_MERGE_URL must be http or https",
     );
+  });
+
+  it.each([
+    ["a query", "http://twiki:8788?a=1"],
+    ["a fragment", "http://twiki:8788#a"],
+    ["a user", "http://user@twiki:8788"],
+    ["a password", "http://user:s3cret@twiki:8788"],
+  ])("refuses %s", (_name, raw) => {
+    expect(() => parseMergeUrl(raw)).toThrow(
+      "TWIKI_MERGE_URL must not carry a query, fragment or credentials",
+    );
+  });
+
+  // Every refusal, including the two that fire before anything can tell
+  // credentials apart from the rest of the value.
+  it.each([
+    "http://user:s3cret@twiki:8788",
+    "http://user:s3cret@",
+    "ftp://user:s3cret@twiki:8788",
+  ])("keeps the value out of the error: %s", (raw) => {
+    let message = "";
+    try {
+      parseMergeUrl(raw);
+    } catch (err) {
+      message = String(err);
+    }
+    expect(message).toContain("TWIKI_MERGE_URL");
+    expect(message).not.toContain("s3cret");
   });
 });
 
@@ -493,7 +576,6 @@ describe("mergeClient", () => {
   });
 
   it("rejects when nothing is listening", async () => {
-    server.close();
     await expect(
       mergeClient("http://127.0.0.1:1", log)?.(request),
     ).rejects.toThrow();

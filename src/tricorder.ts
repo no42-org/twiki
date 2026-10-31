@@ -529,6 +529,9 @@ export function parseBaseUrl(raw: string | undefined): URL | null {
 /**
  * Where twiki's merge listener is, without a trailing slash, or null when
  * unset, which leaves merging off.
+ *
+ * No error quotes the value. It may hold credentials, even one too malformed
+ * to parse, and these messages go to the container log.
  */
 export function parseMergeUrl(raw: string | undefined): string | null {
   const trimmed = (raw ?? "").trim();
@@ -537,10 +540,16 @@ export function parseMergeUrl(raw: string | undefined): string | null {
   try {
     url = new URL(trimmed);
   } catch {
-    throw new Error(`TWIKI_MERGE_URL is not a URL: ${raw}`);
+    throw new Error("TWIKI_MERGE_URL is not a URL");
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(`TWIKI_MERGE_URL must be http or https: ${raw}`);
+    throw new Error("TWIKI_MERGE_URL must be http or https");
+  }
+  // /merge is joined to it, so a query or fragment would swallow the path.
+  if (url.search !== "" || url.hash !== "" || url.username || url.password) {
+    throw new Error(
+      "TWIKI_MERGE_URL must not carry a query, fragment or credentials",
+    );
   }
   return url.href.replace(/\/+$/, "");
 }
