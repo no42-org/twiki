@@ -55,12 +55,21 @@ export function mergeBlock(pr: PullRequest, policy: RepoPolicy): MergeBlock {
  * review do. An unknown review decision blocks. A null review decision means the repository requires no review
  * and does not block.
  */
+/** The verdicts that need no checks: a settled pull request has only one. */
+export function settledBlock(
+  live: LivePullRequest,
+): "closed" | "already-merged" | null {
+  if (live.state === "MERGED") return "already-merged";
+  if (live.state === "CLOSED") return "closed";
+  return null;
+}
+
 export function operatorMergeBlock(
   live: LivePullRequest,
   checks: CheckStatus,
 ): MergeRefusal | "already-merged" | null {
-  if (live.state === "MERGED") return "already-merged";
-  if (live.state === "CLOSED") return "closed";
+  const settled = settledBlock(live);
+  if (settled !== null) return settled;
   if (live.isDraft) return "draft";
   if (checks === "red") return "ci-failed";
   if (checks === "pending") return "ci-running";

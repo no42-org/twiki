@@ -3,10 +3,13 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildConfig } from "../src/core/config.js";
 import type { LivePullRequest } from "../src/github/port.js";
-import type { AuditSink } from "../src/twiki/audit.js";
+import { type AuditSink, JsonlAudit } from "../src/twiki/audit.js";
 import { operatorMerge } from "../src/twiki/operator-merge.js";
 import { FakeGitHub, type FakeRepoData } from "./fakes.js";
 
@@ -222,13 +225,69 @@ describe("operatorMerge", () => {
     ]);
   });
 
-  it("logs and rethrows any other error, auditing nothing", async () => {
+  it("logs, audits the error and rethrows when mergePR throws", async () => {
     const s = setup();
     s.github.failMergeOn.set(7, httpError(500));
     await expect(operatorMerge(req, s.deps)).rejects.toThrow("HTTP 500");
     expect(s.logs).toEqual([`operator merge of ${SLUG}#7 failed: HTTP 500`]);
-    expect(s.audited).toEqual([]);
+    expect(s.audited).toEqual([
+      { entry: { ...req, error: "HTTP 500", headSha: SHA }, at: AT },
+    ]);
     expect(s.github.merged).toEqual([]);
+  });
+
+  it("audits the error when the second read after a 405 throws", async () => {
+    const s = setup();
+    s.github.failMergeOn.set(7, httpError(405));
+    const first = await s.github.livePullRequest(
+      { owner: "no42-org", name: "demo" },
+      7,
+    );
+    let reads = 0;
+    s.github.livePullRequest = async () => {
+      reads += 1;
+      if (reads === 1) return first;
+      throw httpError(502);
+    };
+    await expect(operatorMerge(req, s.deps)).rejects.toThrow("HTTP 502");
+    expect(s.audited).toEqual([
+      { entry: { ...req, error: "HTTP 502", headSha: SHA }, at: AT },
+    ]);
+  });
+
+  it("audits nothing when a read throws before any merge was tried", async () => {
+    const s = setup();
+    s.github.prChecks = async () => {
+      throw httpError(502);
+    };
+    await expect(operatorMerge(req, s.deps)).rejects.toThrow("HTTP 502");
+    expect(s.audited).toEqual([]);
+  });
+
+  it("rethrows the merge error when the audit file cannot be written", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "operator-merge-audit-"));
+    const s = setup();
+    s.github.failMergeOn.set(7, httpError(500));
+    // A directory, so the append fails.
+    const deps = { ...s.deps, audit: new JsonlAudit(dir) };
+    await expect(operatorMerge(req, deps)).rejects.toThrow("HTTP 500");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["MERGED", { outcome: "already-merged" }],
+    ["CLOSED", refused("closed")],
+  ] as const)("judges %s without reading checks", async (state, response) => {
+    const s = setup({ live: { state } });
+    s.github.prChecks = async () => {
+      s.calls.push("prChecks");
+      throw httpError(502);
+    };
+    expect(await operatorMerge(req, s.deps)).toEqual(response);
+    expect(s.calls).toEqual(["livePullRequest"]);
+    expect(s.audited).toEqual([
+      { entry: { ...req, response, headSha: SHA }, at: AT },
+    ]);
   });
 
   it("writes exactly one whole audit entry per outcome", async () => {

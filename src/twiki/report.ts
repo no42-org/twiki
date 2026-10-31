@@ -197,6 +197,9 @@ function repoLines(repo: RepoResult, shadow: boolean): string[] {
   for (const pr of by(shadow ? "merged" : "would-merge")) {
     lines.push(`  ✅ ${pr.status} #${pr.number} — ${pr.title}`);
   }
+  for (const pr of by("already-merged")) {
+    lines.push(`  ☑️ already merged #${pr.number} — ${pr.title} (${pr.detail})`);
+  }
   for (const pr of by("flagged-major")) {
     const mark = pr.security ? "🚨" : "🔶";
     lines.push(`  ${mark} flagged #${pr.number} — ${pr.title} (${pr.detail})`);

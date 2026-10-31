@@ -11,18 +11,24 @@ import type { RunResult } from "./result.js";
 // every decision is re-derived from GitHub each tick (D4); this is for humans
 // to inspect what happened, not a source of truth the agent reads back.
 
+/**
+ * One operator merge. `error` replaces `response` when the merge attempt threw:
+ * nothing was answered, and the merge may still have landed.
+ */
+export type OperatorMergeEntry = {
+  repo: string;
+  number: number;
+  headSha: string | null;
+} & ({ response: MergeResponse } | { error: string });
+
 export interface AuditSink {
   record(result: RunResult, at: string): void;
-  /** One line per merge the operator asked for, whatever the outcome. */
-  recordOperatorMerge(
-    entry: {
-      repo: string;
-      number: number;
-      response: MergeResponse;
-      headSha: string | null;
-    },
-    at: string,
-  ): void;
+  /**
+   * One line per merge the operator asked for, whatever the outcome. The
+   * exception is a read that throws before any merge was tried: that is logged
+   * only, because nothing can have happened.
+   */
+  recordOperatorMerge(entry: OperatorMergeEntry, at: string): void;
 }
 
 export class JsonlAudit implements AuditSink {
@@ -50,10 +56,7 @@ export class JsonlAudit implements AuditSink {
     }
   }
 
-  recordOperatorMerge(
-    entry: Parameters<AuditSink["recordOperatorMerge"]>[0],
-    at: string,
-  ): void {
+  recordOperatorMerge(entry: OperatorMergeEntry, at: string): void {
     try {
       appendFileSync(
         this.path,

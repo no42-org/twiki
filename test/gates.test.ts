@@ -12,6 +12,7 @@ import {
   isFailing,
   mergeBlock,
   operatorMergeBlock,
+  settledBlock,
   withinMergePolicy,
 } from "../src/twiki/gates.js";
 import { makeBump, makePr, makeRun } from "./fakes.js";
@@ -168,6 +169,12 @@ describe("operatorMergeBlock", () => {
     headSha: "a",
     reviewDecision: "APPROVED",
   } as const;
+
+  it("settles MERGED and CLOSED without checks, and nothing else", () => {
+    expect(settledBlock({ ...open, state: "MERGED" })).toBe("already-merged");
+    expect(settledBlock({ ...open, state: "CLOSED" })).toBe("closed");
+    expect(settledBlock(open)).toBeNull();
+  });
 
   it("walks the whole table", () => {
     expect(operatorMergeBlock(open, "green")).toBeNull();

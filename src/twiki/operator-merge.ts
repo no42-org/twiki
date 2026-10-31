@@ -12,7 +12,7 @@ import type {
 import { foldSlug } from "../core/slug.js";
 import type { GitHubPort } from "../github/port.js";
 import type { AuditSink } from "./audit.js";
-import { operatorMergeBlock } from "./gates.js";
+import { operatorMergeBlock, settledBlock } from "./gates.js";
 
 export interface OperatorMergeDeps {
   config: Config;
@@ -26,7 +26,7 @@ export interface OperatorMergeDeps {
 
 const SLUG = /^[^/\s]+\/[^/\s]+$/;
 
-function statusOf(err: unknown): number | null {
+export function statusOf(err: unknown): number | null {
   const s = (err as { status?: unknown } | null)?.status;
   return typeof s === "number" ? s : null;
 }
@@ -44,6 +44,7 @@ export async function operatorMerge(
 ): Promise<MergeResponse> {
   const { config, github, audit, now, log } = deps;
   let headSha: string | null = null;
+  let attempted = false;
   const done = (response: MergeResponse): MergeResponse => {
     audit.recordOperatorMerge(
       { repo: String(request.repo), number: request.number, response, headSha },
@@ -73,11 +74,14 @@ export async function operatorMerge(
   try {
     const live = await github.livePullRequest(repo, request.number);
     headSha = live.headSha;
-    const checks = await github.prChecks(repo, live.headSha);
-    const block = operatorMergeBlock(live, checks);
+    // A settled pull request costs one read, and a checks failure cannot hide it.
+    const block =
+      settledBlock(live) ??
+      operatorMergeBlock(live, await github.prChecks(repo, live.headSha));
     if (block === "already-merged") return done({ outcome: "already-merged" });
     if (block) return refuse(block);
 
+    attempted = true;
     try {
       await github.mergePR(repo, request.number, live.headSha);
     } catch (err) {
@@ -93,11 +97,17 @@ export async function operatorMerge(
     }
     return done({ outcome: "merged" });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     log(
-      `operator merge of ${request.repo}#${request.number} failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      `operator merge of ${request.repo}#${request.number} failed: ${message}`,
     );
+    // After an attempt, a throw does not mean nothing merged, so it is recorded.
+    if (attempted) {
+      audit.recordOperatorMerge(
+        { repo: request.repo, number: request.number, error: message, headSha },
+        now(),
+      );
+    }
     throw err;
   }
 }
