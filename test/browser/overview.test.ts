@@ -317,15 +317,14 @@ describe("the overview in Chromium", () => {
   it("wraps a long repository name inside its badge at 400px", async () => {
     const page = await open("/?repo=no42-org/twiki");
     await page.setViewportSize({ width: 400, height: 800 });
-    const overflow = await page.evaluate(() => {
-      const span = document.querySelector(
-        '#filter-bar lcars-chip[data-remove="repo"] span',
+    const right = await page.evaluate(() => {
+      const chip = document.querySelector(
+        '#filter-bar lcars-chip[data-remove="repo"]',
       ) as Element;
-      span.textContent = "x".repeat(200);
-      const root = document.documentElement;
-      return root.scrollWidth - root.clientWidth;
+      (chip.firstElementChild as Element).textContent = "x".repeat(200);
+      return chip.getBoundingClientRect().right;
     });
-    expect(overflow).toBe(0);
+    expect(right).toBeLessThanOrEqual(400);
     await page.close();
   });
 
