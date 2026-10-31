@@ -4,10 +4,17 @@
  */
 
 import { Hono } from "hono";
+import { z } from "zod";
+import type {
+  MergeRefusal,
+  MergeRequest,
+  MergeResponse,
+} from "../../core/merge.js";
 import { DEFAULT_RANK_POLICY, type RankPolicy } from "../../core/rank.js";
 import { DEFAULT_HUNG_AFTER_MS } from "../../core/run-verdict.js";
+import { foldSlug, watchKey } from "../../core/slug.js";
 import { DEFAULT_REVIEW_BUDGET_DAYS, defaultCutRank } from "../../core/tier.js";
-import type { RepoRef } from "../../core/types.js";
+import type { Mode, RepoRef } from "../../core/types.js";
 import type { BoardDeps } from "../attention/board.js";
 import type { FreshnessPolicy } from "../attention/freshness.js";
 import { LANE as COVERAGE_LANE } from "../collect/coverage.js";
@@ -26,7 +33,7 @@ import { buildRepoView, type RepoViewDeps } from "./repo-view.js";
 /**
  * What the web role is handed.
  *
- * Five of these are optional, and that is deliberate: the many tests that
+ * Eight of these are optional, and that is deliberate: the many tests that
  * construct an app legitimately want the defaults, and making a field
  * required costs every one of those call sites. The production wiring proves
  * it supplies all of them anyway, by returning `Required<AppDeps>` from
@@ -86,7 +93,42 @@ export interface AppDeps {
    * Defaults to tracked, which is what an absent key means.
    */
   releaseTracked?: (repo: RepoRef) => boolean;
+  /** The mode twiki runs in. Defaults to shadow, which merges nothing. */
+  mode?: Mode;
+  /** Asks twiki to merge. Null when TWIKI_MERGE_URL is unset, the default. */
+  requestMerge?: ((request: MergeRequest) => Promise<MergeResponse>) | null;
   now: () => Date;
+}
+
+const MERGE_BODY = z.object({
+  repo: z.string(),
+  number: z.number().int().positive(),
+});
+
+const JSON_CONTENT_TYPE = /^application\/json\s*(;|$)/i;
+
+/**
+ * Whether the browser says this request came from a page on this host.
+ *
+ * Written here because Hono's `csrf` does not cover this route. It only looks
+ * at form content types, so a JSON post passes it with any Origin or none
+ * (checked against hono 4.13.13).
+ *
+ * Fails closed: a browser always sends Origin on a POST, so a missing one is
+ * not a browser on this page, and an opaque `null` does not parse. The host
+ * alone is compared, because behind a TLS proxy the page is https while this
+ * listener sees http.
+ */
+function isSameOrigin(
+  origin: string | undefined,
+  host: string | undefined,
+): boolean {
+  if (origin === undefined || host === undefined) return false;
+  try {
+    return new URL(origin).host === host.toLowerCase();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -144,6 +186,10 @@ export interface ResolvedDeps {
   defaultBranchOf: (repo: RepoRef) => string | null;
   /** Whether repos.yaml leaves the release signal on for a repository. */
   releaseTracked: (repo: RepoRef) => boolean;
+  /** The mode twiki runs in. */
+  mode: Mode;
+  /** Asks twiki to merge; null when merging is not configured. */
+  requestMerge: ((request: MergeRequest) => Promise<MergeResponse>) | null;
 }
 
 /** Every default this role applies, in one place. */
@@ -176,6 +222,8 @@ export function resolveAppDeps(deps: AppDeps): ResolvedDeps {
     // binding.
     defaultBranchOf: (repo) => defaultBranchOrNull(deps, repo),
     releaseTracked: deps.releaseTracked ?? (() => true),
+    mode: deps.mode ?? "shadow",
+    requestMerge: deps.requestMerge ?? null,
   };
 }
 
@@ -192,9 +240,10 @@ export function resolveAppDeps(deps: AppDeps): ResolvedDeps {
 // optional for the many tests that legitimately want the defaults, so the
 // guard costs no test call site.
 //
-// `ResolvedDeps` carries the same eleven members `BoardDeps` needs today. That
-// is a coincidence of the overview wanting everything, not an identity: the
-// repository view swaps the resolver for one resolved branch.
+// `ResolvedDeps` carries the eleven members `BoardDeps` needs today, plus the
+// two the merge route reads. That is a coincidence of the overview wanting
+// nearly everything, not an identity: the repository view swaps the resolver
+// for one resolved branch.
 
 /** The overview's dependencies. */
 export function boardDeps(resolved: ResolvedDeps): Required<BoardDeps> {
@@ -252,8 +301,7 @@ export function createApp(deps: AppDeps): Hono {
       deps.watched,
       now,
       boardDeps(resolved),
-      // Every icon dims until this route can reach twiki.
-      { mode: "shadow", configured: false },
+      { mode: resolved.mode, configured: resolved.requestMerge !== null },
     );
     // Without the doctype browsers render in quirks mode, where the box model
     // and table metrics differ from what the styles were written against.
@@ -310,6 +358,54 @@ export function createApp(deps: AppDeps): Hono {
     );
     const body = RepoPage({ view, generatedAt: now.toISOString() });
     return c.html(`<!DOCTYPE html>${body}`);
+  });
+
+  // The one route that causes a write, so it is the one route that checks who
+  // is asking. twiki repeats the allowlist and mode checks and decides. These
+  // spare it a call and give the same answer in the same order.
+  app.post("/merge", async (c) => {
+    c.header("Cache-Control", "no-store");
+    if (!isSameOrigin(c.req.header("origin"), c.req.header("host"))) {
+      return c.text("Forbidden", 403);
+    }
+    if (!JSON_CONTENT_TYPE.test(c.req.header("content-type") ?? "")) {
+      return c.text("Unsupported Media Type", 415);
+    }
+
+    let raw: unknown;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    const parsed = MERGE_BODY.safeParse(raw);
+    if (!parsed.success) {
+      return c.json(
+        { error: "expected { repo: string, number: integer }" },
+        400,
+      );
+    }
+    const request: MergeRequest = parsed.data;
+
+    const refuse = (refusal: MergeRefusal) =>
+      c.json<MergeResponse>({ outcome: "refused", refusal });
+
+    // Folded, because stored slugs are lowercased and repos.yaml may declare
+    // mixed case. The slug goes on as sent: twiki resolves the declared casing.
+    const key = foldSlug(request.repo);
+    if (!deps.watched.some((repo) => watchKey(repo) === key)) {
+      return refuse("not-allowlisted");
+    }
+    if (resolved.mode !== "enforce") return refuse("shadow-mode");
+    if (resolved.requestMerge === null) return refuse("unreachable");
+
+    try {
+      return c.json<MergeResponse>(await resolved.requestMerge(request));
+    } catch {
+      // The client has logged the cause. Nothing about the inside of the
+      // Compose network belongs in a response body.
+      return refuse("unreachable");
+    }
   });
 
   /** Liveness only. It deliberately says nothing about collection health. */
