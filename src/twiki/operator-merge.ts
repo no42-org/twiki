@@ -3,8 +3,13 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { type Config, isAllowlisted } from "../core/config.js";
-import type { MergeRequest, MergeResponse } from "../core/merge.js";
+import type { Config } from "../core/config.js";
+import type {
+  MergeRefusal,
+  MergeRequest,
+  MergeResponse,
+} from "../core/merge.js";
+import { foldSlug } from "../core/slug.js";
 import type { GitHubPort } from "../github/port.js";
 import type { AuditSink } from "./audit.js";
 import { operatorMergeBlock } from "./gates.js";
@@ -44,9 +49,8 @@ export async function operatorMerge(
     );
     return response;
   };
-  const refuse = (
-    refusal: Extract<MergeResponse, { refusal: unknown }>["refusal"],
-  ) => done({ outcome: "refused", refusal });
+  const refuse = (refusal: MergeRefusal) =>
+    done({ outcome: "refused", refusal });
 
   if (
     typeof request.repo !== "string" ||
@@ -56,9 +60,12 @@ export async function operatorMerge(
   ) {
     return refuse("not-allowlisted");
   }
-  const [owner, name] = request.repo.split("/") as [string, string];
+  // The store holds lowercased slugs but repos.yaml may declare mixed case.
+  // GitHub calls use the declared spelling.
+  const declared = config.declaredSlugs.get(foldSlug(request.repo));
+  if (declared === undefined) return refuse("not-allowlisted");
+  const [owner, name] = declared.split("/") as [string, string];
   const repo = { owner, name };
-  if (!isAllowlisted(config, repo)) return refuse("not-allowlisted");
   if (config.mode !== "enforce") return refuse("shadow-mode");
 
   try {

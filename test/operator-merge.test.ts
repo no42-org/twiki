@@ -22,17 +22,20 @@ function setup(
     mode?: "shadow" | "enforce";
     checks?: FakeRepoData["prChecks"][string];
     live?: Partial<LivePullRequest>;
+    declared?: string;
+    rawPrs?: FakeRepoData["rawPrs"];
   } = {},
 ) {
+  const declared = over.declared ?? SLUG;
   const data: FakeRepoData = {
-    rawPrs: [],
+    rawPrs: over.rawPrs ?? [],
     prChecks: { [SHA]: over.checks ?? "green" },
     mainChecks: "green",
     latestTag: "v1.2.3",
     defaultSha: "main-sha",
   };
-  const github = new FakeGitHub(new Map([[SLUG, data]]));
-  github.live.set(`${SLUG}#7`, {
+  const github = new FakeGitHub(new Map([[declared, data]]));
+  github.live.set(`${declared}#7`, {
     state: "OPEN",
     isDraft: false,
     headSha: SHA,
@@ -54,7 +57,7 @@ function setup(
   const deps = {
     config: buildConfig({
       mode: over.mode ?? "enforce",
-      repos: [{ repo: SLUG }],
+      repos: [{ repo: declared }],
     }),
     github,
     audit: {
@@ -89,7 +92,10 @@ describe("operatorMerge", () => {
   it.each([
     ["outside the allowlist", { repo: "other/thing", number: 7 }],
     ["malformed repo", { repo: "nonsense", number: 7 }],
+    ["non-string repo", { repo: 42 as unknown as string, number: 7 }],
     ["non-integer number", { repo: SLUG, number: 7.5 }],
+    ["zero", { repo: SLUG, number: 0 }],
+    ["negative number", { repo: SLUG, number: -1 }],
     ["non-numeric number", { repo: SLUG, number: "7" as unknown as number }],
   ])("refuses %s with no GitHub call", async (_n, request) => {
     const s = setup();
@@ -97,8 +103,33 @@ describe("operatorMerge", () => {
       refused("not-allowlisted"),
     );
     expect(s.calls).toEqual([]);
-    expect(s.audited).toHaveLength(1);
-    expect(s.audited[0]?.entry.response).toEqual(refused("not-allowlisted"));
+    expect(s.audited).toEqual([
+      {
+        entry: {
+          repo: String(request.repo),
+          number: request.number,
+          response: refused("not-allowlisted"),
+          headSha: null,
+        },
+        at: AT,
+      },
+    ]);
+  });
+
+  it("resolves a lowercased slug to the declared casing", async () => {
+    const declared = "no42-org/CoolModFiles";
+    const s = setup({ declared });
+    const request = { repo: "no42-org/coolmodfiles", number: 7 };
+    expect(await operatorMerge(request, s.deps)).toEqual({ outcome: "merged" });
+    // The fake keys by the spelling it is called with, so this only merges
+    // if the declared casing reached GitHub.
+    expect(s.github.merged).toEqual([{ repo: declared, number: 7 }]);
+    expect(s.audited).toEqual([
+      {
+        entry: { ...request, response: { outcome: "merged" }, headSha: SHA },
+        at: AT,
+      },
+    ]);
   });
 
   it("merges a green, approved pull request at the live head sha", async () => {
@@ -128,8 +159,19 @@ describe("operatorMerge", () => {
   });
 
   it("does not apply the version rule: a major bump merges when green", async () => {
-    // The request carries no title, and nothing here reads one.
-    const s = setup();
+    const s = setup({
+      rawPrs: [
+        {
+          number: 7,
+          title: "Bump demo from 1.0.0 to 2.0.0",
+          branch: "dependabot/demo-2.0.0",
+          headSha: SHA,
+          body: "",
+          isSecurity: false,
+          dependency: { name: "demo", from: "1.0.0", to: "2.0.0" },
+        },
+      ],
+    });
     expect(await operatorMerge(req, s.deps)).toEqual({ outcome: "merged" });
   });
 
@@ -187,6 +229,16 @@ describe("operatorMerge", () => {
       outcome: "already-merged",
     });
     expect(s.calls).not.toContain("mergePR");
+    expect(s.audited).toEqual([
+      {
+        entry: {
+          ...req,
+          response: { outcome: "already-merged" },
+          headSha: SHA,
+        },
+        at: AT,
+      },
+    ]);
   });
 
   it("logs and rethrows any other error, auditing nothing", async () => {
@@ -198,21 +250,18 @@ describe("operatorMerge", () => {
     expect(s.github.merged).toEqual([]);
   });
 
-  it("writes exactly one audit entry per outcome", async () => {
-    const outcomes: MergeResponse[] = [];
-    for (const over of [
-      { checks: "red" as const },
-      { checks: "green" as const },
-      { live: { state: "CLOSED" as const } },
-    ]) {
+  it("writes exactly one whole audit entry per outcome", async () => {
+    const cases = [
+      [{ checks: "red" as const }, refused("ci-failed")],
+      [{ checks: "green" as const }, { outcome: "merged" }],
+      [{ live: { state: "CLOSED" as const } }, refused("closed")],
+    ] as const;
+    for (const [over, response] of cases) {
       const s = setup(over);
-      outcomes.push(await operatorMerge(req, s.deps));
-      expect(s.audited).toHaveLength(1);
+      expect(await operatorMerge(req, s.deps)).toEqual(response);
+      expect(s.audited).toEqual([
+        { entry: { ...req, response, headSha: SHA }, at: AT },
+      ]);
     }
-    expect(outcomes).toEqual([
-      refused("ci-failed"),
-      { outcome: "merged" },
-      refused("closed"),
-    ]);
   });
 });
