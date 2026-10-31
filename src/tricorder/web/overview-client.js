@@ -143,9 +143,13 @@ function start() {
     chip.setAttribute("pressed", "");
     const label = labels.get(`${facet}:${value}`) ?? value;
     chip.setAttribute("remove-label", `Remove filter ${label}`);
+    // The chip's body also removes, and its slot is the only way to name it.
+    const prefix = document.createElement("span");
+    prefix.className = "vh";
+    prefix.textContent = "Remove filter ";
     const text = document.createElement("span");
     text.textContent = label;
-    chip.append(text);
+    chip.append(prefix, text);
     return chip;
   }
 
@@ -212,12 +216,18 @@ function start() {
   });
 
   // The chip's body is a toggle of its own, but a badge only ever goes away.
-  const removeBadge = ({ target }) => {
+  // Every badge is rebuilt, so focus moves to the one that took this one's place.
+  const removeBadge = async ({ target }) => {
+    const index = [...bar.querySelectorAll("lcars-chip")].indexOf(target);
     filters[target.dataset.remove].delete(target.dataset.value);
     render();
+    const chips = bar.querySelectorAll("lcars-chip");
+    const next = chips[index] ?? chips[index - 1];
+    await next?.updateComplete;
+    next?.focus();
   };
-  document.addEventListener("lcars-remove", removeBadge);
-  document.addEventListener("lcars-toggle", removeBadge);
+  bar.addEventListener("lcars-remove", removeBadge);
+  bar.addEventListener("lcars-toggle", removeBadge);
 
   render();
 }

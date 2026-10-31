@@ -35,7 +35,7 @@ const STYLE = `
   .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-height: 32px; margin-bottom: 6px; font-size: 19px; color: ${C.gold}; letter-spacing: .05em; }
   lcars-chip { --lcars-font-size-xs: 16px; max-width: 100%; }
   /* The chip uppercases its slot, and a repository name is an identifier. */
-  lcars-chip.repo span { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; text-transform: none; white-space: normal; overflow-wrap: anywhere; }
+  lcars-chip.repo span:not(.vh) { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; text-transform: none; white-space: normal; overflow-wrap: anywhere; }
   #clear { all: unset; cursor: pointer; color: ${C.ice}; font-size: 17px; }
   /* A scroll container clips what paints outside it, so the focus outline
      needs room inside it. */

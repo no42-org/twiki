@@ -167,7 +167,8 @@ describe("the overview in Chromium", () => {
     const size = 100;
     const [above, below] = await page.evaluate(async (px) => {
       const font = `${px}px Antonio`;
-      await document.fonts.load(font);
+      const faces = await document.fonts.load(font);
+      if (faces.length === 0) throw new Error("Antonio did not load");
       const context = document
         .createElement("canvas")
         .getContext("2d") as CanvasRenderingContext2D;
@@ -232,16 +233,69 @@ describe("the overview in Chromium", () => {
     await page.close();
   });
 
-  it("takes hover from the library's token, not a copied number", async () => {
+  it("takes hover and press from the library's tokens, not copied numbers", async () => {
     const page = await open();
     await page.addStyleTag({
-      content: ":root { --lcars-hover-brightness: 1.5; }",
+      content: `:root {
+        --lcars-hover-brightness: 1.5;
+        --lcars-active-brightness: 1.6;
+        --lcars-active-scale: 0.9;
+      }`,
     });
     const pill = '#rows button[data-value="CRITICAL"]';
+    const style = () =>
+      page.$eval(pill, (el) => {
+        const s = getComputedStyle(el);
+        return { filter: s.filter, transform: s.transform };
+      });
     await page.hover(pill);
-    expect(await page.$eval(pill, (el) => getComputedStyle(el).filter)).toBe(
-      "brightness(1.5)",
+    expect(await style()).toEqual({
+      filter: "brightness(1.5)",
+      transform: "none",
+    });
+    await page.click(pill);
+    await page.mouse.move(0, 0);
+    expect(await style()).toEqual({
+      filter: "brightness(1.6)",
+      transform: "matrix(0.9, 0, 0, 0.9, 0, 0)",
+    });
+    await page.close();
+  });
+
+  it("names the badge's body for what it does", async () => {
+    const page = await open("/?severity=CRITICAL");
+    expect(
+      await page.$eval("#filter-bar lcars-chip", (chip) => chip.textContent),
+    ).toBe("Remove filter CRITICAL");
+    await page.close();
+  });
+
+  it("moves focus to the next badge when one is removed", async () => {
+    const page = await open("/?severity=CRITICAL&severity=HIGH");
+    await page.focus('[aria-label="Remove filter CRITICAL"]');
+    await page.keyboard.press("Space");
+    await page.waitForFunction(
+      () => document.activeElement?.tagName === "LCARS-CHIP",
     );
+    expect(
+      await page.evaluate(
+        () => (document.activeElement as HTMLElement).dataset.value,
+      ),
+    ).toBe("HIGH");
+    await page.close();
+  });
+
+  it("listens for badge events only inside the filter bar", async () => {
+    const page = await open();
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.evaluate(() => {
+      const chip = document.createElement("lcars-chip");
+      document.body.append(chip);
+      chip.click();
+    });
+    await page.waitForFunction(() => document.querySelector("lcars-chip"));
+    expect(errors).toEqual([]);
     await page.close();
   });
 
@@ -296,8 +350,8 @@ describe("the overview in Chromium", () => {
 
   it("removes a filter from the badge's body as well as its cross", async () => {
     const page = await open("/?severity=CRITICAL&severity=HIGH");
-    await page.click(
-      '#filter-bar lcars-chip[data-value="CRITICAL"] .chip-toggle',
+    await page.$eval('#filter-bar lcars-chip[data-value="CRITICAL"]', (chip) =>
+      (chip as HTMLElement).click(),
     );
     expect(await badges(page)).toEqual(["Remove filter HIGH"]);
     expect(new URL(page.url()).search).toBe("?severity=HIGH");
@@ -307,7 +361,7 @@ describe("the overview in Chromium", () => {
   it("keeps a repository's casing on its badge", async () => {
     const page = await open("/?repo=no42-org/twiki");
     const transform = await page.$eval(
-      '#filter-bar lcars-chip[data-remove="repo"] span',
+      '#filter-bar lcars-chip[data-remove="repo"] span:not(.vh)',
       (el) => getComputedStyle(el).textTransform,
     );
     expect(transform).toBe("none");
@@ -317,14 +371,16 @@ describe("the overview in Chromium", () => {
   it("wraps a long repository name inside its badge at 400px", async () => {
     const page = await open("/?repo=no42-org/twiki");
     await page.setViewportSize({ width: 400, height: 800 });
-    const right = await page.evaluate(() => {
+    const [right, room] = await page.evaluate(() => {
       const chip = document.querySelector(
         '#filter-bar lcars-chip[data-remove="repo"]',
       ) as Element;
-      (chip.firstElementChild as Element).textContent = "x".repeat(200);
-      return chip.getBoundingClientRect().right;
+      (chip.lastElementChild as Element).textContent = "x".repeat(200);
+      return [chip, chip.parentElement as Element].map(
+        (el) => el.getBoundingClientRect().right,
+      );
     });
-    expect(right).toBeLessThanOrEqual(400);
+    expect(right).toBeLessThanOrEqual(room as number);
     await page.close();
   });
 
