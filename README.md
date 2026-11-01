@@ -4,6 +4,10 @@
 [![Release](https://img.shields.io/github/v/release/no42-org/twiki?sort=semver)](https://github.com/no42-org/twiki/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+> **gitricorder, the dashboard, has moved to <https://code.no42.org/no42/gitricorder>.**
+> The code here is the last version that carried both the bot and the dashboard, and the bot is on hold.
+> Nothing below is maintained until it comes back.
+
 Autonomous Dependabot/Security PR manager for a set of GitHub repositories.
 It merges green dependency PRs that are within policy and reports to chat.
 It never releases: humans tag, and gitricorder's Release column tells them when a repository is worth it.
