@@ -539,46 +539,6 @@ describe("the overview", () => {
         });
         return (await app.request("/")).text();
       };
-      const icons = (html: string) =>
-        [...html.matchAll(/<button type="button" class="merge"[^>]*>/g)].map(
-          (m) => m[0],
-        );
-
-      it("names what an enabled icon will do", async () => {
-        seed("graphql-pull-requests", [pr({ ...clear, number: 12 })]);
-        seed("rest-actions-runs", [check("success")]);
-        expect(icons(await page())).toEqual([
-          '<button type="button" class="merge" data-repo="no42-org/twiki" data-number="12" aria-label="Merge #12 in twiki" title="Merge">',
-        ]);
-      });
-
-      it("reaches the reason on a dimmed icon, which stays focusable", async () => {
-        seed("graphql-pull-requests", [pr({ ...clear, number: 12 })]);
-        seed("rest-actions-runs", [check("failure")]);
-        expect(icons(await page())).toEqual([
-          '<button type="button" class="merge" data-repo="no42-org/twiki" data-number="12" aria-disabled="true" aria-label="Cannot merge #12: CI failed" title="CI failed">',
-        ]);
-      });
-
-      it("draws the icon before the ID", async () => {
-        seed("graphql-pull-requests", [pr({ ...clear, number: 12 })]);
-        seed("rest-actions-runs", [check("success")]);
-        const html = await page();
-        const cell = html.match(/<td class="i">.*?<\/td>/s)?.[0] ?? "";
-        expect(cell.indexOf('class="merge"')).toBeGreaterThan(-1);
-        expect(cell.indexOf('class="merge"')).toBeLessThan(
-          cell.indexOf('class="num"'),
-        );
-      });
-
-      it("leaves security and release rows without one, rows and all", async () => {
-        seedAlerts([makeAlert({ number: 1 })]);
-        seedRelease(evidence());
-        const html = await page();
-        expect(html.match(/<tr data-kind=/g)).toHaveLength(2);
-        expect(icons(html)).toEqual([]);
-      });
-
       it("embeds the refusal words for the client, unchanged", async () => {
         const attribute = (await page()).match(/data-refusals="([^"]*)"/)?.[1];
         expect(JSON.parse((attribute ?? "").replaceAll("&quot;", '"'))).toEqual(
@@ -1055,7 +1015,7 @@ describe("the overview", () => {
         now: () => NOW,
       });
 
-    it("renders every row into the HTML, so the table needs no script", async () => {
+    it("hands every row to the table, escaped", async () => {
       seedAlerts([makeAlert({ number: 1 }), makeAlert({ number: 2 })]);
       const res = await app().request("/");
       const html = await res.text();
@@ -1063,7 +1023,8 @@ describe("the overview", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("cache-control")).toBe("no-store");
       expect(html.startsWith("<!DOCTYPE html>")).toBe(true);
-      expect(html.match(/<tr data-kind=/g)).toHaveLength(2);
+      const rows = html.match(/data-rows="([^"]*)"/)?.[1] ?? "";
+      expect(JSON.parse(rows.replaceAll("&quot;", '"'))).toHaveLength(2);
       expect(html).toContain("<title>2 security");
       expect(html).toContain('<lcars-frame theme="tng"');
       expect(html).toContain('data-lcars-theme="tng"');
@@ -1082,26 +1043,9 @@ describe("the overview", () => {
       expect(html).toContain("&lt;img src=x");
     });
 
-    it("opens both GitHub links in a new tab, safely", async () => {
-      seedAlerts([makeAlert({ number: 1 })]);
-      const html = await (await app().request("/")).text();
-      const links = [...html.matchAll(/<a [^>]*>/g)].map((m) => m[0]);
-      expect(links).toHaveLength(2);
-      for (const link of links) {
-        expect(link).toContain('target="_blank"');
-        expect(link).toContain('rel="noopener noreferrer"');
-      }
-    });
-
     it("keeps every button a real, labelled control, and every sound off", async () => {
       seedAlerts([makeAlert({ number: 1 })]);
       const html = await (await app().request("/")).text();
-      expect(html).toContain('aria-label="Filter by repository twiki"');
-      expect(html).toContain('aria-label="Filter by severity HIGH"');
-      // Before the script runs, and for good without it.
-      for (const [pill] of html.matchAll(/<button[^>]*class="pill[^>]*>/g)) {
-        expect(pill).toContain('aria-pressed="false"');
-      }
       for (const [button] of html.matchAll(/<lcars-button[^>]*>/g)) {
         expect(button).toContain('sound="none"');
       }

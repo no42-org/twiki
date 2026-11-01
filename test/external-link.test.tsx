@@ -114,7 +114,8 @@ describe("every page's outbound links", () => {
 
   // Minimum outbound anchors per page, so the https branch of the loop is
   // known to have run: the queue row, the alert plus the review request on
-  // the repo page, the review row on /reviews. The overview links inward only.
+  // the repo page, the review row on /reviews. The overview's links are drawn in the browser,
+  // so test/browser checks those, and here its row data must carry no bad URL.
   it.each([
     ["/", 0],
     ["/repo/no42-org/twiki", 2],
@@ -123,7 +124,6 @@ describe("every page's outbound links", () => {
     async (path, outbound) => {
       const html = await render(path);
       const anchors = [...html.matchAll(/<a [^>]*>/g)].map((m) => m[0]);
-      expect(anchors.length).toBeGreaterThan(0);
       expect(
         anchors.filter((a) => a.includes('target="_blank"')).length,
       ).toBeGreaterThanOrEqual(outbound);
