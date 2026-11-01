@@ -3,20 +3,26 @@
  * SPDX-License-Identifier: MIT
  */
 
-// The overview's filters, sort and merge clicks. The server renders every row,
-// so filtering and sorting only hide and reorder what is already in the page:
-// with this switched off the table is complete and unfiltered, and nothing can
-// be merged. A merge click is the one thing here that asks the server to act.
-// No imports, because the browser loads this file exactly as written. The pure
+// The overview's rows, filters and merge clicks. The server hands over every row
+// as data and <lcars-table> draws and sorts them, so with this switched off there
+// is no table and nothing can be merged. A merge click is the one thing here that
+// asks the server to act. No imports, because the browser loads this file exactly as written. The pure
 // half is exported for the unit suite.
 
 /** The four filter facets, in badge order. Each is also a query parameter. */
 export const FACETS = ["kind", "severity", "state", "repo"];
 
+/** The table's sort keys, each also a value of the `sort` query parameter. */
+const COLUMNS = ["severity", "state", "repo", "id", "what", "age"];
+
 /** Columns whose first click is descending: the urgent end comes first. */
 const FIRST_DESCENDING = new Set(["severity", "age"]);
 
-const NUMERIC_COLUMNS = new Set(["severity", "age"]);
+const GITHUB_MARK =
+  "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z";
+
+const MERGE_MARK =
+  "M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z";
 
 export function emptyFilters() {
   return Object.fromEntries(FACETS.map((facet) => [facet, new Set()]));
@@ -29,20 +35,31 @@ export function passes(row, filters) {
   );
 }
 
-/** Empty values sort last in both directions, so `dir` never reaches them. */
-export function compareRows(a, b, sort) {
-  const x = a[sort.col];
-  const y = b[sort.col];
-  const emptyX = x === null || x === "";
-  const emptyY = y === null || y === "";
-  if (emptyX || emptyY) return Number(emptyX) - Number(emptyY);
-  const order = NUMERIC_COLUMNS.has(sort.col)
-    ? x - y
-    : String(x).localeCompare(String(y), "en", {
-        numeric: true,
-        sensitivity: "base",
-      });
-  return order * sort.dir;
+/**
+ * One table row. The table sorts on these keys, so severity is its rank and age
+ * its hours: as words they would sort alphabetically. `view` is the row as the
+ * server sent it.
+ */
+export function tableRow(view) {
+  return {
+    view,
+    severity: view.severityRank,
+    state: view.state,
+    repo: view.repoLabel,
+    id: view.id,
+    what: view.what,
+    age: view.ageHours,
+  };
+}
+
+/** What `passes` reads: filter values, which are not the sort keys. */
+export function filterValues(view) {
+  return {
+    kind: view.group,
+    severity: view.severity ?? "",
+    state: view.state,
+    repo: view.repo,
+  };
 }
 
 /** First direction, reverse, then back to the default order. */
@@ -121,56 +138,214 @@ async function postMerge(repo, number) {
   }
 }
 
-function rowFrom(element) {
-  const data = element.dataset;
-  return {
-    element,
-    kind: data.kind,
-    severity: data.severity ?? "",
-    state: data.state,
-    repo: data.repo,
-    // What the sort reads: the same columns, as sortable values.
-    label: data.label,
-    id: data.id,
-    what: data.what,
-    age: data.age === undefined ? null : Number(data.age),
-    rank: data.rank === undefined ? null : Number(data.rank),
-  };
+function element(tag, attributes = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [name, value] of Object.entries(attributes)) {
+    if (value !== undefined) node.setAttribute(name, value);
+  }
+  node.append(...children);
+  return node;
 }
 
-/** A sort column's value lives under a different name than its filter. */
-function sortable(row) {
-  return {
-    severity: row.rank,
-    state: row.state,
-    repo: row.label,
-    id: row.id,
-    what: row.what,
-    age: row.age,
-  };
+function mark(path) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "currentColor");
+  svg.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS(ns, "path");
+  shape.setAttribute("d", path);
+  svg.append(shape);
+  return svg;
+}
+
+function mergeIcon(view) {
+  return element(
+    "button",
+    {
+      type: "button",
+      class: "merge",
+      "data-repo": view.repo,
+      "data-number": view.id.slice(1),
+      "aria-label": `Merge ${view.id} in ${view.repoLabel}`,
+      title: "Merge",
+    },
+    mark(MERGE_MARK),
+  );
+}
+
+function githubLink(view) {
+  return element(
+    "a",
+    {
+      class: "gh",
+      href: view.repoUrl,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      title: "Open on GitHub",
+    },
+    element("span", { class: "vh" }, `Open ${view.repoLabel} on GitHub in a new tab`),
+    mark(GITHUB_MARK),
+  );
+}
+
+function idLabel(view) {
+  if (view.url === null) return element("span", { class: "num" }, view.id);
+  return element(
+    "a",
+    {
+      class: "num",
+      href: view.url,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      "aria-label": `Open ${view.id} in ${view.repoLabel} on GitHub in a new tab`,
+      title: "Open on GitHub",
+    },
+    view.id,
+  );
+}
+
+function ageCell(view) {
+  const steps = [1, 2, 3, 4, 5].map((step) =>
+    element("i", { class: step <= view.ageStep ? "on" : undefined }),
+  );
+  return element(
+    "span",
+    { class: "age" },
+    element("span", { class: "segs", "aria-hidden": "true" }, ...steps),
+    element("span", { class: "words" }, view.ageWords),
+  );
 }
 
 function start() {
-  const body = document.getElementById("rows");
   const table = document.getElementById("overview-table");
   const bar = document.getElementById("filter-bar");
   const empty = document.getElementById("no-matches");
   const mergeStatus = document.getElementById("merge-status");
-  const rows = [...body.querySelectorAll("tr")].map((tr) => rowFrom(tr));
-  const headers = [...document.querySelectorAll("th[data-col]")];
-  const columns = headers.map((th) => th.dataset.col);
-  const pressable = () => [...document.querySelectorAll("button[data-facet]")];
+  const rows = JSON.parse(table.dataset.rows).map(tableRow);
+  // Every filter control so far, because a filtered-out row keeps its cells.
+  const pressable = new Set(document.querySelectorAll("button[data-facet]"));
   const known = emptyFilters();
   const labels = new Map();
-  for (const button of pressable()) {
+  for (const button of pressable) {
     known[button.dataset.facet].add(button.dataset.value);
-    labels.set(
-      `${button.dataset.facet}:${button.dataset.value}`,
-      button.dataset.label ?? button.dataset.value,
-    );
+  }
+  for (const { view } of rows) {
+    if (view.severity !== null) known.severity.add(view.severity);
+    known.state.add(view.state);
+    known.repo.add(view.repo);
+    labels.set(`repo:${view.repo}`, view.repoLabel);
   }
   const refusalWords = JSON.parse(table.dataset.refusals);
-  let { filters, sort } = parseState(location.search, known, columns);
+  let { filters, sort } = parseState(location.search, known, COLUMNS);
+
+  // The cells live in the table's shadow root, where the page's sheet stops.
+  const cellStyle = new CSSStyleSheet();
+  cellStyle.replaceSync(document.getElementById("overview-style").textContent);
+  table.shadowRoot.adoptedStyleSheets.push(cellStyle);
+
+  function filterButton(facet, value, attributes, ...children) {
+    const button = element(
+      "button",
+      {
+        type: "button",
+        "data-facet": facet,
+        "data-value": value,
+        "aria-pressed": String(filters[facet].has(value)),
+        ...attributes,
+      },
+      ...children,
+    );
+    pressable.add(button);
+    return button;
+  }
+
+  function pill(facet, value, color) {
+    return filterButton(
+      facet,
+      value,
+      {
+        class: `pill ${color ?? ""}`,
+        "aria-label": `Filter by ${facet} ${value}`,
+      },
+      value,
+    );
+  }
+
+  table.columns = [
+    {
+      key: "severity",
+      label: "SEVERITY",
+      sortable: true,
+      render: ({ view }) =>
+        view.severity === null
+          ? ""
+          : pill("severity", view.severity, view.severity),
+    },
+    {
+      key: "state",
+      label: "STATE",
+      sortable: true,
+      render: (row) => {
+        const { state } = row.view;
+        const color =
+          state === "FAILING" || state === "READY" ? state : undefined;
+        row.statePill = pill("state", state, color);
+        return row.statePill;
+      },
+    },
+    {
+      key: "repo",
+      label: "REPOSITORY",
+      sortable: true,
+      mono: true,
+      render: ({ view }) =>
+        element(
+          "span",
+          { class: "line" },
+          ...(view.repoUrl === null ? [] : [githubLink(view)]),
+          filterButton(
+            "repo",
+            view.repo,
+            {
+              class: "rb",
+              "data-label": view.repoLabel,
+              "aria-label": `Filter by repository ${view.repoLabel}`,
+            },
+            view.repoLabel,
+          ),
+        ),
+    },
+    {
+      key: "id",
+      label: "ID",
+      sortable: true,
+      render: (row) => {
+        row.idLabel = idLabel(row.view);
+        return element(
+          "span",
+          { class: "line" },
+          ...(row.view.merge?.enabled ? [mergeIcon(row.view)] : []),
+          row.idLabel,
+        );
+      },
+    },
+    {
+      key: "what",
+      label: "WHAT AND IMPACT",
+      sortable: true,
+      wrap: true,
+      render: ({ view }) => element("span", { class: "d" }, view.what),
+    },
+    {
+      key: "age",
+      label: "AGE",
+      sortable: true,
+      render: ({ view }) => ageCell(view),
+    },
+  ];
 
   function badge(facet, value) {
     const chip = document.createElement("lcars-chip");
@@ -193,31 +368,18 @@ function start() {
   }
 
   function render() {
-    const visible = rows.filter((row) => passes(row, filters));
-    for (const row of rows) row.element.hidden = !visible.includes(row);
-    const ordered =
-      sort === null
-        ? rows
-        : rows.slice().sort((a, b) => compareRows(sortable(a), sortable(b), sort));
-    body.append(...ordered.map((row) => row.element));
+    const visible = rows.filter(({ view }) =>
+      passes(filterValues(view), filters),
+    );
+    // A new array each time: the table does not see one changed in place.
+    table.rows = visible;
+    table.sortKey = sort?.col ?? "";
+    table.sortDirection = sort?.dir < 0 ? "descending" : "ascending";
     table.hidden = visible.length === 0;
     empty.hidden = visible.length > 0;
-    for (const button of pressable()) {
+    for (const button of pressable) {
       const on = filters[button.dataset.facet].has(button.dataset.value);
       button.setAttribute("aria-pressed", String(on));
-    }
-    for (const th of headers) {
-      const active = sort?.col === th.dataset.col;
-      if (active) {
-        th.setAttribute("aria-sort", sort.dir > 0 ? "ascending" : "descending");
-      } else {
-        th.removeAttribute("aria-sort");
-      }
-      th.querySelector(".dir").textContent = active
-        ? sort.dir > 0
-          ? "▲"
-          : "▼"
-        : "";
     }
     const count = document.createElement("span");
     count.textContent = `${visible.length} ITEMS`;
@@ -236,22 +398,29 @@ function start() {
     history.replaceState(null, "", `${location.pathname}${query}`);
   }
 
-  function markMerged(button) {
-    const row = rows.find(({ element }) => element.contains(button));
-    const focused = document.activeElement === button;
-    const pill = row.element.querySelector('[data-facet="state"]');
+  async function markMerged(button) {
+    const row = rows.find(
+      ({ view }) =>
+        view.repo === button.dataset.repo &&
+        view.id === `#${button.dataset.number}`,
+    );
+    const focused = button.getRootNode().activeElement === button;
+    row.view.state = "MERGED";
     row.state = "MERGED";
-    row.element.dataset.state = "MERGED";
+    const pill = row.statePill;
     pill.dataset.value = "MERGED";
     pill.className = "pill MERGED";
     pill.setAttribute("aria-label", "Filter by state MERGED");
     pill.textContent = "MERGED";
     button.remove();
     render();
-    // After the render, because moving a row drops its focus.
-    if (focused) row.element.querySelector(".num").focus();
+    // After the update, because moving a row drops its focus.
+    await table.updateComplete;
+    if (focused) row.idLabel.focus();
   }
 
+  // Only a refused click gets here. Dimmed with aria-disabled, so a keyboard can
+  // still reach the reason.
   function dimIcon(button, reason) {
     button.setAttribute("aria-disabled", "true");
     button.title = reason;
@@ -273,7 +442,7 @@ function start() {
     const reply = await postMerge(repo, Number(number));
     const result = readMergeReply(reply, refusalWords);
     button.removeAttribute("aria-busy");
-    if (result.merged) markMerged(button);
+    if (result.merged) await markMerged(button);
     else dimIcon(button, result.reason);
     // The overview spans repositories, so the number alone would not say which.
     mergeStatus.textContent = result.merged
@@ -282,8 +451,9 @@ function start() {
   }
 
   document.addEventListener("click", (event) => {
-    const target = event.target.closest("button");
-    if (target === null) return;
+    // The first of the path, because the event retargets at the table's edge.
+    const target = event.composedPath()[0].closest?.("button");
+    if (target === null || target === undefined) return;
     if (target.classList.contains("merge")) {
       merge(target);
       return;
@@ -295,11 +465,15 @@ function start() {
       const { value } = target.dataset;
       if (set.has(value)) set.delete(value);
       else set.add(value);
-    } else if (target.dataset.sort !== undefined) {
-      sort = nextSort(sort, target.dataset.sort);
     } else {
       return;
     }
+    render();
+  });
+
+  // The table has already sorted its own way: this puts the cycle back.
+  table.addEventListener("lcars-sort", ({ detail }) => {
+    sort = nextSort(sort, detail.key);
     render();
   });
 

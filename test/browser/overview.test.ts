@@ -22,7 +22,9 @@ import { startServer } from "../../src/tricorder/web/server.js";
 import { makeAlert } from "../fakes.js";
 
 // What the unit suite cannot see: the components upgrade, and the real client
-// script filters, sorts and rewrites the URL in a real Chromium.
+// script draws the rows, filters, sorts and rewrites the URL in a real Chromium.
+// Playwright's selectors pierce the table's shadow root; document.querySelector
+// does not, so code that runs in the page goes through the table's shadowRoot.
 
 const NOW = new Date("2026-09-08T12:00:00.000Z");
 const AT = "2026-09-08T11:55:00.000Z";
@@ -108,9 +110,7 @@ describe("the overview in Chromium", () => {
   };
 
   const ids = (page: Page) =>
-    page.$$eval("#rows tr:not([hidden]) td.i", (cells) =>
-      cells.map((c) => c.textContent),
-    );
+    page.$$eval("lcars-table .num", (cells) => cells.map((c) => c.textContent));
   const badges = (page: Page) =>
     page.$$eval("#filter-bar lcars-chip", (chips) =>
       chips.map((c) => c.getAttribute("remove-label")),
@@ -145,7 +145,7 @@ describe("the overview in Chromium", () => {
   it("reads sentences in the system font, not condensed Antonio", async () => {
     const page = await open();
     const family = await page.$eval(
-      "td.d",
+      "lcars-table .d",
       (el) => getComputedStyle(el).fontFamily,
     );
     expect(family).toContain("system-ui");
@@ -190,7 +190,7 @@ describe("the overview in Chromium", () => {
   it("paints severity solid before any filter is applied", async () => {
     const page = await open();
     const paint = await page.$eval(
-      '#rows button[data-value="CRITICAL"]',
+      'lcars-table button[data-value="CRITICAL"]',
       (el) => getComputedStyle(el).backgroundColor,
     );
     expect(paint).toBe("rgb(255, 85, 85)");
@@ -199,13 +199,13 @@ describe("the overview in Chromium", () => {
 
   it("lines the repository name up with its ID", async () => {
     const page = await open();
-    const [repo, id] = await page.evaluate(() =>
-      ["#rows .rb", "#rows .num"].map((selector) => {
-        const r = (
-          document.querySelector(selector) as Element
-        ).getBoundingClientRect();
-        return r.y + r.height / 2;
-      }),
+    const [repo, id] = await Promise.all(
+      ["lcars-table .rb", "lcars-table .num"].map((selector) =>
+        page.$eval(selector, (el) => {
+          const r = el.getBoundingClientRect();
+          return r.y + r.height / 2;
+        }),
+      ),
     );
     expect(repo).toBeCloseTo(id as number, 0);
     await page.close();
@@ -213,7 +213,7 @@ describe("the overview in Chromium", () => {
 
   it("answers hover and press as lcars-button does, with no ring", async () => {
     const page = await open();
-    const pill = '#rows button[data-value="CRITICAL"]';
+    const pill = 'lcars-table button[data-value="CRITICAL"]';
     const style = () =>
       page.$eval(pill, (el) => {
         const s = getComputedStyle(el);
@@ -228,7 +228,7 @@ describe("the overview in Chromium", () => {
     await page.mouse.move(0, 0);
     expect(
       await page.$eval(
-        '#rows button[data-value="CRITICAL"]',
+        'lcars-table button[data-value="CRITICAL"]',
         (el) => getComputedStyle(el).filter,
       ),
     ).toBe("brightness(1.4)");
@@ -244,7 +244,7 @@ describe("the overview in Chromium", () => {
         --lcars-active-scale: 0.9;
       }`,
     });
-    const pill = '#rows button[data-value="CRITICAL"]';
+    const pill = 'lcars-table button[data-value="CRITICAL"]';
     const style = () =>
       page.$eval(pill, (el) => {
         const s = getComputedStyle(el);
@@ -301,24 +301,11 @@ describe("the overview in Chromium", () => {
     await page.close();
   });
 
-  it("leaves room for a pill's focus outline inside the scrolling table", async () => {
-    const page = await open();
-    const room = await page.evaluate(() => {
-      const wrap = document.querySelector(".table-wrap") as Element;
-      const pill = document.querySelector("#rows .pill") as Element;
-      return (
-        pill.getBoundingClientRect().left - wrap.getBoundingClientRect().left
-      );
-    });
-    expect(room).toBeGreaterThanOrEqual(4);
-    await page.close();
-  });
-
   it("keeps the boxes on screen at 400px, with the table scrolling inside itself", async () => {
     const page = await open();
     await page.setViewportSize({ width: 400, height: 800 });
     const reach = await page.evaluate(() =>
-      [...document.querySelectorAll(".tile, .table-wrap")].map(
+      [...document.querySelectorAll(".tile, lcars-table")].map(
         (el) => el.getBoundingClientRect().right,
       ),
     );
@@ -326,53 +313,94 @@ describe("the overview in Chromium", () => {
     await page.close();
   });
 
-  it("scrolls a long table inside the frame, not the page", async () => {
-    const page = await open();
-    await page.setViewportSize({ width: 1280, height: 700 });
-    await page.evaluate(async () => {
-      const body = document.getElementById("rows") as Element;
-      const row = body.firstElementChild as Element;
-      for (let i = 0; i < 60; i++) body.append(row.cloneNode(true));
-      await new Promise(requestAnimationFrame);
-    });
-    const measure = () =>
+  describe("with a long table", () => {
+    const lengthen = (page: Page) =>
+      page.evaluate(async () => {
+        const table = document.querySelector("lcars-table") as unknown as {
+          rows: object[];
+          updateComplete: Promise<boolean>;
+        };
+        const [first] = table.rows;
+        table.rows = [
+          ...table.rows,
+          ...Array.from({ length: 60 }, () => ({ ...first })),
+        ];
+        await table.updateComplete;
+        await new Promise(requestAnimationFrame);
+      });
+    const measure = (page: Page) =>
       page.evaluate(() => {
-        const root = document.documentElement;
+        const root = document.querySelector("lcars-table")
+          ?.shadowRoot as ShadowRoot;
         const main = document
           .querySelector("lcars-frame")
           ?.shadowRoot?.querySelector("main") as Element;
-        const last = (
-          document.getElementById("rows") as Element
-        ).lastElementChild?.getBoundingClientRect() as DOMRect;
+        const box = root.querySelector(".scroll") as Element;
+        const rows = root.querySelectorAll("tbody tr");
+        const last = (rows[rows.length - 1] as Element).getBoundingClientRect();
         return {
-          spare: root.scrollHeight - root.clientHeight,
-          overflowing: main.scrollHeight > main.clientHeight,
-          rowHeight: last.height,
-          below: last.bottom - main.getBoundingClientRect().bottom,
+          pageSpare:
+            document.documentElement.scrollHeight -
+            document.documentElement.clientHeight,
+          mainOverflow: main.scrollHeight - main.clientHeight,
+          boxOverflow: box.scrollHeight - box.clientHeight,
+          boxBottom: box.getBoundingClientRect().bottom,
+          mainBottom: main.getBoundingClientRect().bottom,
+          lastBottom: last.bottom,
+          headerTop: (
+            root.querySelector("th") as Element
+          ).getBoundingClientRect().top,
         };
       });
-    const before = await measure();
-    expect(before.spare).toBe(0);
-    expect(before.overflowing).toBe(true);
-    expect(before.below).toBeGreaterThan(0);
 
-    await page.hover("#overview-table");
-    await page.mouse.wheel(0, 100_000);
-    await page.waitForFunction(() => {
-      const rows = document.getElementById("rows") as Element;
-      return (
-        (rows.lastElementChild as Element).getBoundingClientRect().bottom < 700
-      );
+    it("scrolls rows inside the table, under a header that stays", async () => {
+      const page = await open();
+      await page.setViewportSize({ width: 1280, height: 700 });
+      await lengthen(page);
+      const before = await measure(page);
+      expect(before.pageSpare).toBe(0);
+      expect(before.mainOverflow).toBe(0);
+      expect(before.boxOverflow).toBeGreaterThan(0);
+      expect(before.boxBottom).toBeLessThanOrEqual(before.mainBottom);
+      expect(before.lastBottom).toBeGreaterThan(before.boxBottom);
+
+      await page.hover("lcars-table .d");
+      await page.mouse.wheel(0, 100_000);
+      await page.waitForFunction(() => {
+        const box = document
+          .querySelector("lcars-table")
+          ?.shadowRoot?.querySelector(".scroll") as Element;
+        return box.scrollTop + box.clientHeight >= box.scrollHeight - 1;
+      });
+      const after = await measure(page);
+      expect(after.lastBottom).toBeLessThanOrEqual(after.boxBottom);
+      // Up by the scroller's padding, which the library sticks the header past.
+      expect(before.headerTop - after.headerTop).toBeLessThanOrEqual(5);
+      await page.close();
     });
-    const after = await measure();
-    expect(after.rowHeight).toBeGreaterThan(0);
-    expect(after.below).toBeLessThanOrEqual(0);
-    await page.close();
+
+    it("fills the room under the boxes", async () => {
+      const page = await open();
+      await page.setViewportSize({ width: 1280, height: 700 });
+      await lengthen(page);
+      const { boxBottom, mainBottom } = await measure(page);
+      // The main region's padding, and nothing more.
+      expect(mainBottom - boxBottom).toBeLessThanOrEqual(12);
+      await page.close();
+    });
+
+    it("lets the page scroll instead below the frame's narrow breakpoint", async () => {
+      const page = await open();
+      await page.setViewportSize({ width: 400, height: 800 });
+      await lengthen(page);
+      expect((await measure(page)).pageSpare).toBeGreaterThan(0);
+      await page.close();
+    });
   });
 
   it("adds a filter by clicking, shows a badge, and writes the URL", async () => {
     const page = await open();
-    await page.click('#rows button[data-value="CRITICAL"]');
+    await page.click('lcars-table button[data-value="CRITICAL"]');
     expect(await ids(page)).toEqual(["#9"]);
     expect(await badges(page)).toEqual(["Remove filter CRITICAL"]);
     expect(new URL(page.url()).search).toBe("?severity=CRITICAL");
@@ -382,9 +410,11 @@ describe("the overview in Chromium", () => {
 
   it("narrows across facets and removes one badge at a time", async () => {
     const page = await open();
-    await page.click('#rows button[data-facet="repo"][data-label="twiki"]');
+    await page.click(
+      'lcars-table button[data-facet="repo"][data-label="twiki"]',
+    );
     expect((await ids(page)).sort()).toEqual(["#42", "#9"]);
-    await page.click('#rows button[data-value="CRITICAL"]');
+    await page.click('lcars-table button[data-value="CRITICAL"]');
     expect(await ids(page)).toEqual(["#9"]);
     expect(await badges(page)).toHaveLength(2);
 
@@ -434,7 +464,7 @@ describe("the overview in Chromium", () => {
     const page = await open();
     expect(await page.$("#clear")).toBeNull();
     await page.click('.tile[data-value="SECURITY"]');
-    await page.click('#rows button[data-value="HIGH"]');
+    await page.click('lcars-table button[data-value="HIGH"]');
     await page.click("#clear");
     expect(await ids(page)).toHaveLength(3);
     expect(await badges(page)).toEqual([]);
@@ -445,7 +475,7 @@ describe("the overview in Chromium", () => {
 
   it("leaves the box totals alone and marks the box pressed", async () => {
     const page = await open();
-    await page.click('#rows button[data-value="CRITICAL"]');
+    await page.click('lcars-table button[data-value="CRITICAL"]');
     expect(await page.textContent('.tile[data-value="SECURITY"] .count')).toBe(
       "3",
     );
@@ -466,24 +496,23 @@ describe("the overview in Chromium", () => {
     await page.close();
   });
 
+  const AGE_HEADER = 'lcars-table th:has-text("AGE")';
+  const AGE = `${AGE_HEADER} button`;
+
   it("cycles a header through both directions and back", async () => {
     const page = await open();
     const start = await ids(page);
-    await page.click('[data-sort="age"]');
+    await page.click(AGE);
     expect(await ids(page)).toEqual(["#42", "#3", "#9"]);
-    expect(await page.getAttribute('th[data-col="age"]', "aria-sort")).toBe(
-      "descending",
-    );
-    await page.click('[data-sort="age"]');
+    expect(await page.getAttribute(AGE_HEADER, "aria-sort")).toBe("descending");
+    expect(new URL(page.url()).search).toBe("?sort=age&dir=desc");
+    await page.click(AGE);
     expect(await ids(page)).toEqual(["#9", "#3", "#42"]);
-    expect(await page.getAttribute('th[data-col="age"]', "aria-sort")).toBe(
-      "ascending",
-    );
-    await page.click('[data-sort="age"]');
+    expect(await page.getAttribute(AGE_HEADER, "aria-sort")).toBe("ascending");
+    await page.click(AGE);
     expect(await ids(page)).toEqual(start);
-    expect(
-      await page.getAttribute('th[data-col="age"]', "aria-sort"),
-    ).toBeNull();
+    expect(await page.getAttribute(AGE_HEADER, "aria-sort")).toBe("none");
+    expect(new URL(page.url()).search).toBe("");
     await page.close();
   });
 
@@ -491,15 +520,16 @@ describe("the overview in Chromium", () => {
     const page = await open();
     // Reversed, because descending is also the default order and would pass
     // with no sort at all.
-    await page.click('[data-sort="severity"]');
-    await page.click('[data-sort="severity"]');
+    const severity = 'lcars-table th:has-text("SEVERITY") button';
+    await page.click(severity);
+    await page.click(severity);
     expect(await ids(page)).toEqual(["#42", "#3", "#9"]);
     await page.close();
   });
 
   it("sorts IDs as numbers", async () => {
     const page = await open();
-    await page.click('[data-sort="id"]');
+    await page.click('lcars-table th button:text-is("ID")');
     expect(await ids(page)).toEqual(["#3", "#9", "#42"]);
     await page.close();
   });
@@ -518,7 +548,7 @@ describe("the overview in Chromium", () => {
 
   it("works from the keyboard", async () => {
     const page = await open();
-    await page.focus('#rows button[data-value="CRITICAL"]');
+    await page.focus('lcars-table button[data-value="CRITICAL"]');
     await page.keyboard.press("Enter");
     expect(await ids(page)).toEqual(["#9"]);
     await page.focus('[aria-label="Remove filter CRITICAL"]');
@@ -527,11 +557,81 @@ describe("the overview in Chromium", () => {
     await page.close();
   });
 
-  it("shows the full table with scripts off", async () => {
+  it("opens both GitHub links in a new tab, safely", async () => {
+    const page = await open();
+    const links = await page.$$eval("lcars-table a", (anchors) =>
+      anchors.map((a) => [a.getAttribute("target"), a.getAttribute("rel")]),
+    );
+    expect(links).toHaveLength(6);
+    for (const link of links) {
+      expect(link).toEqual(["_blank", "noopener noreferrer"]);
+    }
+    await page.close();
+  });
+
+  it("keeps every filter a labelled button that starts unpressed", async () => {
+    const page = await open();
+    expect(
+      await page.$eval('lcars-table button[data-value="CRITICAL"]', (b) => [
+        b.getAttribute("aria-label"),
+        b.getAttribute("aria-pressed"),
+      ]),
+    ).toEqual(["Filter by severity CRITICAL", "false"]);
+    expect(
+      await page.$eval(".rb", (b) => b.getAttribute("aria-label")),
+    ).toMatch(/^Filter by repository /);
+    await page.close();
+  });
+
+  it("leaves a title's markup as text", async () => {
+    const page = await open();
+    const held = await page.evaluate(async () => {
+      const table = document.querySelector("lcars-table") as unknown as {
+        rows: object[];
+        updateComplete: Promise<boolean>;
+        columns: { key: string; render(row: object): Element }[];
+      };
+      const what = table.columns.find((c) => c.key === "what");
+      const cell = what?.render({
+        view: { what: "<img src=x onerror=1>" },
+      }) as Element;
+      return [cell.textContent, cell.children.length];
+    });
+    expect(held).toEqual(["<img src=x onerror=1>", 0]);
+    await page.close();
+  });
+
+  it("unpresses a pill whose row was filtered out when its filter went", async () => {
+    const page = await open("/?severity=CRITICAL");
+    await page.click('.tile[data-value="RELEASE WORTHY"]');
+    await page.click('[aria-label="Remove filter CRITICAL"]');
+    await page.click('[aria-label="Remove filter RELEASE WORTHY"]');
+    expect(
+      await page.getAttribute(
+        'lcars-table button[data-value="CRITICAL"]',
+        "aria-pressed",
+      ),
+    ).toBe("false");
+    await page.close();
+  });
+
+  it("keeps a repository's casing and a sentence's in the table", async () => {
+    const page = await open();
+    for (const selector of ["lcars-table .rb", "lcars-table .d"]) {
+      expect(
+        await page.$eval(selector, (el) => getComputedStyle(el).textTransform),
+      ).toBe("none");
+    }
+    await page.close();
+  });
+
+  it("says the table needs JavaScript with scripts off", async () => {
     const context = await browser.newContext({ javaScriptEnabled: false });
     const page = await context.newPage();
     await page.goto(base);
-    expect((await page.content()).match(/<tr data-kind=/g)).toHaveLength(3);
+    expect(await page.textContent("noscript")).toContain(
+      "The table needs JavaScript.",
+    );
     await context.close();
   });
 });
@@ -547,7 +647,6 @@ const rgb = (hex: string) => {
 // runs enforce, with a pull request that can merge and one that cannot.
 describe("merging from the overview in Chromium", () => {
   const ENABLED = '.merge[data-number="12"]';
-  const DIMMED = '.merge[data-number="13"]';
 
   let dir: string;
   let store: SqliteStore;
@@ -654,16 +753,14 @@ describe("merging from the overview in Chromium", () => {
     );
     return page;
   };
+  const rowOf = (number: number) =>
+    `lcars-table tr:has(.num:text-is("#${number}"))`;
   const stateOf = (page: Page, number: number) =>
-    page.$eval(`tr[data-id="#${number}"]`, (tr) => {
-      const pill = tr.querySelector('[data-facet="state"]') as HTMLElement;
-      return {
-        row: (tr as HTMLElement).dataset.state,
-        text: pill.textContent,
-        value: pill.dataset.value,
-        label: pill.getAttribute("aria-label"),
-      };
-    });
+    page.$eval(`${rowOf(number)} [data-facet="state"]`, (pill) => ({
+      text: pill.textContent,
+      value: (pill as HTMLElement).dataset.value,
+      label: pill.getAttribute("aria-label"),
+    }));
   const icon = (page: Page, selector: string) =>
     page.$eval(selector, (el) => ({
       disabled: el.getAttribute("aria-disabled"),
@@ -671,19 +768,26 @@ describe("merging from the overview in Chromium", () => {
       label: el.getAttribute("aria-label"),
     }));
 
-  it("paints an enabled icon green and a dimmed one muted", async () => {
+  const refuse = async (page: Page) => {
+    reply = { outcome: "refused", refusal: "head-changed" };
+    await page.click(ENABLED);
+    await page.waitForSelector(`${ENABLED}[aria-disabled="true"]`);
+  };
+
+  it("paints an enabled icon green and a refused one muted", async () => {
     const page = await open();
-    const color = (selector: string) =>
-      page.$eval(selector, (el) => getComputedStyle(el).color);
-    expect(await color(ENABLED)).toBe(rgb(LCARS_COLORS.go));
-    expect(await color(DIMMED)).toBe(rgb(LCARS_COLORS.muted));
+    const color = () => page.$eval(ENABLED, (el) => getComputedStyle(el).color);
+    expect(await color()).toBe(rgb(LCARS_COLORS.go));
+    await refuse(page);
+    await page.mouse.move(0, 0);
+    expect(await color()).toBe(rgb(LCARS_COLORS.muted));
     await page.close();
   });
 
   it("paints a READY pill in the icon's green under black ink", async () => {
     const page = await open();
     expect(
-      await page.$eval('tr[data-id="#12"] [data-facet="state"]', (el) => {
+      await page.$eval(`${rowOf(12)} [data-facet="state"]`, (el) => {
         const s = getComputedStyle(el);
         return [s.backgroundColor, s.color];
       }),
@@ -691,15 +795,50 @@ describe("merging from the overview in Chromium", () => {
     await page.close();
   });
 
-  it("leaves a dimmed icon reachable by keyboard", async () => {
+  it("names what an enabled icon will do", async () => {
+    const page = await open();
+    expect(await icon(page, ENABLED)).toEqual({
+      disabled: null,
+      title: "Merge",
+      label: "Merge #12 in twiki",
+    });
+    await page.close();
+  });
+
+  it("shows no icon on a row that cannot merge", async () => {
     const page = await open();
     expect(
-      await page.$eval(DIMMED, (el) => "disabled" in el && el.disabled),
-    ).toBe(false);
-    await page.focus(DIMMED);
+      await page.$$eval(".merge", (icons) =>
+        icons.map((icon) => (icon as HTMLElement).dataset.number),
+      ),
+    ).toEqual(["12"]);
+    await page.close();
+  });
+
+  it("draws the icon before the ID", async () => {
+    const page = await open();
     expect(
-      await page.evaluate(() => document.activeElement?.getAttribute("title")),
-    ).toBe("CI failed");
+      await page.$eval(`${rowOf(12)} .line:has(.num)`, (line) =>
+        [...line.children].map((c) => c.className),
+      ),
+    ).toEqual(["merge", "num"]);
+    await page.close();
+  });
+
+  it("leaves a refused icon reachable by keyboard", async () => {
+    const page = await open();
+    await refuse(page);
+    expect(
+      await page.$eval(ENABLED, (el) => "disabled" in el && el.disabled),
+    ).toBe(false);
+    await page.focus(ENABLED);
+    expect(
+      await page.evaluate(() =>
+        document
+          .querySelector("lcars-table")
+          ?.shadowRoot?.activeElement?.getAttribute("title"),
+      ),
+    ).toBe("New commits pushed");
     await page.close();
   });
 
@@ -722,11 +861,7 @@ describe("merging from the overview in Chromium", () => {
       if (r.method() === "POST") posts.push(r.url());
     });
     await page.dblclick(ENABLED);
-    await page.waitForFunction(
-      (selector) =>
-        document.querySelector(selector)?.getAttribute("aria-busy") === "true",
-      ENABLED,
-    );
+    await page.waitForSelector(`${ENABLED}[aria-busy="true"]`);
     release();
     await page.waitForSelector(ENABLED, { state: "detached" });
     expect(posts).toEqual([`${base}/merge`]);
@@ -742,16 +877,15 @@ describe("merging from the overview in Chromium", () => {
     async (answer) => {
       reply = answer;
       const page = await open();
-      const what = await page.textContent('tr[data-id="#12"] td.d');
+      const what = await page.textContent(`${rowOf(12)} .d`);
       await page.click(ENABLED);
       await page.waitForSelector(ENABLED, { state: "detached" });
       expect(await stateOf(page, 12)).toEqual({
-        row: "MERGED",
         text: "MERGED",
         value: "MERGED",
         label: "Filter by state MERGED",
       });
-      expect(await page.textContent('tr[data-id="#12"] td.d')).toBe(what);
+      expect(await page.textContent(`${rowOf(12)} .d`)).toBe(what);
       expect(what).toBe("Change 12. Checks passed.");
       await page.close();
     },
@@ -799,9 +933,13 @@ describe("merging from the overview in Chromium", () => {
     await page.focus(ENABLED);
     await page.keyboard.press("Enter");
     await page.waitForSelector(ENABLED, { state: "detached" });
-    expect(await page.evaluate(() => document.activeElement?.textContent)).toBe(
-      "#12",
-    );
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("lcars-table")?.shadowRoot?.activeElement
+            ?.textContent,
+      ),
+    ).toBe("#12");
     await page.close();
   });
 
@@ -823,7 +961,7 @@ describe("merging from the overview in Chromium", () => {
       title: "New commits pushed",
       label: "Cannot merge #12: New commits pushed",
     });
-    expect(await stateOf(page, 12)).toMatchObject({ row: "READY" });
+    expect(await stateOf(page, 12)).toMatchObject({ value: "READY" });
 
     // Forced, because Playwright will not click what aria-disabled marks.
     await page.click(ENABLED, { force: true });
@@ -867,35 +1005,21 @@ describe("merging from the overview in Chromium", () => {
     await page.close();
   });
 
-  it("sends nothing for a merge click on a dimmed icon", async () => {
-    const page = await open();
-    const posts: string[] = [];
-    page.on("request", (r) => {
-      if (r.method() === "POST") posts.push(r.url());
-    });
-    await page.click(DIMMED, { force: true });
-    // Round-trips the page, so a stray fetch would have left by now.
-    await page.evaluate(() => fetch("/healthz"));
-    expect(posts).toEqual([]);
-    expect(requests).toEqual([]);
-    await page.close();
-  });
-
   it("adds no filter or sort on a merge click", async () => {
     const page = await open();
     await page.click(ENABLED);
     await page.waitForSelector(ENABLED, { state: "detached" });
     expect(new URL(page.url()).search).toBe("");
     expect(await page.$$("#filter-bar lcars-chip")).toEqual([]);
-    expect(await page.$$("th[aria-sort]")).toEqual([]);
+    expect(await page.$$('th[aria-sort$="scending"]')).toEqual([]);
     await page.close();
   });
 
   it("keeps the ID's text and its numeric sort", async () => {
     const page = await open();
-    await page.click('[data-sort="id"]');
+    await page.click('lcars-table th button:text-is("ID")');
     expect(
-      await page.$$eval("#rows tr td.i", (cells) =>
+      await page.$$eval("lcars-table .num", (cells) =>
         cells.map((c) => c.textContent),
       ),
     ).toEqual(["#9", "#12", "#13"]);
@@ -904,13 +1028,13 @@ describe("merging from the overview in Chromium", () => {
 
   it("lines the icon up with its ID", async () => {
     const page = await open();
-    const [merge, id] = await page.evaluate(() =>
-      ['tr[data-id="#12"] .merge', 'tr[data-id="#12"] .num'].map((selector) => {
-        const r = (
-          document.querySelector(selector) as Element
-        ).getBoundingClientRect();
-        return r.y + r.height / 2;
-      }),
+    const [merge, id] = await Promise.all(
+      [`${rowOf(12)} .merge`, `${rowOf(12)} .num`].map((selector) =>
+        page.$eval(selector, (el) => {
+          const r = el.getBoundingClientRect();
+          return r.y + r.height / 2;
+        }),
+      ),
     );
     expect(merge).toBeCloseTo(id as number, 0);
     await page.close();
@@ -918,7 +1042,7 @@ describe("merging from the overview in Chromium", () => {
 
   it("starts every ID in the column at one x, icon or not", async () => {
     const page = await open();
-    const lefts = await page.$$eval("#rows .num", (ids) =>
+    const lefts = await page.$$eval("lcars-table .num", (ids) =>
       ids.map((el) => el.getBoundingClientRect().left),
     );
     expect(new Set(lefts).size).toBe(1);
@@ -934,13 +1058,5 @@ describe("merging from the overview in Chromium", () => {
     ]);
     expect(scroll).toBeLessThanOrEqual(client as number);
     await page.close();
-  });
-
-  it("renders every row with scripts off", async () => {
-    const context = await browser.newContext({ javaScriptEnabled: false });
-    const page = await context.newPage();
-    await page.goto(base);
-    expect((await page.content()).match(/<tr data-kind=/g)).toHaveLength(3);
-    await context.close();
   });
 });

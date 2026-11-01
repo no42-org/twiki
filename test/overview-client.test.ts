@@ -6,14 +6,15 @@
 import { describe, expect, it } from "vitest";
 import { REFUSAL_WORDS } from "../src/core/merge.js";
 import {
-  compareRows,
   emptyFilters,
   FACETS,
+  filterValues,
   formatState,
   nextSort,
   parseState,
   passes,
   readMergeReply,
+  tableRow,
 } from "../src/tricorder/web/overview-client.js";
 
 const row = (over: Record<string, unknown> = {}) => ({
@@ -71,39 +72,38 @@ describe("the overview's filters", () => {
 });
 
 describe("the overview's sort", () => {
-  const sorted = (values: unknown[], col: string, dir: number) =>
-    values
-      .map((value) => ({ [col]: value }))
-      .sort((a, b) => compareRows(a, b, { col, dir }))
-      .map((r) => r[col]);
+  const view = {
+    group: "SECURITY",
+    severity: "HIGH",
+    severityRank: 3,
+    state: "FIX AVAILABLE",
+    repo: "no42-org/twiki",
+    repoLabel: "twiki",
+    id: "#9",
+    what: "A fix",
+    ageHours: 30,
+  };
 
-  it("orders severity by rank in both directions, empties last in both", () => {
-    expect(sorted([2, null, 4, 3], "severity", -1)).toEqual([4, 3, 2, null]);
-    expect(sorted([2, null, 4, 3], "severity", 1)).toEqual([2, 3, 4, null]);
+  it("keys the table on numbers where the words would sort alphabetically", () => {
+    expect(tableRow(view)).toEqual({
+      view,
+      severity: 3,
+      state: "FIX AVAILABLE",
+      repo: "twiki",
+      id: "#9",
+      what: "A fix",
+      age: 30,
+    });
   });
 
-  it("keeps an empty string last too", () => {
-    expect(sorted(["", "b", "a"], "state", 1)).toEqual(["a", "b", ""]);
-    expect(sorted(["", "b", "a"], "state", -1)).toEqual(["b", "a", ""]);
-  });
-
-  it("reads IDs as numbers, so 9 comes before 42", () => {
-    expect(sorted(["42", "9", "v1.3.0"], "id", 1)).toEqual([
-      "9",
-      "42",
-      "v1.3.0",
-    ]);
-  });
-
-  it("compares ages as numbers, not as text", () => {
-    expect(sorted([9, 100, 20], "age", 1)).toEqual([9, 20, 100]);
-  });
-
-  it("ignores case in text", () => {
-    expect(sorted(["twiki", "CoolModFiles"], "repo", 1)).toEqual([
-      "CoolModFiles",
-      "twiki",
-    ]);
+  it("filters on the values the sort keys replaced", () => {
+    expect(filterValues(view)).toEqual({
+      kind: "SECURITY",
+      severity: "HIGH",
+      state: "FIX AVAILABLE",
+      repo: "no42-org/twiki",
+    });
+    expect(filterValues({ ...view, severity: null }).severity).toBe("");
   });
 
   it("cycles first direction, reverse, then default", () => {

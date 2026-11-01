@@ -57,7 +57,7 @@ The declaration is what the read side will sort workflow runs by, and against th
 | `TWIKI_GITHUB_APP_ID` | GitHub App ID | — (required) |
 | `TWIKI_GITHUB_APP_PRIVATE_KEY` | App private key (PEM, inline) | — |
 | `TWIKI_GITHUB_APP_PRIVATE_KEY_PATH` | App private key file path | — |
-| `TWIKI_MERGE_URL` | Set on `web`. Where the overview's merge icon reaches twiki, for example `http://twiki:8788` | unset (icon dimmed, `Merging not configured`) |
+| `TWIKI_MERGE_URL` | Set on `web`. Where the overview's merge icon reaches twiki, for example `http://twiki:8788` | unset (no icon) |
 | `TWIKI_MERGE_PORT` | Set on `twiki`. Port of the operator merge listener | unset (no listener) |
 | `TWIKI_MERGE_HOST` | Set on `twiki`. Address the merge listener binds | `127.0.0.1` |
 | `TWIKI_ADVISOR` | `claude` asks the LLM advisor; `rules` merges on the gates alone, without reading changelogs | `claude` |
@@ -138,13 +138,15 @@ Its only ranking term is whether its checks are stuck, read from the workflow ru
 Three boxes total what needs you: Security, Pull Requests and Release Worthy.
 One table below lists the items, with Severity, State, Repository, ID, What and impact, and Age columns.
 Click a box, a severity, a state or a repository name to filter, and click a header to sort.
-Filters and sort live in the query string, so a view can be bookmarked, and the full table renders without JavaScript.
+Filters and sort live in the query string, so a view can be bookmarked.
+The table needs JavaScript.
 A box with no confirmed sweep behind it says `UNCONFIRMED` rather than a zero, and the footer names any lane that is not current.
 The LCARS bundle and the client script are served by the web process, so the page calls no other host.
 
 `web` is read-only toward GitHub and the database: it holds no key and its database handle cannot write.
 That does not cover merging.
-Every pull request row has a merge icon, enabled or dimmed with the reason.
+A pull request that can merge has a merge icon, and other rows have none.
+A refused click dims the icon and gives the reason.
 With `TWIKI_MERGE_URL` set, `web` forwards a click on an enabled icon to twiki.
 The page reads retained Actions runs while twiki reads the head commit's checks and statuses, so a repository on external status-only CI shows `Checks not observed`.
 twiki repeats the allowlist and mode checks, gates the pull request again and merges with its own squash, pinned to the head sha it gated.

@@ -7,8 +7,7 @@ import type { FC } from "hono/jsx";
 import { REFUSAL_WORDS } from "../../core/merge.js";
 import type { Assets } from "./assets.js";
 import { AGE_STEPS, LCARS_COLORS as C } from "./lcars-tokens.js";
-import type { MergeAction } from "./merge-action.js";
-import type { Overview, OverviewBox, OverviewRow } from "./overview-view.js";
+import type { Overview, OverviewBox } from "./overview-view.js";
 import { overviewTitle } from "./titles.js";
 
 // The LCARS overview. Labels are LCARS caps in Antonio; sentences, repository
@@ -39,25 +38,17 @@ const STYLE = `
   /* The chip uppercases its slot, and a repository name is an identifier. */
   lcars-chip.repo span:not(.vh) { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; text-transform: none; white-space: normal; overflow-wrap: anywhere; }
   #clear { all: unset; cursor: pointer; color: ${C.ice}; font-size: 17px; }
-  /* A scroll container clips what paints outside it, so the focus outline
-     needs room inside it. */
-  .table-wrap { overflow-x: auto; padding-inline: 4px; margin-inline: -4px; }
-  @media (max-width: 599px) { .table-wrap { max-width: calc(100vw - 32px); } }
-  table { width: 100%; border-collapse: collapse; font-size: 19px; letter-spacing: .02em; }
-  th { text-align: left; padding: 4px 10px 4px 0; font-weight: 400; font-size: 16px; border-bottom: 2px solid ${C.lilac}; }
-  .sort { all: unset; cursor: pointer; color: ${C.lilac}; letter-spacing: .08em; white-space: nowrap; }
-  .sort:hover { color: ${C.text}; }
-  .dir { display: inline-block; width: 14px; margin-left: 4px; color: ${C.gold}; }
-  td { padding: 7px 10px 7px 0; vertical-align: middle; border-bottom: 1px solid ${C.rule}; }
-  td.r { white-space: nowrap; text-transform: none; font: 500 15px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; }
-  td.d { text-transform: none; font: 400 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0; color: ${C.text}; min-width: 16rem; overflow-wrap: anywhere; }
-  td.i { white-space: nowrap; }
+  lcars-table { flex: 1 1 auto; min-height: 12rem; --lcars-font-size-sm: 19px; --lcars-font-size-xs: 16px; }
+  @media (max-width: 599px) { lcars-table { max-width: calc(100vw - 32px); } }
+  /* From here to the end of the sheet, the rules also style the table's cells:
+     the client adopts this whole sheet into the table's shadow root. */
+  td { padding: 7px 10px 7px 0; vertical-align: middle; text-transform: none; }
+  .d { display: block; font: 400 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0; color: ${C.text}; min-width: 16rem; overflow-wrap: anywhere; }
   /* One box for both cells, because the icon would otherwise set the repository line apart. */
   .line { display: flex; align-items: center; min-height: 24px; }
   .num { color: ${C.ice}; font: 500 15px ui-monospace, SFMono-Regular, Menlo, monospace; text-decoration: underline; text-underline-offset: 3px; text-transform: none; }
   a.num:hover { color: ${C.text}; }
   span.num { text-decoration: none; }
-  td.g { white-space: nowrap; }
   .pill { all: unset; cursor: pointer; display: inline-block; min-width: 72px; text-align: center; padding: 1px 10px; border-radius: 12px; color: ${C.ink}; font-size: 16px; white-space: nowrap; background: ${C.lilac}; }
   /* The same states as lcars-button: brighter on hover, brighter and pressed in when active. */
   .pill:hover { filter: brightness(var(--lcars-hover-brightness)); }
@@ -77,8 +68,8 @@ const STYLE = `
   .merge[aria-disabled="true"] { cursor: not-allowed; }
   .merge[aria-busy="true"] { cursor: progress; }
   /* An ID with no icon beside it starts where the iconed IDs do. */
-  #rows:has(.merge) .num:first-child { margin-left: 30px; }
-  .rb { all: unset; cursor: pointer; color: ${C.gold}; }
+  tbody:has(.merge) .num:first-child { margin-left: 30px; }
+  .rb { all: unset; cursor: pointer; color: ${C.gold}; font-size: 15px; font-weight: 500; }
   .rb:hover, .rb[aria-pressed="true"] { text-decoration: underline; text-underline-offset: 3px; }
   .age { display: inline-flex; align-items: center; gap: 10px; }
   .segs { display: inline-flex; gap: 2px; }
@@ -87,7 +78,7 @@ const STYLE = `
   .segs i:last-child { border-radius: 0 7px 7px 0; }
   ${AGE_STEP_RULES}
   .words { font: 400 15px system-ui, sans-serif; text-transform: none; letter-spacing: 0; color: ${C.text}; min-width: 62px; }
-  .tile:focus-visible, .pill:focus-visible, .rb:focus-visible, #clear:focus-visible, .sort:focus-visible, .num:focus-visible, .gh:focus-visible, .merge:focus-visible { outline: 2px solid ${C.ice}; outline-offset: 2px; }
+  .tile:focus-visible, .pill:focus-visible, .rb:focus-visible, #clear:focus-visible, .num:focus-visible, .gh:focus-visible, .merge:focus-visible { outline: 2px solid ${C.ice}; outline-offset: 2px; }
   .empty { padding: 16px 0; font: 16px system-ui, sans-serif; text-transform: none; color: ${C.muted}; }
 `;
 
@@ -96,21 +87,6 @@ const BOX_COLOR: Readonly<Record<OverviewBox["group"], string>> = {
   "PULL REQUESTS": C.lilac,
   "RELEASE WORTHY": C.ice,
 };
-
-const COLUMNS = [
-  ["severity", "SEVERITY"],
-  ["state", "STATE"],
-  ["repo", "REPOSITORY"],
-  ["id", "ID"],
-  ["what", "WHAT AND IMPACT"],
-  ["age", "AGE"],
-] as const;
-
-const GITHUB_MARK =
-  "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z";
-
-const MERGE_MARK =
-  "M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z";
 
 // For the client, which has no imports: a refused row reads these same words.
 const REFUSAL_WORDS_JSON = JSON.stringify(REFUSAL_WORDS);
@@ -139,153 +115,6 @@ const Box: FC<{ box: OverviewBox }> = ({ box }) => (
   </button>
 );
 
-const Pill: FC<{ facet: string; value: string; extra?: string }> = ({
-  facet,
-  value,
-  extra,
-}) => (
-  <button
-    type="button"
-    class={`pill ${extra ?? ""}`}
-    data-facet={facet}
-    data-value={value}
-    aria-pressed="false"
-    aria-label={`Filter by ${facet} ${value}`}
-  >
-    {value}
-  </button>
-);
-
-const Age: FC<{ row: OverviewRow }> = ({ row }) => (
-  <span class="age">
-    <span class="segs" aria-hidden="true">
-      {[1, 2, 3, 4, 5].map((step) => (
-        <i key={step} class={step <= row.ageStep ? "on" : undefined} />
-      ))}
-    </span>
-    <span class="words">{row.ageWords}</span>
-  </span>
-);
-
-/** Dimmed with aria-disabled, so a keyboard can still reach the reason. */
-const MergeIcon: FC<{ row: OverviewRow; action: MergeAction }> = ({
-  row,
-  action,
-}) => (
-  <button
-    type="button"
-    class="merge"
-    data-repo={row.repo}
-    data-number={row.id.slice(1)}
-    aria-disabled={action.enabled ? undefined : "true"}
-    aria-label={
-      action.enabled
-        ? `Merge ${row.id} in ${row.repoLabel}`
-        : `Cannot merge ${row.id}: ${action.reason}`
-    }
-    title={action.enabled ? "Merge" : action.reason}
-  >
-    <svg
-      viewBox="0 0 16 16"
-      width="16"
-      height="16"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d={MERGE_MARK} />
-    </svg>
-  </button>
-);
-
-const Row: FC<{ row: OverviewRow }> = ({ row }) => (
-  <tr
-    data-kind={row.group}
-    data-severity={row.severity ?? undefined}
-    data-rank={row.severityRank ?? undefined}
-    data-state={row.state}
-    data-repo={row.repo}
-    data-label={row.repoLabel}
-    data-id={row.id}
-    data-what={row.what}
-    data-age={row.ageHours ?? undefined}
-  >
-    <td>
-      {row.severity === null ? null : (
-        <Pill facet="severity" value={row.severity} extra={row.severity} />
-      )}
-    </td>
-    <td>
-      <Pill
-        facet="state"
-        value={row.state}
-        extra={
-          row.state === "FAILING" || row.state === "READY"
-            ? row.state
-            : undefined
-        }
-      />
-    </td>
-    <td class="r">
-      <span class="line">
-        {row.repoUrl === null ? null : (
-          <a
-            class="gh"
-            href={row.repoUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Open on GitHub"
-          >
-            <span class="vh">Open {row.repoLabel} on GitHub in a new tab</span>
-            <svg
-              viewBox="0 0 16 16"
-              width="16"
-              height="16"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <path d={GITHUB_MARK} />
-            </svg>
-          </a>
-        )}
-        <button
-          type="button"
-          class="rb"
-          data-facet="repo"
-          data-value={row.repo}
-          data-label={row.repoLabel}
-          aria-pressed="false"
-          aria-label={`Filter by repository ${row.repoLabel}`}
-        >
-          {row.repoLabel}
-        </button>
-      </span>
-    </td>
-    <td class="i">
-      <span class="line">
-        {row.merge === null ? null : <MergeIcon row={row} action={row.merge} />}
-        {row.url === null ? (
-          <span class="num">{row.id}</span>
-        ) : (
-          <a
-            class="num"
-            href={row.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={`Open ${row.id} in ${row.repoLabel} on GitHub in a new tab`}
-            title="Open on GitHub"
-          >
-            {row.id}
-          </a>
-        )}
-      </span>
-    </td>
-    <td class="d">{row.what}</td>
-    <td class="g">
-      <Age row={row} />
-    </td>
-  </tr>
-);
-
 export const OverviewPage: FC<{ view: Overview; assets: Assets }> = ({
   view,
   assets,
@@ -298,7 +127,7 @@ export const OverviewPage: FC<{ view: Overview; assets: Assets }> = ({
       <link rel="stylesheet" href={assets["lcars.css"]?.href} />
       {/* Raw, because JSX escapes the quotes in the selectors and font stacks,
           which silently drops those rules. STYLE is a constant. */}
-      <style dangerouslySetInnerHTML={{ __html: STYLE }} />
+      <style id="overview-style" dangerouslySetInnerHTML={{ __html: STYLE }} />
       <script src={assets["lcars.iife.js"]?.href} />
       <script type="module" src={assets["overview-client.js"]?.href} />
     </head>
@@ -315,42 +144,33 @@ export const OverviewPage: FC<{ view: Overview; assets: Assets }> = ({
             OVERVIEW
           </lcars-button>
         </div>
-        <div slot="main">
-          <div class="tiles">
-            {view.boxes.map((box) => (
-              <Box key={box.group} box={box} />
-            ))}
-          </div>
-          {/* Empty until a merge answers: a live region must exist first. */}
-          <p class="vh" id="merge-status" aria-live="polite" />
-          <div class="bar" id="filter-bar">
-            <span>{view.rows.length} ITEMS</span>
-          </div>
-          <div class="table-wrap">
-            <table id="overview-table" data-refusals={REFUSAL_WORDS_JSON}>
-              <thead>
-                <tr>
-                  {COLUMNS.map(([col, label]) => (
-                    <th key={col} data-col={col} scope="col">
-                      <button type="button" class="sort" data-sort={col}>
-                        {label}
-                        <span class="dir" aria-hidden="true" />
-                      </button>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody id="rows">
-                {view.rows.map((row) => (
-                  <Row key={row.key} row={row} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p class="empty" id="no-matches" hidden>
-            No items match these filters. Remove one to see more.
-          </p>
+        {/* Slotted one by one, because a wrapper would need to pass the
+            table's flex sizing on. */}
+        <div slot="main" class="tiles">
+          {view.boxes.map((box) => (
+            <Box key={box.group} box={box} />
+          ))}
         </div>
+        {/* Empty until a merge answers: a live region must exist first. */}
+        <p slot="main" class="vh" id="merge-status" aria-live="polite" />
+        <div slot="main" class="bar" id="filter-bar">
+          <span>{view.rows.length} ITEMS</span>
+        </div>
+        <noscript slot="main">
+          <p class="empty">The table needs JavaScript.</p>
+        </noscript>
+        <lcars-table
+          slot="main"
+          id="overview-table"
+          label="Overview"
+          color="secondary"
+          header-style="rule"
+          data-rows={JSON.stringify(view.rows)}
+          data-refusals={REFUSAL_WORDS_JSON}
+        />
+        <p slot="main" class="empty" id="no-matches" hidden>
+          No items match these filters. Remove one to see more.
+        </p>
         <div slot="footer-readout">{view.health.readout}</div>
         <lcars-elbow
           slot="elbow-bl"
