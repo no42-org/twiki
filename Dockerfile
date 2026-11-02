@@ -42,7 +42,7 @@ RUN mkdir -p /data /state && chown 65532:65532 /data /state
 # rebuilt upstream: its tag sat on one digest from June to October 2026, so
 # the digest bump had nothing to propose while OpenSSL fixes piled up (#205).
 # When Debian moves on again, the same silence is the symptom to look for.
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:a6c34457f6da4295807e051411c7783739c65b997a324fed14e4fa292615ae91 AS runtime
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:b8cec4b2f2126ff7bd034ec9ac207ffb3272667dfdc48376e3b035d3270549ba AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
